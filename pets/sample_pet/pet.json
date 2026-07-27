@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "id": "sample_pet",
+  "name": "Sample Pet",
+  "version": "1.0.0",
+  "author": "PetNest",
+  "description": "由 Pillow 程序化生成的透明示例宠物。",
+  "canvas": {
+    "width": 256,
+    "height": 256
+  },
+  "display": {
+    "default_scale": 0.6,
+    "min_scale": 0.25,
+    "max_scale": 2.0,
+    "alpha_hit_test_threshold": 10
+  },
+  "animations": {
+    "idle": {
+      "path": "animations/idle",
+      "fps": 8,
+      "loop": true,
+      "priority": 10,
+      "interruptible": true
+    },
+    "hover": {
+      "path": "animations/hover",
+      "fps": 10,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "click": {
+      "path": "animations/click",
+      "fps": 12,
+      "loop": false,
+      "priority": 50,
+      "interruptible": false,
+      "next": "context"
+    },
+    "drag": {
+      "path": "animations/drag",
+      "fps": 10,
+      "loop": true,
+      "priority": 80,
+      "interruptible": false
+    },
+    "drop": {
+      "path": "animations/drop",
+      "fps": 12,
+      "loop": false,
+      "priority": 70,
+      "interruptible": false,
+      "next": "context"
+    },
+    "working": {
+      "path": "animations/working",
+      "fps": 10,
+      "loop": true,
+      "priority": 60,
+      "interruptible": true
+    },
+    "waiting": {
+      "path": "animations/waiting",
+      "fps": 8,
+      "loop": true,
+      "priority": 60,
+      "interruptible": true
+    },
+    "success": {
+      "path": "animations/success",
+      "fps": 12,
+      "loop": false,
+      "priority": 100,
+      "interruptible": false,
+      "next": "context"
+    },
+    "error": {
+      "path": "animations/error",
+      "fps": 12,
+      "loop": false,
+      "priority": 100,
+      "interruptible": false,
+      "next": "context"
+    }
+  },
+  "bindings": {
+    "mouse.enter": "hover",
+    "mouse.leave": "idle",
+    "mouse.click": "click",
+    "mouse.drag_start": "drag",
+    "mouse.drag_end": "drop",
+    "agent.working": "working",
+    "agent.waiting": "waiting",
+    "agent.success": "success",
+    "agent.error": "error"
+  },
+  "fallbacks": {
+    "hover": [
+      "idle"
+    ],
+    "click": [
+      "hover",
+      "idle"
+    ],
+    "drag": [
+      "hover",
+      "idle"
+    ],
+    "drop": [
+      "hover",
+      "idle"
+    ],
+    "working": [
+      "idle"
+    ],
+    "waiting": [
+      "idle"
+    ],
+    "success": [
+      "idle"
+    ],
+    "error": [
+      "idle"
+    ]
+  },
+  "idle_variants": [
+    {
+      "animation": "idle",
+      "weight": 100
+    }
+  ]
+}

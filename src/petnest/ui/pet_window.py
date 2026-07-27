@@ -48,6 +48,7 @@ class PetWindow(QWidget):
         self.setMouseTracking(True)
 
         self.package = package
+        self._scale = package.display.default_scale
         self.player = player or AnimationPlayer()
         self.state_machine = state_machine or self._make_state_machine(package)
         self._position_saved = position_saved
@@ -56,6 +57,7 @@ class PetWindow(QWidget):
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
         self._dragging = False
+        self._mouse_interaction_enabled = True
 
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._on_animation_tick)
@@ -74,7 +76,7 @@ class PetWindow(QWidget):
     @property
     def scale(self) -> float:
         """当前包声明的显示倍率。"""
-        return self.package.display.default_scale
+        return self._scale
 
     def is_opaque_at(self, x: int, y: int) -> bool:
         """按当前帧的 alpha 通道判断窗口局部坐标是否可交互。
@@ -105,12 +107,36 @@ class PetWindow(QWidget):
             self.player.resume()
             self._start_animation_timer()
 
+    def set_scale(self, scale: float) -> None:
+        """更新显示倍率并重建当前帧的命中坐标关系。"""
+        if not self.package.display.min_scale <= scale <= self.package.display.max_scale:
+            raise ValueError("缩放比例不在宠物包允许范围内")
+        self._scale = scale
+        self._set_current_frame()
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        """即时切换置顶属性；Qt 需要重新 show 才会应用窗口旗标。"""
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
+        if self.isVisible():
+            self.show()
+
+    def set_mouse_interaction_enabled(self, enabled: bool) -> None:
+        """关闭后忽略宠物鼠标事件，保留窗口显示和动画。"""
+        self._mouse_interaction_enabled = enabled
+
+    def handle_pet_event(self, event: PetEvent) -> None:
+        """供应用事件总线传入统一事件，不暴露内部播放细节。"""
+        transition = self.state_machine.handle(event)
+        if transition.changed:
+            self._play_current_action()
+
     def load_package(self, package: PetPackage) -> None:
         """切换宠物包，并释放旧动画缓存以避免积累图像内存。"""
         self.animation_timer.stop()
         self.player.clear()
         self._alpha_cache.clear()
         self.package = package
+        self._scale = package.display.default_scale
         self.state_machine = self._make_state_machine(package)
         self._play_current_action()
 
@@ -212,7 +238,7 @@ class PetWindow(QWidget):
         )
 
     def _is_interactive(self, event: QMouseEvent) -> bool:
-        return self.is_opaque_at(int(event.position().x()), int(event.position().y()))
+        return self._mouse_interaction_enabled and self.is_opaque_at(int(event.position().x()), int(event.position().y()))
 
     @staticmethod
     def _make_state_machine(package: PetPackage) -> PetStateMachine:

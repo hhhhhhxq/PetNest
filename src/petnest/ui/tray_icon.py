@@ -13,19 +13,42 @@ from .pet_window import PetWindow
 class PetTrayIcon(QSystemTrayIcon):
     """提供显示切换、暂停切换和退出动作的托盘图标。"""
 
-    def __init__(self, window: PetWindow, *, on_quit: Callable[[], object] | None = None) -> None:
+    def __init__(
+        self,
+        window: PetWindow,
+        *,
+        pet_names: dict[str, str] | None = None,
+        on_switch: Callable[[str], object] | None = None,
+        on_reload: Callable[[], object] | None = None,
+        on_settings: Callable[[], object] | None = None,
+        on_quit: Callable[[], object] | None = None,
+    ) -> None:
         icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
         super().__init__(QIcon(icon), window)
         self.window = window
         self._on_quit = on_quit
+        self._on_switch = on_switch
+        self._on_reload = on_reload
+        self._on_settings = on_settings
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
         self.toggle_pause_action = QAction("暂停动画", self.menu)
         self.quit_action = QAction("退出", self.menu)
+        self.reload_action = QAction("重新加载当前宠物", self.menu)
+        self.settings_action = QAction("设置", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.quit_action.triggered.connect(self._quit)
+        self.reload_action.triggered.connect(self._reload)
+        self.settings_action.triggered.connect(self._settings)
         self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action))
+        if pet_names:
+            pet_menu = self.menu.addMenu("切换宠物")
+            for identifier, name in pet_names.items():
+                action = pet_menu.addAction(name)
+                action.triggered.connect(lambda checked=False, value=identifier: self._switch(value))
+        self.menu.addAction(self.reload_action)
+        self.menu.addAction(self.settings_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.setContextMenu(self.menu)
@@ -48,3 +71,15 @@ class PetTrayIcon(QSystemTrayIcon):
             self._on_quit()
         else:
             QApplication.quit()
+
+    def _switch(self, identifier: str) -> None:
+        if self._on_switch is not None:
+            self._on_switch(identifier)
+
+    def _reload(self) -> None:
+        if self._on_reload is not None:
+            self._on_reload()
+
+    def _settings(self) -> None:
+        if self._on_settings is not None:
+            self._on_settings()
