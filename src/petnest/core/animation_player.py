@@ -73,7 +73,11 @@ class AnimationPlayer:
         """给 UI 计时器使用的当前帧间隔。"""
         if self._current_definition is None:
             return None
-        return 1.0 / (self._current_definition.fps * self._speed_multiplier)
+        durations = self._current_definition.frame_durations_ms
+        if durations is not None:
+            milliseconds = durations[self._current_frame_index]
+            return milliseconds / 1000 / (self._speed_multiplier * self._current_definition.speed_multiplier)
+        return 1.0 / (self._current_definition.fps * self._speed_multiplier * self._current_definition.speed_multiplier)
 
     def preload(self, definition: AnimationDefinition) -> tuple[Image.Image, ...]:
         """将一个动作的所有 PNG 复制到内存，并复用已有的缓存。"""

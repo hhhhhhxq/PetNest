@@ -17,7 +17,8 @@ from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
-from petnest.models.settings import Settings
+from petnest.models.settings import AnimationOverride, Settings
+from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
@@ -52,7 +53,7 @@ class PetNest:
         self.settings = self.settings_manager.load()
         self.pets_root = pets_root or bundled_pets_directory()
         self.loader = PackageLoader()
-        self.packages = self.loader.discover(self.pets_root)
+        self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
         if not self.packages:
             raise RuntimeError(f"未找到可用宠物包：{self.pets_root}")
         self.package = self._select_package(self.settings.current_pet_id)
@@ -70,6 +71,7 @@ class PetNest:
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
                 on_import=self.show_spritesheet_import_dialog,
+                on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
                 on_quit=self.shutdown,
             )
@@ -122,7 +124,7 @@ class PetNest:
         previous = self.package
         position = self.window.pos()
         try:
-            reloaded = self.loader.load(previous.root)
+            reloaded = self._apply_animation_overrides(self.loader.load(previous.root))
             self.window.load_package(reloaded)
             self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
@@ -151,8 +153,18 @@ class PetNest:
         """从本机文件导入成功后重新扫描，并立即切换到新宠物包。"""
         dialog = SpriteSheetImportDialog(self.pets_root, self.window)
         if dialog.exec() and dialog.imported_result is not None:
-            self.packages = self.loader.discover(self.pets_root)
+            self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
             self.switch_pet(dialog.imported_result.package_id)
+
+    def show_animation_editor_dialog(self) -> None:
+        """编辑当前包的本地播放覆盖，并在保存后立即重新载入。"""
+        dialog = AnimationEditorDialog(self.package, self.settings.animation_overrides.get(self.package.identifier, {}), self.window)
+        if dialog.exec():
+            overrides = {pet_id: dict(actions) for pet_id, actions in self.settings.animation_overrides.items()}
+            overrides[self.package.identifier] = dialog.updated_overrides()
+            self.settings = replace(self.settings, animation_overrides=overrides)
+            self.settings_manager.save(self.settings)
+            self.reload_current_pet()
 
     def shutdown(self) -> None:
         """按可控顺序停止服务、保存状态并请求 Qt 事件循环退出。"""
@@ -193,3 +205,23 @@ class PetNest:
 
     def _select_package(self, identifier: str | None) -> PetPackage:
         return next((item for item in self.packages if item.identifier == identifier), self.packages[0])
+
+    def _apply_animation_overrides(self, package: PetPackage) -> PetPackage:
+        overrides = self.settings.animation_overrides.get(package.identifier, {})
+        if not overrides:
+            return package
+        animations = {
+            name: replace(
+                definition,
+                speed_multiplier=override.speed_multiplier,
+                frame_durations_ms=(
+                    override.frame_durations_ms
+                    if override.frame_durations_ms is not None and len(override.frame_durations_ms) == len(definition.frames)
+                    else definition.frame_durations_ms
+                ),
+            )
+            if (override := overrides.get(name)) is not None
+            else definition
+            for name, definition in package.animations.items()
+        }
+        return replace(package, animations=animations)

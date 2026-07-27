@@ -36,6 +36,8 @@ class AnimationDefinition:
     priority: int
     interruptible: bool
     restart_on_reenter: bool = False
+    frame_durations_ms: tuple[int, ...] | None = None
+    speed_multiplier: float = 1.0
     frames: tuple[Path, ...] = field(default_factory=tuple)
 
 

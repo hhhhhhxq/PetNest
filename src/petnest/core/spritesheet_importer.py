@@ -39,6 +39,7 @@ class SpriteSheetInspection:
     source: Path
     size: tuple[int, int]
     layout: SpriteSheetLayout
+    nonempty_columns_by_row: tuple[tuple[int, ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,18 +59,19 @@ class _RowMapping:
     priority: int
     interruptible: bool
     next_animation: str | None = None
+    frame_durations_ms: tuple[int, ...] = ()
 
 
 _ROW_MAPPINGS: tuple[_RowMapping, ...] = (
-    _RowMapping("idle", True, 8, 10, True),
-    _RowMapping("drag", True, 10, 80, False),
-    _RowMapping("codex_running_left", True, 10, 20, True),
-    _RowMapping("click", False, 10, 50, False, "context"),
-    _RowMapping("drop", False, 10, 70, False, "context"),
-    _RowMapping("error", False, 10, 100, False, "context"),
-    _RowMapping("waiting", True, 8, 60, True),
-    _RowMapping("working", True, 10, 60, True),
-    _RowMapping("hover", True, 8, 30, True),
+    _RowMapping("idle", True, 8, 10, True, frame_durations_ms=(280, 110, 110, 140, 140, 320)),
+    _RowMapping("drag", True, 10, 80, False, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
+    _RowMapping("codex_running_left", True, 10, 20, True, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
+    _RowMapping("click", False, 10, 50, False, "context", (140, 140, 140, 280)),
+    _RowMapping("drop", False, 10, 70, False, "context", (140, 140, 140, 140, 280)),
+    _RowMapping("error", False, 10, 100, False, "context", (140, 140, 140, 140, 140, 140, 140, 240)),
+    _RowMapping("waiting", True, 8, 60, True, frame_durations_ms=(150, 150, 150, 150, 150, 260)),
+    _RowMapping("working", True, 10, 60, True, frame_durations_ms=(120, 120, 120, 120, 120, 220)),
+    _RowMapping("hover", True, 8, 30, True, frame_durations_ms=(150, 150, 150, 150, 150, 280)),
 )
 
 
@@ -97,12 +99,20 @@ class SpriteSheetImporter:
                     raise SpriteSheetImportError(f"精灵图尺寸必须为 {expected}，当前为 {actual}")
                 if "A" not in image.getbands():
                     raise SpriteSheetImportError("精灵图必须包含透明 alpha 通道")
+                rgba = image.convert("RGBA")
+                nonempty = tuple(
+                    tuple(column for column in range(self.layout.columns) if self._cell_has_pixels(rgba, row, column))
+                    for row in range(self.layout.rows)
+                )
         except (OSError, UnidentifiedImageError) as error:
             raise SpriteSheetImportError(f"无法读取 PNG 精灵图：{error}") from error
-        return SpriteSheetInspection(source=path, size=self.layout.image_size, layout=self.layout)
+        return SpriteSheetInspection(source=path, size=self.layout.image_size, layout=self.layout, nonempty_columns_by_row=nonempty)
 
-    def import_file(self, source: Path, pets_root: Path, pet_id: str, *, name: str | None = None) -> SpriteSheetImportResult:
-        """裁切 72 帧并生成一个新包；同名目录存在时绝不覆盖。"""
+    def import_file(
+        self, source: Path, pets_root: Path, pet_id: str, *, name: str | None = None,
+        selected_columns_by_action: dict[str, tuple[int, ...]] | None = None,
+    ) -> SpriteSheetImportResult:
+        """按像素检测或手动格位选择生成新包；同名目录绝不覆盖。"""
         inspection = self.inspect(source)
         identifier = self._validate_pet_id(pet_id)
         root = pets_root.expanduser().resolve()
@@ -113,7 +123,7 @@ class SpriteSheetImporter:
 
         temporary = Path(tempfile.mkdtemp(prefix=f".{identifier}-", dir=root))
         try:
-            self._write_package(inspection.source, temporary, identifier, name or identifier)
+            self._write_package(inspection, temporary, identifier, name or identifier, selected_columns_by_action)
             validation = PackageValidator().validate(temporary)
             if not validation.is_valid:
                 raise SpriteSheetImportError("生成的宠物包未通过校验：" + "；".join(validation.errors))
@@ -133,33 +143,46 @@ class SpriteSheetImporter:
             raise SpriteSheetImportError("宠物 ID 必须以小写字母开头，只能包含小写字母、数字、- 或 _")
         return identifier
 
-    def _write_package(self, source: Path, destination: Path, identifier: str, name: str) -> None:
+    def _write_package(
+        self, inspection: SpriteSheetInspection, destination: Path, identifier: str, name: str,
+        selected_columns_by_action: dict[str, tuple[int, ...]] | None,
+    ) -> None:
         animations_root = destination / "animations"
         animations_root.mkdir(parents=True)
-        with Image.open(source) as raw_image:
+        selected_by_action = self._selected_columns(inspection, selected_columns_by_action)
+        if not selected_by_action.get("idle"):
+            raise SpriteSheetImportError("idle 动作至少要选择一张帧")
+        with Image.open(inspection.source) as raw_image:
             image = raw_image.convert("RGBA")
             for row, mapping in enumerate(_ROW_MAPPINGS):
+                columns = selected_by_action[mapping.action]
+                if not columns:
+                    continue
                 action_root = animations_root / mapping.action
                 action_root.mkdir()
-                for column in range(self.layout.columns):
+                for index, column in enumerate(columns, start=1):
                     left = column * self.layout.cell_width
                     top = row * self.layout.cell_height
                     frame = image.crop((left, top, left + self.layout.cell_width, top + self.layout.cell_height))
-                    frame.save(action_root / f"{column + 1:03d}.png")
+                    frame.save(action_root / f"{index:03d}.png")
         with Image.open(animations_root / "idle" / "001.png") as preview:
             preview.save(destination / "preview.png")
         (destination / "pet.json").write_text(
-            json.dumps(self._config(identifier, name), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(self._config(identifier, name, selected_by_action), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
     @staticmethod
-    def _config(identifier: str, name: str) -> dict[str, object]:
+    def _config(identifier: str, name: str, selected_by_action: dict[str, tuple[int, ...]]) -> dict[str, object]:
         animations: dict[str, dict[str, object]] = {}
         for mapping in _ROW_MAPPINGS:
+            columns = selected_by_action[mapping.action]
+            if not columns:
+                continue
             definition: dict[str, object] = {
                 "path": f"animations/{mapping.action}", "fps": mapping.fps, "loop": mapping.loop,
                 "priority": mapping.priority, "interruptible": mapping.interruptible,
+                "frame_durations_ms": [_duration_for_column(mapping, column) for column in columns],
             }
             if mapping.next_animation is not None:
                 definition["next"] = mapping.next_animation
@@ -175,4 +198,28 @@ class SpriteSheetImporter:
                 "agent.working": "working", "agent.waiting": "waiting", "agent.success": "success", "agent.error": "error",
             },
             "fallbacks": {"success": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
+            "import_metadata": {"source_format": "codex_8x9", "selected_columns_by_action": selected_by_action},
         }
+
+    def _selected_columns(
+        self, inspection: SpriteSheetInspection, selected_columns_by_action: dict[str, tuple[int, ...]] | None,
+    ) -> dict[str, tuple[int, ...]]:
+        selected: dict[str, tuple[int, ...]] = {}
+        for row, mapping in enumerate(_ROW_MAPPINGS):
+            columns = inspection.nonempty_columns_by_row[row] if selected_columns_by_action is None else selected_columns_by_action.get(mapping.action, ())
+            if any(isinstance(column, bool) or not isinstance(column, int) or not 0 <= column < self.layout.columns for column in columns):
+                raise SpriteSheetImportError(f"动作 {mapping.action} 的格位必须在 0 到 {self.layout.columns - 1} 之间")
+            selected[mapping.action] = tuple(sorted(set(columns)))
+        return selected
+
+    def _cell_has_pixels(self, image: Image.Image, row: int, column: int) -> bool:
+        left = column * self.layout.cell_width
+        top = row * self.layout.cell_height
+        return image.crop((left, top, left + self.layout.cell_width, top + self.layout.cell_height)).getchannel("A").getbbox() is not None
+
+
+def _duration_for_column(mapping: _RowMapping, column: int) -> int:
+    """标准表以外的格位仍可导入，使用其动作 FPS 产生合理默认值。"""
+    if column < len(mapping.frame_durations_ms):
+        return mapping.frame_durations_ms[column]
+    return round(1000 / mapping.fps)

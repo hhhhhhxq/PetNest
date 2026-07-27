@@ -54,6 +54,8 @@ class PackageLoader:
                 priority=int(definition.get("priority", 0)),
                 interruptible=bool(definition.get("interruptible", True)),
                 restart_on_reenter=bool(definition.get("restart_on_reenter", False)),
+                frame_durations_ms=_frame_durations(definition.get("frame_durations_ms")),
+                speed_multiplier=float(definition.get("speed_multiplier", 1.0)),
                 frames=frames[name],
             )
         display = _display_settings(config.get("display"))
@@ -81,6 +83,15 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _frame_durations(value: object) -> tuple[int, ...] | None:
+    """将已校验的可选逐帧时间线转换成不可变元组。"""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise PackageValidationError("frame_durations_ms 必须是数组")
+    return tuple(int(item) for item in value)
 
 
 def _display_settings(value: object) -> DisplaySettings:

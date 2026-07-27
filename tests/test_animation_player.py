@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -85,3 +86,13 @@ def test_one_shot_animation_emits_completion_once_and_holds_last_frame(tmp_path:
     assert player.is_finished
     assert player.current_frame_index == 1
     assert completed == ["wave"]
+
+
+def test_per_frame_durations_override_fps_and_respect_action_speed(tmp_path: Path) -> None:
+    animation = replace(_animation(tmp_path, loop=True), frame_durations_ms=(200, 80), speed_multiplier=2.0)
+    player = AnimationPlayer(speed_multiplier=1.25)
+
+    player.play(animation)
+    assert player.frame_interval_seconds == 0.08
+    player.advance()
+    assert player.frame_interval_seconds == 0.032

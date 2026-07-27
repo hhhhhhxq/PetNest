@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from petnest.app import PetNest
 from petnest.core.settings_manager import SettingsManager
-from petnest.models.settings import Settings
+from petnest.models.settings import AnimationOverride, Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
 
@@ -76,3 +76,16 @@ def test_application_clamps_saved_position_that_is_outside_all_screens(
 
 def test_check_mode_can_load_bundled_sample_package() -> None:
     assert PetNest.check_installation() == 0
+
+
+def test_application_applies_saved_animation_override_to_loaded_package(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(animation_overrides={"sample_pet": {"idle": AnimationOverride(1.5)}}))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+
+    assert application.package.animations["idle"].speed_multiplier == 1.5

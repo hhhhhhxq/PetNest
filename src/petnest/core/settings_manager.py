@@ -77,6 +77,10 @@ class SettingsManager:
             migrated.setdefault("system_idle_enabled", False)
             migrated.setdefault("system_idle_seconds", 300)
             migrated.setdefault("run_at_startup", False)
+            migrated["schema_version"] = 2
+            version = 2
+        if version == 2:
+            migrated.setdefault("animation_overrides", {})
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

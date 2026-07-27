@@ -145,8 +145,23 @@ class PackageValidator:
                 result.warnings.append(message)
             return
         result.frames[name] = frames
+        self._validate_timeline(name, definition, len(frames), result)
         for frame in frames:
             self._validate_frame(name, frame, canvas, result)
+
+    @staticmethod
+    def _validate_timeline(name: str, definition: Mapping[str, object], frame_count: int, result: ValidationResult) -> None:
+        durations = definition.get("frame_durations_ms")
+        if durations is not None:
+            if not isinstance(durations, list):
+                result.errors.append(f"动画 {name} 的 frame_durations_ms 必须是数组")
+            elif len(durations) != frame_count:
+                result.errors.append(f"动画 {name} 的 frame_durations_ms 数量必须与 PNG 帧数一致")
+            elif any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations):
+                result.errors.append(f"动画 {name} 的 frame_durations_ms 必须全部为正整数")
+        multiplier = definition.get("speed_multiplier", 1.0)
+        if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier <= 0:
+            result.errors.append(f"动画 {name} 的 speed_multiplier 必须大于 0")
 
     @staticmethod
     def _safe_path(root: Path, configured_path: object, name: str, result: ValidationResult) -> Path | None:

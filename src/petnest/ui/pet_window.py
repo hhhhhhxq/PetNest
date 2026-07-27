@@ -114,6 +114,7 @@ class PetWindow(QWidget):
             raise ValueError("缩放比例不在宠物包允许范围内")
         self._scale = scale
         self._set_current_frame()
+        self._start_animation_timer()
         self.move(self.clamp_position(self.pos()))
 
     def clamp_position(self, position: QPoint) -> QPoint:
@@ -247,6 +248,7 @@ class PetWindow(QWidget):
                 self._play_current_action()
                 return
         self._set_current_frame()
+        self._start_animation_timer()
 
     def _set_current_frame(self) -> None:
         frame = self.player.current_frame

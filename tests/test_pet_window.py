@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -205,6 +206,19 @@ def test_timer_advances_frames_and_pause_resume_stops_and_restarts_it(qtbot: pyt
     assert window.animation_timer.isActive()
     window.animation_timer.timeout.emit()
     assert window.player.current_frame_index != paused_index
+
+
+def test_timer_uses_the_duration_of_each_current_frame(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    idle = replace(package.animations["idle"], frame_durations_ms=(200, 80))
+    package = replace(package, animations={**package.animations, "idle": idle})
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.animation_timer.interval() == 200
+    window.animation_timer.timeout.emit()
+    assert window.animation_timer.interval() == 80
 
 
 def test_reloading_package_clears_old_animation_cache_and_starts_new_idle(qtbot: pytest.QtBot, tmp_path: Path) -> None:

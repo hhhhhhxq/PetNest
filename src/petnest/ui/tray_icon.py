@@ -21,6 +21,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_switch: Callable[[str], object] | None = None,
         on_reload: Callable[[], object] | None = None,
         on_import: Callable[[], object] | None = None,
+        on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
@@ -31,6 +32,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_switch = on_switch
         self._on_reload = on_reload
         self._on_import = on_import
+        self._on_edit_animations = on_edit_animations
         self._on_settings = on_settings
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
@@ -38,12 +40,14 @@ class PetTrayIcon(QSystemTrayIcon):
         self.quit_action = QAction("退出", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
+        self.edit_animations_action = QAction("编辑动画速度…", self.menu)
         self.settings_action = QAction("设置", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.quit_action.triggered.connect(self._quit)
         self.reload_action.triggered.connect(self._reload)
         self.import_action.triggered.connect(self._import)
+        self.edit_animations_action.triggered.connect(self._edit_animations)
         self.settings_action.triggered.connect(self._settings)
         self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action))
         if pet_names:
@@ -52,6 +56,7 @@ class PetTrayIcon(QSystemTrayIcon):
                 action = pet_menu.addAction(name)
                 action.triggered.connect(lambda checked=False, value=identifier: self._switch(value))
         self.menu.addAction(self.import_action)
+        self.menu.addAction(self.edit_animations_action)
         self.menu.addAction(self.reload_action)
         self.menu.addAction(self.settings_action)
         self.menu.addSeparator()
@@ -88,6 +93,10 @@ class PetTrayIcon(QSystemTrayIcon):
     def _import(self) -> None:
         if self._on_import is not None:
             self._on_import()
+
+    def _edit_animations(self) -> None:
+        if self._on_edit_animations is not None:
+            self._on_edit_animations()
 
     def _settings(self) -> None:
         if self._on_settings is not None:

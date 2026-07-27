@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from petnest.core.settings_manager import SettingsManager
-from petnest.models.settings import Settings
+from petnest.models.settings import AnimationOverride, Settings
 
 
 def test_defaults_are_available_without_a_file(tmp_path) -> None:
@@ -36,3 +36,12 @@ def test_old_settings_are_migrated_to_current_schema(tmp_path) -> None:
     assert settings.schema_version == Settings.SCHEMA_VERSION
     assert settings.current_pet_id == "legacy"
     assert settings.mouse_interaction_enabled is True
+
+
+def test_animation_overrides_round_trip_without_changing_pet_files(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(Settings(animation_overrides={"cat": {"idle": AnimationOverride(1.25, (200, 80))}}))
+
+    loaded = SettingsManager(path).load()
+    assert loaded.animation_overrides["cat"]["idle"] == AnimationOverride(1.25, (200, 80))

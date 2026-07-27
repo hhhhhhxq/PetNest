@@ -121,6 +121,23 @@ def test_zero_fps_is_invalid(tmp_path: Path) -> None:
     assert any("FPS" in error for error in result.errors)
 
 
+def test_frame_duration_timeline_must_match_png_frames_and_be_positive(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "bad-timeline",
+        animations={
+            "idle": {
+                "path": "animations/idle", "fps": 8, "loop": True,
+                "frame_durations_ms": [120, 0, 120],
+            }
+        },
+    )
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("数量" in error or "正整数" in error for error in result.errors)
+
+
 def test_empty_animation_directory_is_invalid(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "empty")
     for frame in (root / "animations" / "idle").glob("*.png"):
