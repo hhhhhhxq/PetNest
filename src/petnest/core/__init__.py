@@ -2,5 +2,9 @@
 
 from .package_loader import PackageLoader
 from .package_validator import PackageValidationError, PackageValidator
+from .event_bus import EventBus
+from .fallback_resolver import FallbackResolver
+from .settings_manager import SettingsManager
+from .state_machine import PetStateMachine
 
-__all__ = ["PackageLoader", "PackageValidationError", "PackageValidator"]
+__all__ = ["EventBus", "FallbackResolver", "PackageLoader", "PackageValidationError", "PackageValidator", "PetStateMachine", "SettingsManager"]
