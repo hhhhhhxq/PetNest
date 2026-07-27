@@ -7,7 +7,7 @@ from math import hypot
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt
-from PySide6.QtGui import QEnterEvent, QMouseEvent, QPaintEvent, QPainter, QPixmap
+from PySide6.QtGui import QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from petnest.core.animation_player import AnimationPlayer
@@ -26,6 +26,7 @@ class PetWindow(QWidget):
     """
 
     drag_threshold = 6
+    minimum_visible_pixels = 48
 
     def __init__(
         self,
@@ -113,6 +114,33 @@ class PetWindow(QWidget):
             raise ValueError("缩放比例不在宠物包允许范围内")
         self._scale = scale
         self._set_current_frame()
+        self.move(self.clamp_position(self.pos()))
+
+    def clamp_position(self, position: QPoint) -> QPoint:
+        """将窗口位置限制在显示器可用区域内，始终保留可拖回的可见部分。
+
+        当目标点位于另一块显示器时优先使用该屏幕；目标完全落在所有
+        屏幕外时则保留在当前屏幕，避免用户把无标题栏桌宠拖丢。
+        """
+        target_center = position + QPoint(self.width() // 2, self.height() // 2)
+        screen = QGuiApplication.screenAt(target_center) or self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return position
+        available = screen.availableGeometry()
+        visible_width = min(self.minimum_visible_pixels, self.width())
+        visible_height = min(self.minimum_visible_pixels, self.height())
+        minimum_x = available.left() - self.width() + visible_width
+        maximum_x = available.right() - visible_width + 1
+        minimum_y = available.top() - self.height() + visible_height
+        maximum_y = available.bottom() - visible_height + 1
+        if minimum_x > maximum_x:
+            minimum_x = maximum_x = available.center().x() - self.width() // 2
+        if minimum_y > maximum_y:
+            minimum_y = maximum_y = available.center().y() - self.height() // 2
+        return QPoint(
+            max(minimum_x, min(position.x(), maximum_x)),
+            max(minimum_y, min(position.y(), maximum_y)),
+        )
 
     def set_always_on_top(self, enabled: bool) -> None:
         """即时切换置顶属性；Qt 需要重新 show 才会应用窗口旗标。"""
@@ -139,6 +167,7 @@ class PetWindow(QWidget):
         self._scale = package.display.default_scale
         self.state_machine = self._make_state_machine(package)
         self._play_current_action()
+        self.move(self.clamp_position(self.pos()))
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
         if self.is_opaque_at(int(event.position().x()), int(event.position().y())):
@@ -167,7 +196,7 @@ class PetWindow(QWidget):
             self._dragging = True
             self._handle_event("mouse.drag_start")
         if self._dragging:
-            self.move(self._window_origin + delta)
+            self.move(self.clamp_position(self._window_origin + delta))
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802

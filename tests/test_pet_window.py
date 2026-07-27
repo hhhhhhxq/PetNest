@@ -9,9 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.state_machine import PetStateMachine
@@ -151,6 +152,37 @@ def test_drag_starts_only_after_threshold_moves_window_and_saves_position(qtbot:
     QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=center)
     assert window.current_action == "drop"
     assert positions[-1] == (window.x(), window.y())
+
+
+def test_position_is_clamped_to_keep_part_of_pet_on_current_screen(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+
+    right = window.clamp_position(QPoint(available.right() + 10_000, available.center().y()))
+    left = window.clamp_position(QPoint(available.left() - 10_000, available.center().y()))
+
+    visible_width = min(window.minimum_visible_pixels, window.width())
+    assert right.x() == available.right() - visible_width + 1
+    assert left.x() == available.left() - window.width() + visible_width
+
+
+def test_scale_change_reclamps_an_offscreen_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    window.move(available.right() + 1, available.center().y())
+
+    window.set_scale(2.0)
+
+    visible_width = min(window.minimum_visible_pixels, window.width())
+    assert window.x() == available.right() - visible_width + 1
 
 
 def test_timer_advances_frames_and_pause_resume_stops_and_restarts_it(qtbot: pytest.QtBot, tmp_path: Path) -> None:

@@ -106,7 +106,7 @@ class PetNest:
         position = self.window.pos()
         try:
             self.window.load_package(candidate)
-            self.window.move(position)
+            self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
             LOGGER.exception("切换宠物包失败：%s", identifier)
             return False
@@ -122,7 +122,7 @@ class PetNest:
         try:
             reloaded = self.loader.load(previous.root)
             self.window.load_package(reloaded)
-            self.window.move(position)
+            self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
             LOGGER.exception("重新加载宠物包失败：%s", previous.identifier)
             return False
@@ -169,7 +169,7 @@ class PetNest:
 
     def _restore_window_settings(self) -> None:
         if self.settings.window_x is not None and self.settings.window_y is not None:
-            self.window.move(self.settings.window_x, self.settings.window_y)
+            self.window.move(self.window.clamp_position(QPoint(self.settings.window_x, self.settings.window_y)))
         try:
             self.window.set_scale(self.settings.scale)
         except ValueError:
