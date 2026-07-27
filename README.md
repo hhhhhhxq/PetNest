@@ -8,7 +8,7 @@ PetNest 是一个基于 Python 3.12+ 与 PySide6 的跨平台轻量桌面宠物�
 
 - 透明、无边框、置顶桌宠；支持缩放、悬停、点击、拖动、释放及位置保存。
 - 宠物包自动校验、扫描、切换与重新加载；随项目提供 Pillow 生成的 `sample_pet`。
-- 系统托盘提供显示/隐藏、暂停、切换宠物、重新加载、设置和退出。
+- 系统托盘提供显示/隐藏、暂停、切换宠物、导入精灵图、重新加载、设置和退出。
 - 本机 TCP 事件接口只监听 `127.0.0.1`，支持 `agent.working`、`agent.success` 等通用事件。
 - 第一阶段不实现自动行走、重力、多宠物、在线商店、账户或云同步。
 - 已实现应用内部的透明 alpha 命中判断；**系统级按像素点击穿透尚未实现**，不要将它视作安全或无干扰的输入方案。
@@ -68,6 +68,7 @@ python tools/validate_pet.py pets/sample_pet
 python tools/create_sample_pet.py pets/sample_pet
 python tools/preview_animation.py pets/sample_pet idle
 python tools/normalize_frames.py input_frames output_frames --width 256 --height 256 --align bottom --dry-run
+python tools/import_spritesheet.py path/to/spritesheet.png --pet-id my_codex_pet
 ```
 
 `normalize_frames.py` 默认输出到新目录并连续编号，保留透明背景，不覆盖源帧。`preview_animation.py` 仅打开动作预览窗口，不启动完整桌宠。
@@ -105,6 +106,60 @@ pets/my_pet/
 python tools/create_sample_pet.py pets/my_pet
 python tools/validate_pet.py pets/my_pet
 ```
+
+## 导入 Codex 精灵图
+
+PetNest 的运行时始终读取 PNG 序列帧。为了方便使用现有素材，导入器会把一张 Codex 标准精灵图自动裁成独立 PNG 帧，再生成普通 PetNest 宠物包；运行时不会依赖 Codex 格式。
+
+### 支持规则
+
+- 只读取本机通过文件选择器或命令行指定的 PNG，不会上传、联网或复制到包目录以外的位置。
+- 输入必须是原始透明 PNG，尺寸固定为 `1536 × 1872`，即 `8` 列 × `9` 行、每格 `192 × 208` 像素。
+- 输入必须具有 alpha 通道。不要使用聊天截图、拼贴图、缩放后的图片或 JPG。
+- 导入默认不覆盖同 ID 的已有宠物包；请改用新 ID，或先手动备份并移除旧包。
+
+这是 Codex `8 × 9` 标准图集的行到 PetNest 动作的默认映射。导入后可直接编辑生成包的 `pet.json` 调整绑定、FPS、优先级或 fallback。
+
+| 图集行 | 原动作 | 导入后的 PetNest 动作 | 说明 |
+| --- | --- | --- | --- |
+| 0 | idle | `idle` | 默认循环动画。 |
+| 1 | running-right | `drag` | 拖动期间循环播放。 |
+| 2 | running-left | `codex_running_left` | 保留为自定义动作，不默认绑定。 |
+| 3 | waving | `click` | 单击时播放一次。 |
+| 4 | jumping | `drop` | 释放拖动时播放一次。 |
+| 5 | failed | `error` | 外部错误时播放一次。 |
+| 6 | waiting | `waiting` | 等待状态循环。 |
+| 7 | running | `working` | 工作状态循环。 |
+| 8 | review | `hover` | 悬停状态循环。 |
+
+标准 `8 × 9` 图集没有 `success` 行；生成的包会将 `agent.success` 安全 fallback 到 `idle`。
+
+### 从桌面界面导入
+
+在系统托盘中右键 PetNest 图标，选择「导入精灵图…」。对话框会先显示上面的本地文件、尺寸和默认映射规则。选择 PNG、填写小写宠物 ID（例如 `codex_cat`）后点击「导入」。成功时会创建：
+
+```text
+pets/codex_cat/
+├─ pet.json
+├─ preview.png
+└─ animations/
+   ├─ idle/001.png ... 008.png
+   ├─ drag/001.png ... 008.png
+   └─ ...
+```
+
+PetNest 会重新扫描并自动切换到这个宠物。
+
+### 命令行导入
+
+适合批处理或不启动桌宠时使用：
+
+```powershell
+python tools/import_spritesheet.py "C:\\assets\\codex-cat.png" --pet-id codex_cat --name "Codex Cat"
+python tools/validate_pet.py pets/codex_cat
+```
+
+也可以用 `--pets-root` 指定其他宠物目录。宠物 ID 必须以小写字母开头，后续只允许小写字母、数字、`-` 或 `_`。
 
 ## 外部事件
 

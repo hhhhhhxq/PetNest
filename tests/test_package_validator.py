@@ -163,3 +163,16 @@ def test_missing_optional_animation_only_emits_warning(tmp_path: Path) -> None:
 
     assert result.is_valid
     assert any("hover" in warning for warning in result.warnings)
+
+
+def test_missing_bound_animation_with_a_valid_fallback_does_not_emit_warning(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "fallback-bound-action",
+        bindings={"agent.success": "success"},
+        fallbacks={"success": ["idle"]},
+    )
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert not result.warnings

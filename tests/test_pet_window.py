@@ -23,6 +23,7 @@ from petnest.models.pet_package import (
     PetPackage,
 )
 from petnest.ui.pet_window import PetWindow
+from petnest.ui.tray_icon import PetTrayIcon
 
 
 def _package(tmp_path: Path, *, identifier: str = "cat", colour: tuple[int, int, int, int] = (255, 0, 0, 255)) -> PetPackage:
@@ -225,3 +226,11 @@ def test_reloading_package_clears_old_animation_cache_and_starts_new_idle(qtbot:
     assert window.current_action == "idle"
     assert player.current_frame is not old_frame
     assert player.current_frame.getpixel((0, 0)) == (0, 255, 0, 255)
+
+
+def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window, on_import=lambda: None)
+
+    assert tray.import_action.text() == "导入精灵图…"

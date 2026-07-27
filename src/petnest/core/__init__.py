@@ -7,5 +7,6 @@ from .animation_player import AnimationPlayer
 from .fallback_resolver import FallbackResolver
 from .settings_manager import SettingsManager
 from .state_machine import PetStateMachine
+from .spritesheet_importer import SpriteSheetImporter
 
-__all__ = ["AnimationPlayer", "EventBus", "FallbackResolver", "PackageLoader", "PackageValidationError", "PackageValidator", "PetStateMachine", "SettingsManager"]
+__all__ = ["AnimationPlayer", "EventBus", "FallbackResolver", "PackageLoader", "PackageValidationError", "PackageValidator", "PetStateMachine", "SettingsManager", "SpriteSheetImporter"]

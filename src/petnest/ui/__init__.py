@@ -6,3 +6,6 @@ from .settings_dialog import SettingsDialog
 from .tray_icon import PetTrayIcon
 
 __all__ = ["PetSelectorDialog", "PetTrayIcon", "PetWindow", "SettingsDialog"]
+from .spritesheet_import_dialog import SpriteSheetImportDialog
+
+__all__ = ["SpriteSheetImportDialog"]

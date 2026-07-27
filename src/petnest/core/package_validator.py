@@ -84,8 +84,9 @@ class PackageValidator:
                 continue
             self._validate_animation(name, definition, root, canvas, result)
 
-        self._validate_bindings(parsed.get("bindings"), animations, result)
-        self._validate_fallbacks(parsed.get("fallbacks"), result)
+        fallbacks = parsed.get("fallbacks")
+        self._validate_fallbacks(fallbacks, result)
+        self._validate_bindings(parsed.get("bindings"), animations, fallbacks, result)
         return result
 
     @staticmethod
@@ -182,7 +183,12 @@ class PackageValidator:
             result.errors.append(f"动画 {animation_name} 的帧 {frame.name} 无法读取：{error}")
 
     @staticmethod
-    def _validate_bindings(bindings: object, animations: Mapping[object, object], result: ValidationResult) -> None:
+    def _validate_bindings(
+        bindings: object,
+        animations: Mapping[object, object],
+        fallbacks: object,
+        result: ValidationResult,
+    ) -> None:
         if bindings is None:
             return
         if not isinstance(bindings, Mapping):
@@ -191,7 +197,7 @@ class PackageValidator:
         for event_name, animation_name in bindings.items():
             if not isinstance(event_name, str) or not isinstance(animation_name, str):
                 result.errors.append("bindings 的事件和动作名称必须是字符串")
-            elif animation_name not in animations:
+            elif animation_name not in animations and not _has_usable_fallback(animation_name, fallbacks):
                 result.warnings.append(f"事件 {event_name} 指向缺失的可选动画 {animation_name}")
 
     @staticmethod
@@ -229,3 +235,11 @@ def _has_cycle(graph: Mapping[str, tuple[str, ...]]) -> bool:
             visited.add(node)
 
     return any(visit(node) for node in graph)
+
+
+def _has_usable_fallback(animation_name: str, fallbacks: object) -> bool:
+    """缺失动作有已声明的候选 fallback 时不把它视为导入警告。"""
+    if not isinstance(fallbacks, Mapping):
+        return False
+    candidates = fallbacks.get(animation_name)
+    return isinstance(candidates, list) and bool(candidates) and all(isinstance(item, str) for item in candidates)

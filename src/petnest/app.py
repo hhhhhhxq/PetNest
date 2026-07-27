@@ -21,6 +21,7 @@ from petnest.models.settings import Settings
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
+from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
 
 LOGGER = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class PetNest:
                 pet_names={item.identifier: item.name for item in self.packages},
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
+                on_import=self.show_spritesheet_import_dialog,
                 on_settings=self.show_settings_dialog,
                 on_quit=self.shutdown,
             )
@@ -144,6 +146,13 @@ class PetNest:
         dialog = SettingsDialog(self.settings, self.window)
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
+
+    def show_spritesheet_import_dialog(self) -> None:
+        """从本机文件导入成功后重新扫描，并立即切换到新宠物包。"""
+        dialog = SpriteSheetImportDialog(self.pets_root, self.window)
+        if dialog.exec() and dialog.imported_result is not None:
+            self.packages = self.loader.discover(self.pets_root)
+            self.switch_pet(dialog.imported_result.package_id)
 
     def shutdown(self) -> None:
         """按可控顺序停止服务、保存状态并请求 Qt 事件循环退出。"""
