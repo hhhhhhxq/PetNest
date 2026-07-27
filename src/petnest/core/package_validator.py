@@ -1,0 +1,231 @@
+"""对不受信任宠物包进行结构、路径和 PNG 资源校验。"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path, PureWindowsPath
+from typing import Any
+
+from PIL import Image, UnidentifiedImageError
+
+
+_NUMBER_PARTS = re.compile(r"(\d+)")
+_REQUIRED_ANIMATION = "idle"
+
+
+class PackageValidationError(ValueError):
+    """宠物包无法安全加载时抛出的异常。"""
+
+
+@dataclass(slots=True)
+class ValidationResult:
+    """校验结果，同时保留 loader 构造模型所需的已解析数据。"""
+
+    root: Path
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    config: dict[str, Any] | None = None
+    frames: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.errors
+
+
+def natural_sort_key(path: Path) -> tuple[object, ...]:
+    """按文件名中的数字而非字典序排列 PNG 帧。"""
+    return tuple(
+        int(part) if part.isdigit() else part.casefold()
+        for part in _NUMBER_PARTS.split(path.name)
+    )
+
+
+class PackageValidator:
+    """验证目录式 PetNest 宠物包，绝不跟随包外资源路径。"""
+
+    def validate(self, package_root: Path) -> ValidationResult:
+        """返回全部可报告的问题，而不是在第一个问题处中断。"""
+        root = package_root.expanduser().resolve()
+        result = ValidationResult(root=root)
+        if not root.is_dir():
+            result.errors.append(f"宠物包目录不存在：{package_root}")
+            return result
+
+        config_path = root / "pet.json"
+        if not config_path.is_file():
+            result.errors.append("缺少 pet.json")
+            return result
+
+        try:
+            parsed = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            result.errors.append(f"pet.json JSON 无法解析：{error}")
+            return result
+        if not isinstance(parsed, dict):
+            result.errors.append("pet.json 顶层必须是对象")
+            return result
+        result.config = parsed
+
+        self._validate_metadata(parsed, result)
+        canvas = self._validate_canvas(parsed, result)
+        animations = parsed.get("animations")
+        if not isinstance(animations, Mapping):
+            result.errors.append("animations 必须是对象")
+            return result
+        if _REQUIRED_ANIMATION not in animations:
+            result.errors.append("宠物包必须定义 idle 动画")
+
+        for name, definition in animations.items():
+            if not isinstance(name, str) or not name.strip():
+                result.errors.append("动画名称必须是非空字符串")
+                continue
+            self._validate_animation(name, definition, root, canvas, result)
+
+        self._validate_bindings(parsed.get("bindings"), animations, result)
+        self._validate_fallbacks(parsed.get("fallbacks"), result)
+        return result
+
+    @staticmethod
+    def _validate_metadata(config: Mapping[str, Any], result: ValidationResult) -> None:
+        if config.get("schema_version") != 1:
+            result.errors.append("schema_version 必须为当前支持的版本 1")
+        if not isinstance(config.get("id"), str) or not config["id"].strip():
+            result.errors.append("id 必须是非空字符串")
+
+    @staticmethod
+    def _validate_canvas(config: Mapping[str, Any], result: ValidationResult) -> tuple[int, int] | None:
+        canvas = config.get("canvas")
+        if not isinstance(canvas, Mapping):
+            result.errors.append("canvas 必须是对象")
+            return None
+        width, height = canvas.get("width"), canvas.get("height")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
+            result.errors.append("canvas.width 和 canvas.height 必须是正整数")
+            return None
+        return width, height
+
+    def _validate_animation(
+        self,
+        name: str,
+        definition: object,
+        root: Path,
+        canvas: tuple[int, int] | None,
+        result: ValidationResult,
+    ) -> None:
+        if not isinstance(definition, Mapping):
+            result.errors.append(f"动画 {name} 的定义必须是对象")
+            return
+        fps = definition.get("fps")
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+            result.errors.append(f"动画 {name} 的 FPS 必须大于 0")
+        if not isinstance(definition.get("loop"), bool):
+            result.errors.append(f"动画 {name} 的 loop 必须是布尔值")
+
+        animation_path = self._safe_path(root, definition.get("path"), name, result)
+        if animation_path is None:
+            return
+        if not animation_path.is_dir():
+            message = f"动画 {name} 的目录不存在：{definition.get('path')}"
+            if name == _REQUIRED_ANIMATION:
+                result.errors.append(message)
+            else:
+                result.warnings.append(message)
+            return
+
+        frames = tuple(sorted((item for item in animation_path.iterdir() if item.is_file() and item.suffix.casefold() == ".png"), key=natural_sort_key))
+        if not frames:
+            message = f"动画 {name} 没有 PNG 帧"
+            if name == _REQUIRED_ANIMATION:
+                result.errors.append(message)
+            else:
+                result.warnings.append(message)
+            return
+        result.frames[name] = frames
+        for frame in frames:
+            self._validate_frame(name, frame, canvas, result)
+
+    @staticmethod
+    def _safe_path(root: Path, configured_path: object, name: str, result: ValidationResult) -> Path | None:
+        if not isinstance(configured_path, str) or not configured_path.strip():
+            result.errors.append(f"动画 {name} 的 path 必须是非空相对路径")
+            return None
+        candidate = Path(configured_path)
+        if candidate.is_absolute() or PureWindowsPath(configured_path).is_absolute():
+            result.errors.append(f"动画 {name} 的路径必须位于包目录内")
+            return None
+        resolved = (root / candidate).resolve()
+        if not resolved.is_relative_to(root):
+            result.errors.append(f"动画 {name} 的路径逃逸到包目录之外")
+            return None
+        return resolved
+
+    @staticmethod
+    def _validate_frame(
+        animation_name: str,
+        frame: Path,
+        canvas: tuple[int, int] | None,
+        result: ValidationResult,
+    ) -> None:
+        try:
+            with Image.open(frame) as image:
+                image.load()
+                if "A" not in image.getbands():
+                    result.errors.append(f"动画 {animation_name} 的帧 {frame.name} 缺少透明通道")
+                if canvas is not None and image.size != canvas:
+                    result.errors.append(
+                        f"动画 {animation_name} 的帧 {frame.name} 画布尺寸为 {image.size}，应为 {canvas}"
+                    )
+        except (OSError, UnidentifiedImageError) as error:
+            result.errors.append(f"动画 {animation_name} 的帧 {frame.name} 无法读取：{error}")
+
+    @staticmethod
+    def _validate_bindings(bindings: object, animations: Mapping[object, object], result: ValidationResult) -> None:
+        if bindings is None:
+            return
+        if not isinstance(bindings, Mapping):
+            result.errors.append("bindings 必须是对象")
+            return
+        for event_name, animation_name in bindings.items():
+            if not isinstance(event_name, str) or not isinstance(animation_name, str):
+                result.errors.append("bindings 的事件和动作名称必须是字符串")
+            elif animation_name not in animations:
+                result.warnings.append(f"事件 {event_name} 指向缺失的可选动画 {animation_name}")
+
+    @staticmethod
+    def _validate_fallbacks(fallbacks: object, result: ValidationResult) -> None:
+        if fallbacks is None:
+            return
+        if not isinstance(fallbacks, Mapping):
+            result.errors.append("fallbacks 必须是对象")
+            return
+        graph: dict[str, tuple[str, ...]] = {}
+        for source, targets in fallbacks.items():
+            if not isinstance(source, str) or not isinstance(targets, list) or not all(isinstance(target, str) for target in targets):
+                result.errors.append("fallbacks 必须是动作名到动作名数组的映射")
+                continue
+            graph[source] = tuple(targets)
+        if _has_cycle(graph):
+            result.errors.append("fallback 配置存在循环引用")
+
+
+def _has_cycle(graph: Mapping[str, tuple[str, ...]]) -> bool:
+    """用 DFS 检测 fallback 有向图中的环。"""
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        try:
+            return any(visit(target) for target in graph.get(node, ()))
+        finally:
+            visiting.discard(node)
+            visited.add(node)
+
+    return any(visit(node) for node in graph)
