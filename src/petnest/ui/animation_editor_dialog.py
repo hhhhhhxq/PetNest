@@ -6,16 +6,14 @@ from collections.abc import Mapping
 
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -42,7 +40,7 @@ class AnimationEditorDialog(QDialog):
 
     def __init__(self, package: PetPackage, overrides: Mapping[str, AnimationOverride], parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(f"编辑动画速度 — {package.name}")
+        self.setWindowTitle(f"编辑动画时长 — {package.name}")
         self.resize(720, 520)
         self._package = package
         self._overrides = dict(overrides)
@@ -51,8 +49,8 @@ class AnimationEditorDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(QLabel("这些设置仅保存在本机，不会修改宠物文件。", self))
-        self.action_table = QTableWidget(0, 5, self)
-        self.action_table.setHorizontalHeaderLabels(("动作", "展示时机", "帧数", "总时长", "速度"))
+        self.action_table = QTableWidget(0, 4, self)
+        self.action_table.setHorizontalHeaderLabels(("动作", "展示时机", "帧数", "当前总时长"))
         self.action_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.action_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.action_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -60,23 +58,22 @@ class AnimationEditorDialog(QDialog):
         root.addWidget(self.action_table, 1)
 
         controls = QFormLayout()
-        self.speed_spin = QDoubleSpinBox(self)
-        self.speed_spin.setRange(0.25, 4.0)
-        self.speed_spin.setSingleStep(0.05)
-        self.speed_spin.setDecimals(2)
-        self.speed_spin.setSuffix(" ×")
-        self.speed_spin.valueChanged.connect(self._speed_changed)
-        self.total_duration_label = QLabel("—", self)
-        controls.addRow("播放速度", self.speed_spin)
-        controls.addRow("当前总时长", self.total_duration_label)
+        self.total_duration_spin = QSpinBox(self)
+        self.total_duration_spin.setRange(1, 600_000)
+        self.total_duration_spin.setSingleStep(50)
+        self.total_duration_spin.setSuffix(" ms")
+        self.total_duration_spin.valueChanged.connect(self._total_duration_changed)
+        controls.addRow("本动作总时长", self.total_duration_spin)
         root.addLayout(controls)
 
         self.duration_table = QTableWidget(0, 2, self)
         self.duration_table.setHorizontalHeaderLabels(("帧", "时长（毫秒）"))
         self.duration_table.hide()
-        self.advanced_checkbox = QCheckBox("逐帧时长（高级）", self)
-        self.advanced_checkbox.toggled.connect(self.duration_table.setVisible)
-        root.addWidget(self.advanced_checkbox)
+        self.advanced_frame_button = QToolButton(self)
+        self.advanced_frame_button.setText("编辑逐帧节奏（高级）")
+        self.advanced_frame_button.setCheckable(True)
+        self.advanced_frame_button.toggled.connect(self.duration_table.setVisible)
+        root.addWidget(self.advanced_frame_button)
         root.addWidget(self.duration_table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save, self)
@@ -97,7 +94,7 @@ class AnimationEditorDialog(QDialog):
             override = self._overrides.get(action, AnimationOverride())
             durations = _durations(definition, override)
             total = sum(durations) / override.speed_multiplier
-            values = (action, _TRIGGER_TEXT.get(action, "自定义动作"), str(len(definition.frames)), f"{round(total)} ms", f"{override.speed_multiplier:.2f} ×")
+            values = (action, _TRIGGER_TEXT.get(action, "自定义动作"), str(len(definition.frames)), f"{round(total)} ms")
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
@@ -114,10 +111,12 @@ class AnimationEditorDialog(QDialog):
         override = self._overrides.get(action, AnimationOverride())
         self._loading = True
         try:
-            with QSignalBlocker(self.speed_spin):
-                self.speed_spin.setValue(override.speed_multiplier)
+            with QSignalBlocker(self.total_duration_spin):
+                self.total_duration_spin.setValue(round(sum(_durations(definition, override)) / override.speed_multiplier))
+            with QSignalBlocker(self.advanced_frame_button):
+                self.advanced_frame_button.setChecked(False)
+            self.duration_table.hide()
             self._populate_duration_table(_durations(definition, override))
-            self._update_total_duration()
         finally:
             self._loading = False
 
@@ -131,18 +130,24 @@ class AnimationEditorDialog(QDialog):
             spin.valueChanged.connect(self._duration_changed)
             self.duration_table.setCellWidget(row, 1, spin)
 
-    def _speed_changed(self, value: float) -> None:
+    def _total_duration_changed(self, total_duration: int) -> None:
         if self._loading or self._current_action is None:
             return
-        self._store_current(float(value))
-        self._update_total_duration()
+        definition = self._package.animations[self._current_action]
+        existing = self._overrides.get(self._current_action, AnimationOverride())
+        speed = sum(_durations(definition, existing)) / total_duration
+        self._store_current(speed)
         self._populate_action_table()
 
     def _duration_changed(self, _value: int) -> None:
         if self._loading or self._current_action is None:
             return
-        self._store_current(self.speed_spin.value(), self._table_durations())
-        self._update_total_duration()
+        existing = self._overrides.get(self._current_action, AnimationOverride())
+        self._store_current(existing.speed_multiplier, self._table_durations())
+        with QSignalBlocker(self.total_duration_spin):
+            self.total_duration_spin.setValue(
+                round(sum(self._table_durations()) / existing.speed_multiplier)
+            )
         self._populate_action_table()
 
     def _store_current(self, speed: float, durations: tuple[int, ...] | None = None) -> None:
@@ -152,15 +157,6 @@ class AnimationEditorDialog(QDialog):
 
     def _table_durations(self) -> tuple[int, ...]:
         return tuple(self.duration_table.cellWidget(row, 1).value() for row in range(self.duration_table.rowCount()))  # type: ignore[union-attr]
-
-    def _update_total_duration(self) -> None:
-        if self._current_action is None:
-            return
-        definition = self._package.animations[self._current_action]
-        override = self._overrides.get(self._current_action, AnimationOverride())
-        total = round(sum(_durations(definition, override)) / override.speed_multiplier)
-        self.total_duration_label.setText(f"{total} ms")
-
 
 def _durations(definition: AnimationDefinition, override: AnimationOverride) -> tuple[int, ...]:
     if override.frame_durations_ms is not None and len(override.frame_durations_ms) == len(definition.frames):

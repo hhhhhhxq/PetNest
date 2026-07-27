@@ -40,7 +40,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.quit_action = QAction("退出", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
-        self.edit_animations_action = QAction("编辑动画速度…", self.menu)
+        self.edit_animations_action = QAction("编辑动画时长…", self.menu)
         self.settings_action = QAction("设置", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
