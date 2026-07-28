@@ -9,7 +9,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .package_validator import PackageValidator
 
@@ -88,6 +88,39 @@ class AnimationActionSynchronizer:
             raise
         except Exception as error:
             raise AnimationActionSyncError(f"同步动画动作失败：{error}") from error
+
+    def update_frame_durations(self, package_root: Path, timelines: Mapping[str, tuple[int, ...]]) -> None:
+        """将编辑后的逐帧时长原子写入宠物包，而非保存为本机覆盖。"""
+        if not timelines:
+            return
+        try:
+            root = package_root.expanduser().resolve()
+            config_path = root / "pet.json"
+            self._ensure_regular_config(config_path)
+            config = self._read_config(config_path)
+            animations = config.get("animations")
+            if not isinstance(animations, dict):
+                raise AnimationActionSyncError("pet.json 的 animations 必须是对象")
+
+            candidate = dict(config)
+            candidate_animations = dict(animations)
+            candidate["animations"] = candidate_animations
+            for action, durations in timelines.items():
+                definition = animations.get(action)
+                if not isinstance(definition, dict):
+                    raise AnimationActionSyncError(f"动画 {action} 不存在，无法保存时长")
+                if not durations or any(isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0 for duration in durations):
+                    raise AnimationActionSyncError(f"动画 {action} 的帧时长必须全部为正整数")
+                candidate_definition = dict(definition)
+                candidate_definition["frame_durations_ms"] = list(durations)
+                candidate_animations[action] = candidate_definition
+
+            self._validate_candidate(root, candidate)
+            self._replace_config_atomically(config_path, candidate)
+        except AnimationActionSyncError:
+            raise
+        except Exception as error:
+            raise AnimationActionSyncError(f"保存动画时长失败：{error}") from error
 
     @staticmethod
     def _read_config(config_path: Path) -> dict[str, Any]:

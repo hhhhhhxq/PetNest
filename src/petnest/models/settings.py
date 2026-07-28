@@ -40,8 +40,10 @@ class Settings:
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        """返回适合 JSON 写入的纯数据。"""
-        return asdict(self)
+        """返回适合 JSON 写入的纯数据，不再持久化已废弃的本地动画覆盖。"""
+        values = asdict(self)
+        values.pop("animation_overrides", None)
+        return values
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Settings":

@@ -93,6 +93,14 @@ def test_sync_preserves_existing_idle_definition_when_adding_sleep(tmp_path: Pat
     }
 
 
+def test_update_frame_durations_writes_a_shareable_timeline_to_pet_json(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "timing")
+
+    AnimationActionSynchronizer().update_frame_durations(root, {"idle": (180, 90)})
+
+    assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [180, 90]
+
+
 def test_sync_ignores_png_frames_nested_below_an_animation_directory(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "nested-frame")
     _write_png(root / "animations" / "outer" / "nested" / "001.png")

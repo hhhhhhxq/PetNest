@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -20,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.models.pet_package import AnimationDefinition, PetPackage
-from petnest.models.settings import AnimationOverride
 
 
 _TRIGGER_TEXT = {
@@ -32,19 +29,24 @@ _TRIGGER_TEXT = {
 
 
 class AnimationEditorDialog(QDialog):
-    """编辑本地覆盖；每个动作在总时长和逐帧模式间二选一。"""
+    """编辑会写入宠物包的逐帧时长；每个动作在两种编辑方式间二选一。"""
 
-    def __init__(self, package: PetPackage, overrides: Mapping[str, AnimationOverride], parent: QWidget | None = None) -> None:
+    def __init__(self, package: PetPackage, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"编辑动画时长 — {package.name}")
         self.resize(720, 560)
         self._package = package
-        self._overrides = dict(overrides)
+        self._timelines = {action: _source_durations(definition) for action, definition in package.animations.items()}
+        self._modes = {
+            action: "per_frame" if definition.frame_durations_ms is not None else "total"
+            for action, definition in package.animations.items()
+        }
+        self._changed_actions: set[str] = set()
         self._current_action: str | None = None
         self._loading = False
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("选择一种播放方式；保存后会自动应用到当前宠物。", self))
+        root.addWidget(QLabel("选择一种编辑方式；保存后会写入 pet.json 并自动重载当前宠物。", self))
         self.action_table = QTableWidget(0, 5, self)
         self.action_table.setHorizontalHeaderLabels(("动作", "展示时机", "帧数", "当前方式", "实际总时长"))
         self.action_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -80,7 +82,7 @@ class AnimationEditorDialog(QDialog):
         self.duration_table.setHorizontalHeaderLabels(("帧", "时长（毫秒）"))
         root.addWidget(self.duration_table)
 
-        self.apply_hint_label = QLabel("保存后会自动重载当前宠物。", self)
+        self.apply_hint_label = QLabel("时长会随宠物文件夹一起分享。", self)
         root.addWidget(self.apply_hint_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save, self)
         buttons.accepted.connect(self.accept)
@@ -90,22 +92,21 @@ class AnimationEditorDialog(QDialog):
         if self.action_table.rowCount():
             self.action_table.selectRow(0)
 
-    def updated_overrides(self) -> dict[str, AnimationOverride]:
-        return dict(self._overrides)
+    def updated_frame_durations(self) -> dict[str, tuple[int, ...]]:
+        """仅返回本次编辑实际修改过的动作，避免无谓重写其余配置。"""
+        return {action: self._timelines[action] for action in self._changed_actions}
 
     def applied_summary(self) -> str:
         if self._current_action is None:
             return ""
-        override = self._effective_override(self._current_action)
-        return f"已应用：{self._current_action}，{_mode_label(override.mode)}，{_effective_total(self._package.animations[self._current_action], override)} ms"
+        return f"已保存：{self._current_action}，{_mode_label(self._modes[self._current_action])}，{sum(self._timelines[self._current_action])} ms"
 
     def _populate_action_table(self) -> None:
         self.action_table.setRowCount(len(self._package.animations))
         for row, (action, definition) in enumerate(self._package.animations.items()):
-            override = self._effective_override(action)
             values = (
                 action, _TRIGGER_TEXT.get(action, "自定义动作"), str(len(definition.frames)),
-                _mode_label(override.mode), f"{_effective_total(definition, override)} ms",
+                _mode_label(self._modes[action]), f"{sum(self._timelines[action])} ms",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -120,15 +121,14 @@ class AnimationEditorDialog(QDialog):
         action = str(self.action_table.item(items[0].row(), 0).data(Qt.ItemDataRole.UserRole))
         self._current_action = action
         definition = self._package.animations[action]
-        override = self._effective_override(action)
         self._loading = True
         try:
             with QSignalBlocker(self.total_radio), QSignalBlocker(self.per_frame_radio), QSignalBlocker(self.total_duration_spin):
-                self.total_radio.setChecked(override.mode == "total")
-                self.per_frame_radio.setChecked(override.mode == "per_frame")
-                self.total_duration_spin.setValue(_effective_total(definition, override))
+                self.total_radio.setChecked(self._modes[action] == "total")
+                self.per_frame_radio.setChecked(self._modes[action] == "per_frame")
+                self.total_duration_spin.setValue(sum(self._timelines[action]))
             self.base_duration_label.setText(f"{sum(_source_durations(definition))} ms")
-            self._populate_duration_table(_manual_durations(definition, override))
+            self._populate_duration_table(self._timelines[action])
             self._update_mode_widgets()
         finally:
             self._loading = False
@@ -137,10 +137,9 @@ class AnimationEditorDialog(QDialog):
         if self._loading or not checked or self._current_action is None:
             return
         action = self._current_action
-        existing = self._effective_override(action)
         mode = "total" if self.total_radio.isChecked() else "per_frame"
-        frames = existing.frame_durations_ms or _source_durations(self._package.animations[action])
-        self._overrides[action] = AnimationOverride(existing.speed_multiplier, frames, mode)
+        self._modes[action] = mode
+        self._changed_actions.add(action)
         self._update_mode_widgets()
         self._populate_action_table()
 
@@ -167,21 +166,17 @@ class AnimationEditorDialog(QDialog):
         if self._loading or self._current_action is None or not self.total_radio.isChecked():
             return
         action = self._current_action
-        existing = self._effective_override(action)
-        speed = sum(_source_durations(self._package.animations[action])) / total_duration
-        self._overrides[action] = AnimationOverride(speed, existing.frame_durations_ms, "total")
+        self._timelines[action] = _scaled_timeline(self._timelines[action], total_duration)
+        self._changed_actions.add(action)
         self._populate_action_table()
 
     def _duration_changed(self, _value: int) -> None:
         if self._loading or self._current_action is None or not self.per_frame_radio.isChecked():
             return
         action = self._current_action
-        existing = self._effective_override(action)
-        self._overrides[action] = AnimationOverride(1.0, self._table_durations(), "per_frame")
+        self._timelines[action] = self._table_durations()
+        self._changed_actions.add(action)
         self._populate_action_table()
-
-    def _effective_override(self, action: str) -> AnimationOverride:
-        return self._overrides.get(action, AnimationOverride())
 
     def _table_durations(self) -> tuple[int, ...]:
         return tuple(self.duration_table.cellWidget(row, 1).value() for row in range(self.duration_table.rowCount()))  # type: ignore[union-attr]
@@ -191,15 +186,19 @@ def _source_durations(definition: AnimationDefinition) -> tuple[int, ...]:
     return definition.frame_durations_ms or tuple(round(1000 / definition.fps) for _ in definition.frames)
 
 
-def _manual_durations(definition: AnimationDefinition, override: AnimationOverride) -> tuple[int, ...]:
-    if override.frame_durations_ms is not None and len(override.frame_durations_ms) == len(definition.frames):
-        return override.frame_durations_ms
-    return _source_durations(definition)
-
-
-def _effective_total(definition: AnimationDefinition, override: AnimationOverride) -> int:
-    durations = _manual_durations(definition, override) if override.mode == "per_frame" else _source_durations(definition)
-    return round(sum(durations) / (1 if override.mode == "per_frame" else override.speed_multiplier))
+def _scaled_timeline(source: tuple[int, ...], target_total: int) -> tuple[int, ...]:
+    target_total = max(len(source), target_total)
+    source_total = sum(source)
+    durations = [max(1, round(duration * target_total / source_total)) for duration in source]
+    difference = target_total - sum(durations)
+    index = len(durations) - 1
+    while difference:
+        adjustment = 1 if difference > 0 else -1
+        if durations[index] + adjustment > 0:
+            durations[index] += adjustment
+            difference -= adjustment
+        index = (index - 1) % len(durations)
+    return tuple(durations)
 
 
 def _mode_label(mode: str) -> str:

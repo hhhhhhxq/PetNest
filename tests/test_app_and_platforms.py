@@ -17,7 +17,7 @@ from petnest.app import PetNest
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
-from petnest.models.settings import AnimationOverride, Settings
+from petnest.models.settings import Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
 
@@ -133,33 +133,67 @@ def test_check_mode_can_load_bundled_sample_package() -> None:
     assert PetNest.check_installation() == 0
 
 
-def test_application_applies_saved_animation_override_to_loaded_package(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_application_migrates_legacy_animation_override_into_shareable_pet_json(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app
     settings_manager = SettingsManager(tmp_path / "settings.json")
-    settings_manager.save(Settings(animation_overrides={"sample_pet": {"idle": AnimationOverride(mode="total", speed_multiplier=1.5)}}))
+    settings_manager.path.write_text(json.dumps({
+        "schema_version": 5,
+        "animation_overrides": {
+            "sample_pet": {
+                "idle": {"mode": "per_frame", "speed_multiplier": 1.0, "frame_durations_ms": [200, 80, 120, 160]}
+            }
+        },
+    }), encoding="utf-8")
     create_sample_pet(tmp_path / "pets" / "sample_pet")
 
     application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
     qtbot.addWidget(application.window)
 
-    assert application.package.animations["idle"].speed_multiplier == 1.5
+    saved_package = json.loads((tmp_path / "pets" / "sample_pet" / "pet.json").read_text(encoding="utf-8"))
+    saved_settings = json.loads(settings_manager.path.read_text(encoding="utf-8"))
 
-
-def test_per_frame_mode_does_not_also_apply_total_speed(qtbot: pytest.QtBot, tmp_path: Path) -> None:
-    app = QApplication.instance() or QApplication([])
-    del app
-    settings_manager = SettingsManager(tmp_path / "settings.json")
-    settings_manager.save(Settings(animation_overrides={
-        "sample_pet": {"idle": AnimationOverride(mode="per_frame", speed_multiplier=2.0, frame_durations_ms=(200, 80, 120, 160))}
-    }))
-    create_sample_pet(tmp_path / "pets" / "sample_pet")
-
-    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
-    qtbot.addWidget(application.window)
-
-    assert application.package.animations["idle"].speed_multiplier == 1.0
     assert application.package.animations["idle"].frame_durations_ms == (200, 80, 120, 160)
+    assert saved_package["animations"]["idle"]["frame_durations_ms"] == [200, 80, 120, 160]
+    assert "animation_overrides" not in saved_settings
+
+
+def test_animation_editor_shows_a_clear_error_when_pet_json_cannot_be_written(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+
+    class _AcceptedEditor:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def exec(self) -> bool:
+            return True
+
+        def updated_frame_durations(self) -> dict[str, tuple[int, ...]]:
+            return {"idle": (200, 80, 120, 160)}
+
+        def applied_summary(self) -> str:
+            return "unused"
+
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr("petnest.app.AnimationEditorDialog", _AcceptedEditor)
+    monkeypatch.setattr(
+        application.action_synchronizer,
+        "update_frame_durations",
+        lambda *_args: (_ for _ in ()).throw(AnimationActionSyncError("访问被拒绝")),
+    )
+    monkeypatch.setattr("petnest.app.QMessageBox.critical", lambda _parent, title, message: messages.append((title, message)))
+
+    application.show_animation_editor_dialog()
+
+    assert messages == [("无法保存动画时长", f"未写入 {application.package.root / 'pet.json'}。\n原因：访问被拒绝")]
 
 
 def test_reload_current_pet_syncs_new_action_and_notifies_tray(qtbot: pytest.QtBot, tmp_path: Path) -> None:

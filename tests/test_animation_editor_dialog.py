@@ -8,12 +8,11 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from tests.test_pet_window import _package
-from petnest.models.settings import AnimationOverride
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 
 
-def test_editor_shows_total_mode_and_returns_its_override(qtbot: object, tmp_path: Path) -> None:
-    dialog = AnimationEditorDialog(_package(tmp_path), {"idle": AnimationOverride(mode="total", speed_multiplier=1.25)})
+def test_editor_shows_total_mode_and_returns_shareable_frame_durations(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
     qtbot.addWidget(dialog)
     dialog.show()
 
@@ -22,17 +21,16 @@ def test_editor_shows_total_mode_and_returns_its_override(qtbot: object, tmp_pat
     dialog.action_table.selectRow(0)
     assert dialog.total_radio.isChecked()
     assert "按总时长播放" in dialog.mode_status_label.text()
-    assert dialog.total_duration_spin.value() == 160
+    assert dialog.total_duration_spin.value() == 200
     dialog.total_duration_spin.setValue(100)
 
-    overrides = dialog.updated_overrides()
-    assert overrides["idle"].mode == "total"
-    assert overrides["idle"].speed_multiplier == 2.0
+    durations = dialog.updated_frame_durations()
+    assert durations["idle"] == (50, 50)
     assert dialog.applied_summary().endswith("100 ms")
 
 
 def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tmp_path: Path) -> None:
-    dialog = AnimationEditorDialog(_package(tmp_path), {})
+    dialog = AnimationEditorDialog(_package(tmp_path))
     qtbot.addWidget(dialog)
     dialog.show()
     dialog.action_table.selectRow(0)

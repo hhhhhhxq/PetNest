@@ -9,9 +9,9 @@ import sys
 
 from PySide6.QtCore import QPoint, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
-from petnest.core.animation_action_synchronizer import AnimationActionSynchronizer
+from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
 from petnest.core.package_loader import PackageLoader
 from petnest.core.settings_manager import SettingsManager
@@ -57,7 +57,9 @@ class PetNest:
         self.pets_root = pets_root or bundled_pets_directory()
         self.loader = PackageLoader()
         self.action_synchronizer = AnimationActionSynchronizer()
-        self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
+        discovered_packages = self.loader.discover(self.pets_root)
+        self._migrate_legacy_animation_overrides(discovered_packages)
+        self.packages = self.loader.discover(self.pets_root)
         if not self.packages:
             raise RuntimeError(f"未找到可用宠物包：{self.pets_root}")
         self.package = self._select_package(self.settings.current_pet_id)
@@ -142,7 +144,7 @@ class PetNest:
         try:
             original_config = self.action_synchronizer.snapshot_config_bytes(previous.root)
             sync_result = self.action_synchronizer.sync(previous.root)
-            reloaded = self._apply_animation_overrides(self.loader.load(previous.root))
+            reloaded = self.loader.load(previous.root)
             window_load_attempted = True
             self.window.load_package(reloaded)
             self.window.move(self.window.clamp_position(position))
@@ -195,7 +197,7 @@ class PetNest:
         """从本机文件导入成功后重新扫描，并立即切换到新宠物包。"""
         dialog = SpriteSheetImportDialog(self.pets_root, self.window)
         if dialog.exec() and dialog.imported_result is not None:
-            self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
+            self.packages = self.loader.discover(self.pets_root)
             self.switch_pet(dialog.imported_result.package_id)
 
     def open_pets_folder(self) -> None:
@@ -206,7 +208,7 @@ class PetNest:
     def refresh_pets(self) -> None:
         """重新扫描宠物目录，立即让手动放入的包出现在托盘菜单。"""
         current_id = self.package.identifier
-        self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
+        self.packages = self.loader.discover(self.pets_root)
         if self.tray is not None:
             self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
         if not any(item.identifier == current_id for item in self.packages):
@@ -216,13 +218,18 @@ class PetNest:
             self.tray.showMessage("PetNest", f"已发现 {len(self.packages)} 只宠物")
 
     def show_animation_editor_dialog(self) -> None:
-        """编辑当前包的本地播放覆盖，并在保存后立即重新载入。"""
-        dialog = AnimationEditorDialog(self.package, self.settings.animation_overrides.get(self.package.identifier, {}), self.window)
+        """编辑并保存当前宠物包的可分享动画时长。"""
+        dialog = AnimationEditorDialog(self.package, self.window)
         if dialog.exec():
-            overrides = {pet_id: dict(actions) for pet_id, actions in self.settings.animation_overrides.items()}
-            overrides[self.package.identifier] = dialog.updated_overrides()
-            self.settings = replace(self.settings, animation_overrides=overrides)
-            self.settings_manager.save(self.settings)
+            try:
+                self.action_synchronizer.update_frame_durations(self.package.root, dialog.updated_frame_durations())
+            except AnimationActionSyncError as error:
+                QMessageBox.critical(
+                    self.window,
+                    "无法保存动画时长",
+                    f"未写入 {self.package.root / 'pet.json'}。\n原因：{error}",
+                )
+                return
             if self.reload_current_pet() and self.tray is not None:
                 self.tray.showMessage("PetNest", dialog.applied_summary())
 
@@ -292,26 +299,54 @@ class PetNest:
     def _select_package(self, identifier: str | None) -> PetPackage:
         return next((item for item in self.packages if item.identifier == identifier), self.packages[0])
 
-    def _apply_animation_overrides(self, package: PetPackage) -> PetPackage:
-        overrides = self.settings.animation_overrides.get(package.identifier, {})
-        if not overrides:
-            return package
-        animations = {
-            name: replace(
-                definition,
-                speed_multiplier=1.0 if override.mode == "per_frame" else override.speed_multiplier,
-                frame_durations_ms=(
-                    override.frame_durations_ms
-                    if (
-                        override.mode == "per_frame"
-                        and override.frame_durations_ms is not None
-                        and len(override.frame_durations_ms) == len(definition.frames)
-                    )
-                    else definition.frame_durations_ms
-                ),
-            )
-            if (override := overrides.get(name)) is not None
-            else definition
-            for name, definition in package.animations.items()
-        }
-        return replace(package, animations=animations)
+    def _migrate_legacy_animation_overrides(self, packages: list[PetPackage]) -> None:
+        """将旧版本机动画覆盖一次性写进各宠物包，之后不再从设置读取。"""
+        legacy = self.settings.animation_overrides
+        if not legacy:
+            return
+        remaining = {pet_id: dict(actions) for pet_id, actions in legacy.items()}
+        for package in packages:
+            overrides = remaining.get(package.identifier)
+            if not overrides:
+                continue
+            timelines = {
+                action: self._legacy_timeline(package, action, override)
+                for action, override in overrides.items()
+                if action in package.animations
+            }
+            try:
+                self.action_synchronizer.update_frame_durations(package.root, timelines)
+            except AnimationActionSyncError:
+                LOGGER.exception("迁移旧动画时长失败：%s", package.identifier)
+                continue
+            remaining.pop(package.identifier, None)
+        self.settings = replace(self.settings, animation_overrides=remaining)
+        if not remaining:
+            self.settings_manager.save(self.settings)
+
+    @staticmethod
+    def _legacy_timeline(package: PetPackage, action: str, override: AnimationOverride) -> tuple[int, ...]:
+        definition = package.animations[action]
+        source = definition.frame_durations_ms or tuple(round(1000 / definition.fps) for _ in definition.frames)
+        if override.mode == "per_frame" and override.frame_durations_ms is not None and len(override.frame_durations_ms) == len(source):
+            return override.frame_durations_ms
+        target_total = round(sum(source) / override.speed_multiplier)
+        return _scaled_timeline(source, target_total)
+
+
+def _scaled_timeline(source: tuple[int, ...], target_total: int) -> tuple[int, ...]:
+    """按原有节奏缩放时间线，并在整数毫秒内尽量保持目标总时长。"""
+    if not source:
+        return ()
+    source_total = sum(source)
+    target_total = max(len(source), target_total)
+    durations = [max(1, round(duration * target_total / source_total)) for duration in source]
+    difference = target_total - sum(durations)
+    index = len(durations) - 1
+    while difference:
+        adjustment = 1 if difference > 0 else -1
+        if durations[index] + adjustment > 0:
+            durations[index] += adjustment
+            difference -= adjustment
+        index = (index - 1) % len(durations)
+    return tuple(durations)
