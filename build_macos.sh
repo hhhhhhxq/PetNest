@@ -5,4 +5,4 @@ if [ ! -x ".venv/bin/python" ]; then
   exit 1
 fi
 . .venv/bin/activate
-pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets:pets" -m petnest
+pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets:pets" --add-data "assets:assets" -m petnest

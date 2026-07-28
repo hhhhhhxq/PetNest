@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
+import sys
 
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from .pet_window import PetWindow
+
+
+def petnest_icon() -> QIcon:
+    """加载项目图标；缺失资源时安全回退为 Qt 默认图标。"""
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    icon = QIcon(str(root / "assets" / "icons" / "petnest.ico"))
+    if not icon.isNull():
+        return icon
+    return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
 
 
 class PetTrayIcon(QSystemTrayIcon):
@@ -25,8 +36,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_settings: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
-        icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-        super().__init__(QIcon(icon), window)
+        super().__init__(petnest_icon(), window)
         self.window = window
         self._on_quit = on_quit
         self._on_switch = on_switch

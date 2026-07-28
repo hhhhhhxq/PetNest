@@ -5,4 +5,4 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 call .venv\Scripts\activate.bat
-pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets;pets" -m petnest
+pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets;pets" --add-data "assets;assets" -m petnest
