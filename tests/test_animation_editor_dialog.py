@@ -12,20 +12,23 @@ from petnest.models.settings import AnimationOverride
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 
 
-def test_editor_uses_total_duration_as_simple_control_and_returns_local_override(qtbot: object, tmp_path: Path) -> None:
-    dialog = AnimationEditorDialog(_package(tmp_path), {"idle": AnimationOverride(1.25, (200, 80))})
+def test_editor_shows_total_mode_and_returns_its_override(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path), {"idle": AnimationOverride(mode="total", speed_multiplier=1.25)})
     qtbot.addWidget(dialog)
     dialog.show()
 
     assert dialog.action_table.rowCount() == 5
     assert "默认待机" in dialog.action_table.item(0, 1).text()
     dialog.action_table.selectRow(0)
-    assert dialog.total_duration_spin.value() == 224
-    dialog.total_duration_spin.setValue(140)
+    assert dialog.total_radio.isChecked()
+    assert "按总时长播放" in dialog.mode_status_label.text()
+    assert dialog.total_duration_spin.value() == 160
+    dialog.total_duration_spin.setValue(100)
 
     overrides = dialog.updated_overrides()
+    assert overrides["idle"].mode == "total"
     assert overrides["idle"].speed_multiplier == 2.0
-    assert overrides["idle"].frame_durations_ms == (200, 80)
+    assert dialog.applied_summary().endswith("100 ms")
 
 
 def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tmp_path: Path) -> None:
@@ -34,10 +37,11 @@ def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tm
     dialog.show()
     dialog.action_table.selectRow(0)
 
-    assert not dialog.advanced_frame_button.isChecked()
-    dialog.advanced_frame_button.click()
+    assert dialog.total_radio.isChecked()
+    dialog.per_frame_radio.click()
+    assert not dialog.total_duration_spin.isEnabled()
     assert dialog.duration_table.isVisible()
 
     dialog.action_table.selectRow(1)
-    assert not dialog.advanced_frame_button.isChecked()
+    assert dialog.total_radio.isChecked()
     assert dialog.duration_table.isHidden()

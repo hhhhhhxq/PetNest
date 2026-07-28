@@ -81,6 +81,17 @@ class SettingsManager:
             version = 2
         if version == 2:
             migrated.setdefault("animation_overrides", {})
+            migrated["schema_version"] = 3
+            version = 3
+        if version == 3:
+            raw_overrides = migrated.get("animation_overrides")
+            if isinstance(raw_overrides, dict):
+                for actions in raw_overrides.values():
+                    if not isinstance(actions, dict):
+                        continue
+                    for override in actions.values():
+                        if isinstance(override, dict) and "mode" not in override:
+                            override["mode"] = "per_frame" if override.get("frame_durations_ms") is not None else "total"
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

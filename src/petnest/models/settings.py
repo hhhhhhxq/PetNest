@@ -12,13 +12,14 @@ class AnimationOverride:
 
     speed_multiplier: float = 1.0
     frame_durations_ms: tuple[int, ...] | None = None
+    mode: str = "total"
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -64,6 +65,7 @@ def _animation_overrides(value: object) -> dict[str, dict[str, AnimationOverride
                 continue
             speed = raw_override.get("speed_multiplier", 1.0)
             durations = raw_override.get("frame_durations_ms")
+            mode = raw_override.get("mode")
             if isinstance(speed, bool) or not isinstance(speed, (int, float)) or speed <= 0:
                 continue
             if durations is not None:
@@ -74,7 +76,11 @@ def _animation_overrides(value: object) -> dict[str, dict[str, AnimationOverride
                 parsed_durations: tuple[int, ...] | None = tuple(durations)
             else:
                 parsed_durations = None
-            action_overrides[action] = AnimationOverride(float(speed), parsed_durations)
+            if mode is None:
+                mode = "per_frame" if parsed_durations is not None else "total"
+            if mode not in {"total", "per_frame"}:
+                continue
+            action_overrides[action] = AnimationOverride(float(speed), parsed_durations, str(mode))
         if action_overrides:
             overrides[pet_id] = action_overrides
     return overrides

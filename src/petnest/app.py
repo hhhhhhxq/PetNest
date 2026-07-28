@@ -164,7 +164,8 @@ class PetNest:
             overrides[self.package.identifier] = dialog.updated_overrides()
             self.settings = replace(self.settings, animation_overrides=overrides)
             self.settings_manager.save(self.settings)
-            self.reload_current_pet()
+            if self.reload_current_pet() and self.tray is not None:
+                self.tray.showMessage("PetNest", dialog.applied_summary())
 
     def shutdown(self) -> None:
         """按可控顺序停止服务、保存状态并请求 Qt 事件循环退出。"""
@@ -213,10 +214,14 @@ class PetNest:
         animations = {
             name: replace(
                 definition,
-                speed_multiplier=override.speed_multiplier,
+                speed_multiplier=1.0 if override.mode == "per_frame" else override.speed_multiplier,
                 frame_durations_ms=(
                     override.frame_durations_ms
-                    if override.frame_durations_ms is not None and len(override.frame_durations_ms) == len(definition.frames)
+                    if (
+                        override.mode == "per_frame"
+                        and override.frame_durations_ms is not None
+                        and len(override.frame_durations_ms) == len(definition.frames)
+                    )
                     else definition.frame_durations_ms
                 ),
             )

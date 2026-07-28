@@ -41,7 +41,20 @@ def test_old_settings_are_migrated_to_current_schema(tmp_path) -> None:
 def test_animation_overrides_round_trip_without_changing_pet_files(tmp_path) -> None:
     path = tmp_path / "settings.json"
     manager = SettingsManager(path)
-    manager.save(Settings(animation_overrides={"cat": {"idle": AnimationOverride(1.25, (200, 80))}}))
+    manager.save(Settings(animation_overrides={"cat": {"idle": AnimationOverride(mode="per_frame", frame_durations_ms=(200, 80))}}))
 
     loaded = SettingsManager(path).load()
-    assert loaded.animation_overrides["cat"]["idle"] == AnimationOverride(1.25, (200, 80))
+    assert loaded.animation_overrides["cat"]["idle"] == AnimationOverride(mode="per_frame", frame_durations_ms=(200, 80))
+
+
+def test_schema_three_total_duration_override_migrates_without_losing_speed(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "schema_version": 3,
+        "animation_overrides": {"cat": {"idle": {"speed_multiplier": 0.5, "frame_durations_ms": None}}},
+    }), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.animation_overrides["cat"]["idle"].mode == "total"
+    assert loaded.animation_overrides["cat"]["idle"].speed_multiplier == 0.5

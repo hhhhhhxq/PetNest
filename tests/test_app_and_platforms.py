@@ -82,10 +82,26 @@ def test_application_applies_saved_animation_override_to_loaded_package(qtbot: p
     app = QApplication.instance() or QApplication([])
     del app
     settings_manager = SettingsManager(tmp_path / "settings.json")
-    settings_manager.save(Settings(animation_overrides={"sample_pet": {"idle": AnimationOverride(1.5)}}))
+    settings_manager.save(Settings(animation_overrides={"sample_pet": {"idle": AnimationOverride(mode="total", speed_multiplier=1.5)}}))
     create_sample_pet(tmp_path / "pets" / "sample_pet")
 
     application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
     qtbot.addWidget(application.window)
 
     assert application.package.animations["idle"].speed_multiplier == 1.5
+
+
+def test_per_frame_mode_does_not_also_apply_total_speed(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(animation_overrides={
+        "sample_pet": {"idle": AnimationOverride(mode="per_frame", speed_multiplier=2.0, frame_durations_ms=(200, 80, 120, 160))}
+    }))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+
+    assert application.package.animations["idle"].speed_multiplier == 1.0
+    assert application.package.animations["idle"].frame_durations_ms == (200, 80, 120, 160)
