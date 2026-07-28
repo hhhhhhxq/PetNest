@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout
+from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QSpinBox
 
 from petnest.models.settings import Settings
 
@@ -25,9 +25,22 @@ class SettingsDialog(QDialog):
         self.always_on_top_input.setChecked(settings.always_on_top)
         self.mouse_interaction_input = QCheckBox(self)
         self.mouse_interaction_input.setChecked(settings.mouse_interaction_enabled)
+        self.system_idle_input = QCheckBox(self)
+        self.system_idle_input.setChecked(settings.system_idle_enabled)
+        self.system_bored_input = QSpinBox(self)
+        self.system_bored_input.setRange(1, 86_400)
+        self.system_bored_input.setSuffix(" 秒")
+        self.system_bored_input.setValue(settings.system_bored_seconds)
+        self.system_sleep_input = QSpinBox(self)
+        self.system_sleep_input.setRange(2, 86_400)
+        self.system_sleep_input.setSuffix(" 秒")
+        self.system_sleep_input.setValue(settings.system_sleep_seconds)
         layout.addRow("缩放", self.scale_input)
         layout.addRow("始终置顶", self.always_on_top_input)
         layout.addRow("启用鼠标交互", self.mouse_interaction_input)
+        layout.addRow("启用系统空闲动作", self.system_idle_input)
+        layout.addRow("无操作后无聊", self.system_bored_input)
+        layout.addRow("无操作后睡觉", self.system_sleep_input)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -40,4 +53,7 @@ class SettingsDialog(QDialog):
             scale=self.scale_input.value(),
             always_on_top=self.always_on_top_input.isChecked(),
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
+            system_idle_enabled=self.system_idle_input.isChecked(),
+            system_bored_seconds=self.system_bored_input.value(),
+            system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),
         )

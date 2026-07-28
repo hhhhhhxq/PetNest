@@ -193,6 +193,12 @@ python tools/emit_event.py agent.error --source script
 
 `payload` 不会被 PetNest 默认显示或写入日志；建议只传递非敏感状态信息。
 
+## 系统空闲动作
+
+在「设置」中启用「系统空闲动作」后，PetNest 每秒通过系统接口读取最后一次鼠标或键盘输入的时间差；它不会记录按键、鼠标位置或任何输入内容。默认规则是：30 秒无操作触发 `bored`，3 分钟无操作触发 `sleep`，恢复系统输入触发一次 `wake`。
+
+宠物包可在 `animations` 中提供 `bored`、`sleep`、`wake` 动作；缺少其中任何资源时会安全回退到 `idle`。该功能在 Windows 使用全系统空闲时间，不限于宠物窗口；其他平台暂不支持时不会影响桌宠正常运行。
+
 ## 打包
 
 第一阶段使用 PyInstaller `--onedir` 并带入 `pets/` 资源。Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。

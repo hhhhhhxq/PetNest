@@ -92,6 +92,11 @@ class SettingsManager:
                     for override in actions.values():
                         if isinstance(override, dict) and "mode" not in override:
                             override["mode"] = "per_frame" if override.get("frame_durations_ms") is not None else "total"
+            migrated["schema_version"] = 4
+            version = 4
+        if version == 4:
+            migrated.setdefault("system_bored_seconds", 30)
+            migrated.setdefault("system_sleep_seconds", 180)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

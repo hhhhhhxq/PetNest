@@ -27,6 +27,7 @@ _TRIGGER_TEXT = {
     "idle": "默认待机", "drag": "拖动宠物时", "click": "鼠标点击时", "drop": "结束拖动时",
     "error": "任务报错时", "waiting": "任务等待时", "working": "任务工作时",
     "hover": "鼠标移入时", "codex_running_left": "外部事件可触发",
+    "bored": "系统长时间无输入时", "sleep": "系统无人操作更久时", "wake": "系统恢复输入时",
 }
 
 

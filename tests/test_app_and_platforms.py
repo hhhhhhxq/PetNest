@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -15,6 +16,24 @@ from petnest.core.settings_manager import SettingsManager
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
+
+
+class _IdleAdapter:
+    def __init__(self, idle_seconds: float = 0) -> None:
+        self.idle_seconds = idle_seconds
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def get_idle_seconds(self) -> float:
+        return self.idle_seconds
+
+    def register_startup(self, enabled: bool) -> bool:
+        del enabled
+        return False
 
 
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
@@ -105,3 +124,61 @@ def test_per_frame_mode_does_not_also_apply_total_speed(qtbot: pytest.QtBot, tmp
 
     assert application.package.animations["idle"].speed_multiplier == 1.0
     assert application.package.animations["idle"].frame_durations_ms == (200, 80, 120, 160)
+
+
+def test_application_publishes_system_idle_events_only_on_boundaries(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(system_idle_enabled=True, system_bored_seconds=30, system_sleep_seconds=180))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    adapter = _IdleAdapter()
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=settings_manager, platform_adapter=adapter, enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    events: list[str] = []
+    application.event_bus.subscribe(lambda event: events.append(event.event_name))
+
+    adapter.idle_seconds = 30
+    application._check_system_idle()
+    adapter.idle_seconds = 180
+    application._check_system_idle()
+    adapter.idle_seconds = 1
+    application._check_system_idle()
+
+    assert events == ["system.bored", "system.sleep", "system.wake"]
+
+
+def test_enabling_system_idle_in_settings_starts_monitor_immediately(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"),
+        platform_adapter=_IdleAdapter(), enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.apply_settings(replace(application.settings, system_idle_enabled=True))
+
+    assert application.system_idle_timer.isActive()
+
+
+def test_unrelated_settings_change_does_not_republish_current_idle_state(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    adapter = _IdleAdapter(30)
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"),
+        platform_adapter=adapter, enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    events: list[str] = []
+    application.event_bus.subscribe(lambda event: events.append(event.event_name))
+    application.apply_settings(replace(application.settings, system_idle_enabled=True))
+
+    application.apply_settings(replace(application.settings, scale=1.1))
+
+    assert events == ["system.bored"]

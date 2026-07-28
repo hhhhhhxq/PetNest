@@ -7,12 +7,13 @@ import logging
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtWidgets import QApplication
 
 from petnest.core.event_bus import EventBus
 from petnest.core.package_loader import PackageLoader
 from petnest.core.settings_manager import SettingsManager
+from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.models.event import PetEvent
@@ -62,6 +63,10 @@ class PetNest:
         self._restore_window_settings()
         self.event_bus.subscribe(self.window.handle_pet_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
+        self._system_idle_monitor = self._new_system_idle_monitor(self.settings)
+        self.system_idle_timer = QTimer(self.window)
+        self.system_idle_timer.setInterval(1_000)
+        self.system_idle_timer.timeout.connect(self._check_system_idle)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -97,6 +102,7 @@ class PetNest:
         self.platform_adapter.start()
         if self.settings.external_event_server_enabled:
             self._start_external_server()
+        self._configure_system_idle_timer()
         if self.tray is not None:
             self.tray.show()
         self.window.show()
@@ -136,11 +142,19 @@ class PetNest:
 
     def apply_settings(self, settings: Settings) -> None:
         """立即应用可安全即时修改的设置，并持久化其非敏感值。"""
+        idle_configuration_changed = (
+            settings.system_idle_enabled != self.settings.system_idle_enabled
+            or settings.system_bored_seconds != self.settings.system_bored_seconds
+            or settings.system_sleep_seconds != self.settings.system_sleep_seconds
+        )
         self.window.set_scale(settings.scale)
         self.window.set_paused(settings.animation_paused)
         self.window.set_always_on_top(settings.always_on_top)
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
+        if idle_configuration_changed:
+            self._system_idle_monitor = self._new_system_idle_monitor(settings)
+            self._configure_system_idle_timer()
         self.settings_manager.save(settings)
 
     def show_settings_dialog(self) -> None:
@@ -175,6 +189,7 @@ class PetNest:
         if self.external_server is not None:
             self.external_server.stop()
             self.external_server = None
+        self.system_idle_timer.stop()
         self.platform_adapter.stop()
         self._save_window_position(self.window.pos())
         if self.tray is not None:
@@ -188,6 +203,31 @@ class PetNest:
             self.external_server = server
         else:
             LOGGER.warning("本地外部事件服务未启用，桌宠仍可正常使用")
+
+    def _configure_system_idle_timer(self) -> None:
+        if self.settings.system_idle_enabled:
+            self.system_idle_timer.start()
+            self._check_system_idle()
+        else:
+            self.system_idle_timer.stop()
+            self._system_idle_monitor.reset()
+
+    def _check_system_idle(self) -> None:
+        if not self.settings.system_idle_enabled:
+            return
+        idle_seconds = self.platform_adapter.get_idle_seconds()
+        if idle_seconds is None:
+            return
+        event_name = self._system_idle_monitor.update(idle_seconds)
+        if event_name is not None:
+            self.event_bus.publish(PetEvent(event_name, source="system"))
+
+    @staticmethod
+    def _new_system_idle_monitor(settings: Settings) -> SystemIdleMonitor:
+        return SystemIdleMonitor(
+            bored_seconds=settings.system_bored_seconds,
+            sleep_seconds=settings.system_sleep_seconds,
+        )
 
     def _restore_window_settings(self) -> None:
         if self.settings.window_x is not None and self.settings.window_y is not None:

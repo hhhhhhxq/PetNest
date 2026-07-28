@@ -196,8 +196,9 @@ class SpriteSheetImporter:
             "bindings": {
                 "mouse.enter": "hover", "mouse.click": "click", "mouse.drag_start": "drag", "mouse.drag_end": "drop",
                 "agent.working": "working", "agent.waiting": "waiting", "agent.success": "success", "agent.error": "error",
+                "system.bored": "bored", "system.sleep": "sleep", "system.wake": "wake",
             },
-            "fallbacks": {"success": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
+            "fallbacks": {"success": ["idle"], "bored": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
             "import_metadata": {"source_format": "codex_8x9", "selected_columns_by_action": selected_by_action},
         }
 

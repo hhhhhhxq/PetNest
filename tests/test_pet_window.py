@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.state_machine import PetStateMachine
+from petnest.models.event import PetEvent
 from petnest.models.pet_package import (
     AnimationDefinition,
     Canvas,
@@ -248,3 +249,10 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     tray = PetTrayIcon(window, on_import=lambda: None)
 
     assert tray.import_action.text() == "导入精灵图…"
+
+
+def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    machine = PetWindow._make_state_machine(package)
+
+    assert machine.handle(PetEvent("system.sleep", source="system")).current_action == "idle"

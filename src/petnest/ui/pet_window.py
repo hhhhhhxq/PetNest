@@ -273,7 +273,21 @@ class PetWindow(QWidget):
 
     @staticmethod
     def _make_state_machine(package: PetPackage) -> PetStateMachine:
-        return PetStateMachine(package.animations, package.bindings, package.fallbacks)
+        standard_bindings = {
+            "system.bored": "bored",
+            "system.sleep": "sleep",
+            "system.wake": "wake",
+        }
+        standard_fallbacks = {
+            "bored": ("idle",),
+            "sleep": ("idle",),
+            "wake": ("idle",),
+        }
+        return PetStateMachine(
+            package.animations,
+            {**standard_bindings, **package.bindings},
+            {**standard_fallbacks, **package.fallbacks},
+        )
 
 
 def _pixmap_from_pillow(frame: Image.Image) -> QPixmap:

@@ -22,6 +22,7 @@ class EventName(StrEnum):
     APP_RESUME = "app.resume"
     APP_QUIT = "app.quit"
     SYSTEM_IDLE = "system.idle"
+    SYSTEM_BORED = "system.bored"
     SYSTEM_ACTIVE = "system.active"
     SYSTEM_LOCK = "system.lock"
     SYSTEM_UNLOCK = "system.unlock"

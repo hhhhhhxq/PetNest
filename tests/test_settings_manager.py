@@ -58,3 +58,11 @@ def test_schema_three_total_duration_override_migrates_without_losing_speed(tmp_
 
     assert loaded.animation_overrides["cat"]["idle"].mode == "total"
     assert loaded.animation_overrides["cat"]["idle"].speed_multiplier == 0.5
+
+
+def test_system_idle_thresholds_round_trip(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    SettingsManager(path).save(Settings(system_idle_enabled=True, system_bored_seconds=30, system_sleep_seconds=180))
+
+    loaded = SettingsManager(path).load()
+    assert (loaded.system_idle_enabled, loaded.system_bored_seconds, loaded.system_sleep_seconds) == (True, 30, 180)

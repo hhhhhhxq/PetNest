@@ -33,8 +33,10 @@ class WindowsPlatformAdapter(PlatformEventAdapter):
             info.cbSize = ctypes.sizeof(LastInputInfo)
             if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
                 return None
-            tick_count = ctypes.windll.kernel32.GetTickCount()
-            return max(0.0, (int(tick_count) - int(info.dwTime)) / 1000.0)
+            get_tick_count = ctypes.windll.kernel32.GetTickCount
+            get_tick_count.restype = wintypes.DWORD
+            tick_count = get_tick_count()
+            return _elapsed_milliseconds(int(tick_count), int(info.dwTime)) / 1000.0
         except (AttributeError, OSError):
             LOGGER.warning("无法读取 Windows 系统空闲时间", exc_info=True)
             return None
@@ -43,3 +45,8 @@ class WindowsPlatformAdapter(PlatformEventAdapter):
         del enabled
         LOGGER.info("Windows 开机启动尚未在第一阶段实现")
         return False
+
+
+def _elapsed_milliseconds(current_tick: int, last_input_tick: int) -> int:
+    """以无符号 32 位减法计算 GetTickCount 的回绕间隔。"""
+    return (current_tick - last_input_tick) & 0xFFFFFFFF

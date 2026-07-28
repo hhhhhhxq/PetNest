@@ -49,7 +49,9 @@ def test_importer_splits_all_rows_and_generates_a_valid_configured_package(tmp_p
     assert len(package.animations["idle"].frames) == 8
     assert len(package.animations["working"].frames) == 8
     assert package.bindings["agent.success"] == "success"
+    assert package.bindings["system.bored"] == "bored"
     assert package.fallbacks["success"] == ("idle",)
+    assert package.fallbacks["sleep"] == ("idle",)
     assert (result.package_root / "animations" / "codex_running_left" / "008.png").is_file()
 
 
