@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer
+from PySide6.QtGui import QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
     QRadioButton,
     QSpinBox,
     QTableWidget,
@@ -34,7 +39,7 @@ class AnimationEditorDialog(QDialog):
     def __init__(self, package: PetPackage, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"编辑动画时长 — {package.name}")
-        self.resize(720, 560)
+        self.resize(900, 620)
         self._package = package
         self._timelines = {action: _source_durations(definition) for action, definition in package.animations.items()}
         self._modes = {
@@ -44,6 +49,12 @@ class AnimationEditorDialog(QDialog):
         self._changed_actions: set[str] = set()
         self._current_action: str | None = None
         self._loading = False
+        self._duration_spins: list[QSpinBox] = []
+        self._preview_pixmaps: dict[str, tuple[QPixmap, ...]] = {}
+        self.preview_frame_index = 0
+        self._preview_paused = False
+        self.preview_timer = QTimer(self)
+        self.preview_timer.timeout.connect(self._advance_preview)
 
         root = QVBoxLayout(self)
         root.addWidget(QLabel("选择一种编辑方式；保存后会写入 pet.json 并自动重载当前宠物。", self))
@@ -78,9 +89,26 @@ class AnimationEditorDialog(QDialog):
         root.addLayout(controls)
 
         root.addWidget(self.per_frame_radio)
-        self.duration_table = QTableWidget(0, 2, self)
-        self.duration_table.setHorizontalHeaderLabels(("帧", "时长（毫秒）"))
-        root.addWidget(self.duration_table)
+        editor_row = QHBoxLayout()
+        self.frame_list = QListWidget(self)
+        self.frame_list.setMinimumWidth(320)
+        self.frame_list.setSpacing(4)
+        self.frame_list.itemClicked.connect(self._select_preview_frame)
+        editor_row.addWidget(self.frame_list, 1)
+
+        preview_column = QVBoxLayout()
+        preview_column.addWidget(QLabel("实时动作预览", self))
+        self.preview_label = QLabel("暂无可预览的帧", self)
+        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_label.setMinimumSize(300, 300)
+        self.preview_label.setStyleSheet("background: #eef1f5; border: 1px solid #c6cbd3; border-radius: 8px;")
+        preview_column.addWidget(self.preview_label, 1)
+        self.preview_play_button = QPushButton("暂停预览", self)
+        self.preview_play_button.clicked.connect(self._toggle_preview)
+        preview_column.addWidget(self.preview_play_button)
+        editor_row.addLayout(preview_column, 1)
+        root.addLayout(editor_row, 2)
+        self.duration_table = self.frame_list
 
         self.apply_hint_label = QLabel("时长会随宠物文件夹一起分享。", self)
         root.addWidget(self.apply_hint_label)
@@ -128,10 +156,11 @@ class AnimationEditorDialog(QDialog):
                 self.per_frame_radio.setChecked(self._modes[action] == "per_frame")
                 self.total_duration_spin.setValue(sum(self._timelines[action]))
             self.base_duration_label.setText(f"{sum(_source_durations(definition))} ms")
-            self._populate_duration_table(self._timelines[action])
+            self._populate_frame_list(action)
             self._update_mode_widgets()
         finally:
             self._loading = False
+        self._restart_preview()
 
     def _mode_changed(self, checked: bool) -> None:
         if self._loading or not checked or self._current_action is None:
@@ -147,20 +176,37 @@ class AnimationEditorDialog(QDialog):
         total_mode = self.total_radio.isChecked()
         self.total_duration_spin.setEnabled(total_mode)
         self.base_duration_label.setVisible(total_mode)
-        self.duration_table.setVisible(not total_mode)
+        self.frame_list.setVisible(not total_mode)
         self.mode_status_label.setText(
             "当前方式：按总时长播放（仅缩放原有节奏）" if total_mode else "当前方式：手动逐帧播放（忽略总时长缩放）"
         )
 
-    def _populate_duration_table(self, durations: tuple[int, ...]) -> None:
-        self.duration_table.setRowCount(len(durations))
-        for row, duration in enumerate(durations):
-            self.duration_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-            spin = QSpinBox(self.duration_table)
+    def _populate_frame_list(self, action: str) -> None:
+        self.frame_list.clear()
+        self._duration_spins.clear()
+        for index, (path, duration) in enumerate(zip(self._package.animations[action].frames, self._timelines[action], strict=True)):
+            pixmap = self._pixmaps_for(action)[index]
+            item = QListWidgetItem(QIcon(pixmap), "")
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setSizeHint(QSize(0, 84))
+            row = QWidget(self.frame_list)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(6, 4, 6, 4)
+            thumbnail = QLabel(row)
+            thumbnail.setPixmap(pixmap.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            thumbnail.setFixedSize(76, 76)
+            thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            row_layout.addWidget(thumbnail)
+            row_layout.addWidget(QLabel(f"第 {index + 1} 帧", row))
+            spin = QSpinBox(row)
             spin.setRange(1, 60_000)
             spin.setValue(duration)
             spin.valueChanged.connect(self._duration_changed)
-            self.duration_table.setCellWidget(row, 1, spin)
+            spin.setSuffix(" ms")
+            row_layout.addWidget(spin)
+            self._duration_spins.append(spin)
+            self.frame_list.addItem(item)
+            self.frame_list.setItemWidget(item, row)
 
     def _total_duration_changed(self, total_duration: int) -> None:
         if self._loading or self._current_action is None or not self.total_radio.isChecked():
@@ -168,7 +214,9 @@ class AnimationEditorDialog(QDialog):
         action = self._current_action
         self._timelines[action] = _scaled_timeline(self._timelines[action], total_duration)
         self._changed_actions.add(action)
+        self._populate_frame_list(action)
         self._populate_action_table()
+        self._restart_preview()
 
     def _duration_changed(self, _value: int) -> None:
         if self._loading or self._current_action is None or not self.per_frame_radio.isChecked():
@@ -177,9 +225,73 @@ class AnimationEditorDialog(QDialog):
         self._timelines[action] = self._table_durations()
         self._changed_actions.add(action)
         self._populate_action_table()
+        self._restart_preview()
 
     def _table_durations(self) -> tuple[int, ...]:
-        return tuple(self.duration_table.cellWidget(row, 1).value() for row in range(self.duration_table.rowCount()))  # type: ignore[union-attr]
+        return tuple(spin.value() for spin in self._duration_spins)
+
+    def _pixmaps_for(self, action: str) -> tuple[QPixmap, ...]:
+        cached = self._preview_pixmaps.get(action)
+        if cached is None:
+            cached = tuple(QPixmap(str(path)) for path in self._package.animations[action].frames)
+            self._preview_pixmaps[action] = cached
+        return cached
+
+    def _restart_preview(self) -> None:
+        if self._current_action is None:
+            return
+        self.preview_frame_index = 0
+        self._preview_paused = False
+        self.preview_play_button.setText("暂停预览")
+        self._render_preview()
+        self.preview_timer.start(self._timelines[self._current_action][0])
+
+    def _advance_preview(self) -> None:
+        if self._current_action is None:
+            return
+        self.preview_frame_index = (self.preview_frame_index + 1) % len(self._timelines[self._current_action])
+        self._render_preview()
+        self.preview_timer.start(self._timelines[self._current_action][self.preview_frame_index])
+
+    def _render_preview(self) -> None:
+        if self._current_action is None:
+            return
+        pixmap = self._pixmaps_for(self._current_action)[self.preview_frame_index]
+        if pixmap.isNull():
+            self.preview_label.setText("无法读取此帧预览")
+            self.preview_label.setPixmap(QPixmap())
+        else:
+            available = self.preview_label.contentsRect().size()
+            self.preview_label.setText("")
+            self.preview_label.setPixmap(
+                pixmap.scaled(available, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            )
+        if self.frame_list.count():
+            self.frame_list.setCurrentRow(self.preview_frame_index)
+
+    def _select_preview_frame(self, item: QListWidgetItem) -> None:
+        self.preview_timer.stop()
+        self._preview_paused = True
+        self.preview_play_button.setText("播放预览")
+        self.preview_frame_index = int(item.data(Qt.ItemDataRole.UserRole))
+        self._render_preview()
+
+    def _toggle_preview(self) -> None:
+        if self._current_action is None:
+            return
+        if self._preview_paused:
+            self._preview_paused = False
+            self.preview_play_button.setText("暂停预览")
+            self.preview_timer.start(self._timelines[self._current_action][self.preview_frame_index])
+        else:
+            self.preview_timer.stop()
+            self._preview_paused = True
+            self.preview_play_button.setText("播放预览")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self.preview_timer.stop()
+        self._preview_pixmaps.clear()
+        super().closeEvent(event)
 
 
 def _source_durations(definition: AnimationDefinition) -> tuple[int, ...]:

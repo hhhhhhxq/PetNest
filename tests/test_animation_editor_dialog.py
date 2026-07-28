@@ -7,6 +7,8 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+
 from tests.test_pet_window import _package
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 
@@ -43,3 +45,40 @@ def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tm
     dialog.action_table.selectRow(1)
     assert dialog.total_radio.isChecked()
     assert dialog.duration_table.isHidden()
+
+
+def test_per_frame_editor_shows_a_thumbnail_for_each_animation_frame(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.per_frame_radio.click()
+
+    assert dialog.frame_list.count() == len(dialog._package.animations["idle"].frames)
+    assert not dialog.frame_list.item(0).icon().isNull()
+    assert dialog.frame_list.item(1).data(Qt.ItemDataRole.UserRole) == 1
+
+
+def test_preview_loops_current_timeline_and_restarts_after_duration_change(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.total_duration_spin.setValue(100)
+
+    assert dialog.preview_frame_index == 0
+    assert dialog.preview_timer.interval() == 50
+    dialog._advance_preview()
+    assert dialog.preview_frame_index == 1
+
+
+def test_clicking_thumbnail_pauses_preview_on_that_frame_and_close_stops_timer(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.per_frame_radio.click()
+
+    dialog.frame_list.itemClicked.emit(dialog.frame_list.item(1))
+
+    assert dialog.preview_frame_index == 1
+    assert not dialog.preview_timer.isActive()
+    dialog.close()
+    assert not dialog.preview_timer.isActive()
