@@ -95,3 +95,17 @@ def test_preview_highlight_does_not_change_the_frame_list_selection(qtbot: objec
 
     assert dialog.preview_frame_index == 1
     assert dialog.frame_list.currentRow() == 0
+
+
+def test_preview_moves_highlight_between_only_the_previous_and_current_rows(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.per_frame_radio.click()
+
+    assert dialog._highlighted_frame_index == 0
+    dialog._advance_preview()
+
+    assert dialog._highlighted_frame_index == 1
+    assert dialog.frame_list.itemWidget(dialog.frame_list.item(0)).styleSheet() == ""
+    assert "background" in dialog.frame_list.itemWidget(dialog.frame_list.item(1)).styleSheet()

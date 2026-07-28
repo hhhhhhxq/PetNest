@@ -31,6 +31,7 @@ _TRIGGER_TEXT = {
     "hover": "鼠标移入时", "codex_running_left": "外部事件可触发",
     "bored": "系统长时间无输入时", "sleep": "系统无人操作更久时", "wake": "系统恢复输入时",
 }
+_PREVIEW_HIGHLIGHT_STYLE = "background: #dcecff; border: 1px solid #5b8dd9; border-radius: 5px;"
 
 
 class AnimationEditorDialog(QDialog):
@@ -52,6 +53,7 @@ class AnimationEditorDialog(QDialog):
         self._duration_spins: list[QSpinBox] = []
         self._preview_pixmaps: dict[str, tuple[QPixmap, ...]] = {}
         self.preview_frame_index = 0
+        self._highlighted_frame_index: int | None = None
         self._preview_paused = False
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self._advance_preview)
@@ -184,6 +186,7 @@ class AnimationEditorDialog(QDialog):
     def _populate_frame_list(self, action: str) -> None:
         self.frame_list.clear()
         self._duration_spins.clear()
+        self._highlighted_frame_index = None
         for index, (path, duration) in enumerate(zip(self._package.animations[action].frames, self._timelines[action], strict=True)):
             pixmap = self._pixmaps_for(action)[index]
             item = QListWidgetItem(QIcon(pixmap), "")
@@ -269,15 +272,19 @@ class AnimationEditorDialog(QDialog):
         self._set_preview_highlight()
 
     def _set_preview_highlight(self) -> None:
-        """仅更新行的视觉高亮，绝不改变列表选择或滚动位置。"""
-        for row in range(self.frame_list.count()):
-            item_widget = self.frame_list.itemWidget(self.frame_list.item(row))
-            if item_widget is not None:
-                item_widget.setStyleSheet(
-                    "background: #dcecff; border: 1px solid #5b8dd9; border-radius: 5px;"
-                    if row == self.preview_frame_index
-                    else ""
-                )
+        """仅更新前后两行的视觉高亮，绝不改变列表选择或滚动位置。"""
+        if self._highlighted_frame_index == self.preview_frame_index:
+            return
+        self._set_frame_row_style(self._highlighted_frame_index, "")
+        self._set_frame_row_style(self.preview_frame_index, _PREVIEW_HIGHLIGHT_STYLE)
+        self._highlighted_frame_index = self.preview_frame_index
+
+    def _set_frame_row_style(self, row: int | None, style: str) -> None:
+        if row is None or row < 0 or row >= self.frame_list.count():
+            return
+        item_widget = self.frame_list.itemWidget(self.frame_list.item(row))
+        if item_widget is not None:
+            item_widget.setStyleSheet(style)
 
     def _select_preview_frame(self, item: QListWidgetItem) -> None:
         self.preview_timer.stop()
@@ -301,6 +308,7 @@ class AnimationEditorDialog(QDialog):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.preview_timer.stop()
         self._preview_pixmaps.clear()
+        self._highlighted_frame_index = None
         super().closeEvent(event)
 
 
