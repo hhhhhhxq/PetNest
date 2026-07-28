@@ -8,5 +8,11 @@ from .fallback_resolver import FallbackResolver
 from .settings_manager import SettingsManager
 from .state_machine import PetStateMachine
 from .spritesheet_importer import SpriteSheetImporter
+from .animation_action_synchronizer import (
+    AnimationActionSyncError,
+    AnimationActionSyncResult,
+    AnimationActionSynchronizer,
+    SyncedAction,
+)
 
-__all__ = ["AnimationPlayer", "EventBus", "FallbackResolver", "PackageLoader", "PackageValidationError", "PackageValidator", "PetStateMachine", "SettingsManager", "SpriteSheetImporter"]
+__all__ = ["AnimationActionSyncError", "AnimationActionSyncResult", "AnimationActionSynchronizer", "AnimationPlayer", "EventBus", "FallbackResolver", "PackageLoader", "PackageValidationError", "PackageValidator", "PetStateMachine", "SettingsManager", "SpriteSheetImporter", "SyncedAction"]

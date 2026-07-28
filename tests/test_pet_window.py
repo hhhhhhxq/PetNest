@@ -222,6 +222,50 @@ def test_timer_uses_the_duration_of_each_current_frame(qtbot: pytest.QtBot, tmp_
     assert window.animation_timer.interval() == 80
 
 
+def test_restoring_runtime_state_restarts_the_requested_action_and_restores_pause(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    window.handle_pet_event(PetEvent("mouse.enter", source="test"))
+    window.animation_timer.timeout.emit()
+    window.set_paused(True)
+
+    window.restore_runtime_state("hover", paused=True)
+
+    assert window.current_action == "hover"
+    assert window.player.current_definition is not None
+    assert window.player.current_definition.name == "hover"
+    assert window.player.current_frame_index == 0
+    assert window.player.is_paused
+    assert not window.animation_timer.isActive()
+
+    window.restore_runtime_state("missing", paused=False)
+
+    assert window.current_action == "idle"
+    assert not window.player.is_paused
+    assert window.animation_timer.isActive()
+
+
+def test_restoring_runtime_state_forces_low_priority_action_past_non_interruptible_idle(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    animations = {
+        **package.animations,
+        "idle": replace(package.animations["idle"], priority=50, interruptible=False),
+        "hover": replace(package.animations["hover"], priority=20),
+    }
+    window = PetWindow(replace(package, animations=animations))
+    qtbot.addWidget(window)
+    window.show()
+
+    window.restore_runtime_state("hover", paused=True)
+
+    assert window.current_action == "hover"
+    assert window.player.current_frame_index == 0
+    assert window.player.is_paused
+
+
 def test_reloading_package_clears_old_animation_cache_and_starts_new_idle(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     first = _package(tmp_path, identifier="cat")
     player = AnimationPlayer()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -9,10 +10,13 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PIL import Image
 from PySide6.QtWidgets import QApplication
 
 from petnest.app import PetNest
+from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.settings_manager import SettingsManager
+from petnest.models.event import PetEvent
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
@@ -34,6 +38,38 @@ class _IdleAdapter:
     def register_startup(self, enabled: bool) -> bool:
         del enabled
         return False
+
+
+def _create_animation_frames(root: Path, action: str, count: int) -> None:
+    directory = root / "animations" / action
+    directory.mkdir(parents=True)
+    for index in range(count):
+        Image.new("RGBA", (16, 16), (index, 0, 0, 255)).save(directory / f"{index + 1:03d}.png")
+
+
+def _create_reloadable_pet(root: Path) -> Path:
+    root.mkdir(parents=True)
+    (root / "pet.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "id": "reloadable_pet",
+                "name": "Reloadable Pet",
+                "version": "1.0.0",
+                "canvas": {"width": 16, "height": 16},
+                "animations": {
+                    "idle": {"path": "animations/idle", "fps": 8, "loop": True, "priority": 10},
+                    "hover": {"path": "animations/hover", "fps": 8, "loop": True, "priority": 20},
+                },
+                "bindings": {"mouse.enter": "hover"},
+                "fallbacks": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _create_animation_frames(root, "idle", 1)
+    _create_animation_frames(root, "hover", 1)
+    return root
 
 
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
@@ -124,6 +160,170 @@ def test_per_frame_mode_does_not_also_apply_total_speed(qtbot: pytest.QtBot, tmp
 
     assert application.package.animations["idle"].speed_multiplier == 1.0
     assert application.package.animations["idle"].frame_durations_ms == (200, 80, 120, 160)
+
+
+def test_reload_current_pet_syncs_new_action_and_notifies_tray(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    _create_animation_frames(package_root, "sleep", 1)
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=True
+    )
+    qtbot.addWidget(application.window)
+    messages: list[tuple[str, str]] = []
+    assert application.tray is not None
+    application.tray.showMessage = lambda title, message: messages.append((title, message))
+
+    assert application.reload_current_pet() is True
+
+    assert "sleep" in application.package.animations
+    assert messages == [("PetNest", "已自动登记：sleep（1 帧）")]
+
+
+def test_reload_current_pet_notifies_added_actions_in_sync_order(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    _create_animation_frames(package_root, "sleep", 6)
+    _create_animation_frames(package_root, "bored", 2)
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=True
+    )
+    qtbot.addWidget(application.window)
+    messages: list[tuple[str, str]] = []
+    assert application.tray is not None
+    application.tray.showMessage = lambda title, message: messages.append((title, message))
+
+    assert application.reload_current_pet() is True
+
+    assert messages == [("PetNest", "已自动登记：bored（2 帧）、sleep（6 帧）")]
+
+
+def test_reload_current_pet_without_added_actions_does_not_notify_tray(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=True
+    )
+    qtbot.addWidget(application.window)
+    messages: list[tuple[str, str]] = []
+    assert application.tray is not None
+    application.tray.showMessage = lambda title, message: messages.append((title, message))
+
+    assert application.reload_current_pet() is True
+
+    assert messages == []
+
+
+def test_reload_current_pet_preserves_current_package_when_sync_fails(qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    previous_package = application.package
+    monkeypatch.setattr(
+        application.action_synchronizer,
+        "sync",
+        lambda root: (_ for _ in ()).throw(AnimationActionSyncError(f"cannot sync {root}")),
+    )
+
+    assert application.reload_current_pet() is False
+
+    assert application.package is previous_package
+    assert application.window.package is previous_package
+
+
+def test_reload_current_pet_rolls_back_window_and_stays_silent_when_loading_partially_fails(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    _create_animation_frames(package_root, "sleep", 1)
+    config_path = package_root / "pet.json"
+    original_config = config_path.read_bytes()
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=True
+    )
+    qtbot.addWidget(application.window)
+    application.window.move(123, 234)
+    application.window.handle_pet_event(PetEvent("mouse.enter", source="test"))
+    application.window.set_paused(True)
+    previous_package = application.package
+    previous_position = application.window.pos()
+    messages: list[tuple[str, str]] = []
+    assert application.tray is not None
+    application.tray.showMessage = lambda title, message: messages.append((title, message))
+    original_load_package = application.window.load_package
+    calls = 0
+
+    def partially_failing_load_package(package: object) -> None:
+        nonlocal calls
+        calls += 1
+        original_load_package(package)
+        if calls == 1:
+            raise RuntimeError("simulated partial load failure")
+
+    monkeypatch.setattr(application.window, "load_package", partially_failing_load_package)
+
+    assert application.reload_current_pet() is False
+
+    assert calls == 2
+    assert application.package is previous_package
+    assert application.window.package is previous_package
+    assert application.window.pos() == previous_position
+    assert application.window.current_action == "hover"
+    assert application.window.player.current_frame is not None
+    assert application.window.player.is_paused
+    assert messages == []
+    assert config_path.read_bytes() == original_config
+
+    assert application.reload_current_pet() is True
+
+    assert messages == [("PetNest", "已自动登记：sleep（1 帧）")]
+
+
+def test_reload_current_pet_rolls_back_window_when_position_move_fails(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    _create_animation_frames(package_root, "sleep", 1)
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    application.window.move(123, 234)
+    application.window.handle_pet_event(PetEvent("mouse.enter", source="test"))
+    application.window.set_paused(True)
+    previous_package = application.package
+    previous_position = application.window.pos()
+    original_move = application.window.move
+    calls = 0
+
+    def move_then_fail(position: object) -> None:
+        nonlocal calls
+        calls += 1
+        original_move(position)
+        if calls == 2:
+            raise RuntimeError("simulated position failure")
+
+    monkeypatch.setattr(application.window, "move", move_then_fail)
+
+    assert application.reload_current_pet() is False
+
+    assert calls == 4
+    assert application.package is previous_package
+    assert application.window.package is previous_package
+    assert application.window.pos() == previous_position
+    assert application.window.current_action == "hover"
+    assert application.window.player.is_paused
 
 
 def test_application_publishes_system_idle_events_only_on_boundaries(qtbot: pytest.QtBot, tmp_path: Path) -> None:

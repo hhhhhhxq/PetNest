@@ -1,0 +1,198 @@
+"""将未声明的动画帧目录安全地同步到宠物包配置。"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .package_validator import PackageValidator
+
+
+class AnimationActionSyncError(ValueError):
+    """同步动画动作时无法保证配置完整性。"""
+
+
+@dataclass(frozen=True, slots=True)
+class SyncedAction:
+    """一个新写入配置的动画动作及其直接 PNG 帧数。"""
+
+    name: str
+    frame_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AnimationActionSyncResult:
+    """同步操作新增的动作，按不区分大小写的目录名排序。"""
+
+    added: tuple[SyncedAction, ...]
+
+
+class AnimationActionSynchronizer:
+    """发现动画目录，并且只在候选配置通过完整包校验后才写入。"""
+
+    def snapshot_config_bytes(self, package_root: Path) -> bytes:
+        """安全读取包内常规 ``pet.json`` 的原始字节，供调用方回滚。"""
+        try:
+            root = package_root.expanduser().resolve()
+            config_path = root / "pet.json"
+            self._ensure_regular_config(config_path)
+            return config_path.read_bytes()
+        except AnimationActionSyncError:
+            raise
+        except Exception as error:
+            raise AnimationActionSyncError(f"读取动画配置失败：{error}") from error
+
+    def restore_config_bytes(self, package_root: Path, contents: bytes) -> None:
+        """通过同卷原子替换恢复先前保存的 ``pet.json`` 原始字节。"""
+        try:
+            root = package_root.expanduser().resolve()
+            config_path = root / "pet.json"
+            self._ensure_regular_config(config_path)
+            self._replace_bytes_atomically(config_path, contents)
+        except AnimationActionSyncError:
+            raise
+        except Exception as error:
+            raise AnimationActionSyncError(f"恢复动画配置失败：{error}") from error
+
+    def sync(self, package_root: Path) -> AnimationActionSyncResult:
+        """将直接包含 PNG 帧且未声明的 ``animations`` 子目录写入 ``pet.json``。"""
+        try:
+            root = package_root.expanduser().resolve()
+            config_path = root / "pet.json"
+            self._ensure_regular_config(config_path)
+            config = self._read_config(config_path)
+            animations = config.get("animations")
+            if not isinstance(animations, dict):
+                raise AnimationActionSyncError("pet.json 的 animations 必须是对象")
+
+            additions = self._discover_additions(root, animations)
+            if not additions:
+                return AnimationActionSyncResult(added=())
+
+            candidate = dict(config)
+            candidate_animations = dict(animations)
+            candidate["animations"] = candidate_animations
+            for action in additions:
+                candidate_animations[action.name] = self._definition_for(action.name)
+
+            self._validate_candidate(root, candidate)
+            self._replace_config_atomically(config_path, candidate)
+            return AnimationActionSyncResult(added=additions)
+        except AnimationActionSyncError:
+            raise
+        except Exception as error:
+            raise AnimationActionSyncError(f"同步动画动作失败：{error}") from error
+
+    @staticmethod
+    def _read_config(config_path: Path) -> dict[str, Any]:
+        parsed = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            raise AnimationActionSyncError("pet.json 顶层必须是对象")
+        return parsed
+
+    @staticmethod
+    def _ensure_regular_config(config_path: Path) -> None:
+        if config_path.is_symlink() or not stat.S_ISREG(config_path.lstat().st_mode):
+            raise AnimationActionSyncError("pet.json 必须是包目录中的常规文件，不能是符号链接")
+
+    @staticmethod
+    def _discover_additions(root: Path, animations: dict[str, Any]) -> tuple[SyncedAction, ...]:
+        animation_root = root / "animations"
+        if not animation_root.is_dir():
+            return ()
+
+        actions: list[SyncedAction] = []
+        directories = sorted(
+            (path for path in animation_root.iterdir() if path.is_dir()),
+            key=lambda path: (path.name.casefold(), path.name),
+        )
+        for directory in directories:
+            if directory.name in animations:
+                continue
+            frame_count = 0
+            for path in directory.iterdir():
+                if path.suffix.casefold() != ".png" or path.is_dir():
+                    continue
+                if not AnimationActionSynchronizer._is_safe_png_frame(path, root):
+                    raise AnimationActionSyncError(
+                        f"动画目录 {directory.name} 的 PNG 帧 {path.name} 必须是包内的常规文件，不能是符号链接"
+                    )
+                frame_count += 1
+            if frame_count:
+                actions.append(SyncedAction(directory.name, frame_count))
+        return tuple(actions)
+
+    @staticmethod
+    def _is_safe_png_frame(path: Path, root: Path) -> bool:
+        return (
+            not path.is_symlink()
+            and stat.S_ISREG(path.lstat().st_mode)
+            and path.resolve().is_relative_to(root)
+        )
+
+    @staticmethod
+    def _definition_for(name: str) -> dict[str, object]:
+        definition: dict[str, object] = {
+            "path": f"animations/{name}",
+            "fps": 10,
+            "loop": name != "wake",
+            "priority": 20,
+        }
+        if name == "wake":
+            definition["next"] = "context"
+        return definition
+
+    @staticmethod
+    def _validate_candidate(root: Path, config: dict[str, Any]) -> None:
+        with tempfile.TemporaryDirectory(prefix=f".{root.name}-sync-", dir=root.parent) as temporary_directory:
+            candidate_root = Path(temporary_directory) / root.name
+            shutil.copytree(root, candidate_root, symlinks=True, ignore=shutil.ignore_patterns("pet.json"))
+            AnimationActionSynchronizer._write_config(candidate_root / "pet.json", config)
+            validation = PackageValidator().validate(candidate_root)
+            if not validation.is_valid:
+                raise AnimationActionSyncError("候选动画配置未通过校验：" + "；".join(validation.errors))
+
+    @staticmethod
+    def _replace_config_atomically(config_path: Path, config: dict[str, Any]) -> None:
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{config_path.name}.", suffix=".tmp", dir=config_path.parent
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as temporary_file:
+                json.dump(config, temporary_file, ensure_ascii=False, indent=2)
+                temporary_file.write("\n")
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, config_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    @staticmethod
+    def _replace_bytes_atomically(config_path: Path, contents: bytes) -> None:
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{config_path.name}.", suffix=".tmp", dir=config_path.parent
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(file_descriptor, "wb") as temporary_file:
+                temporary_file.write(contents)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, config_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+
+    @staticmethod
+    def _write_config(path: Path, config: dict[str, Any]) -> None:
+        with path.open("w", encoding="utf-8", newline="\n") as config_file:
+            json.dump(config, config_file, ensure_ascii=False, indent=2)
+            config_file.write("\n")

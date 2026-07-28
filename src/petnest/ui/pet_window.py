@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from math import hypot
 
 from PIL import Image
@@ -170,6 +170,22 @@ class PetWindow(QWidget):
         self._play_current_action()
         self.move(self.clamp_position(self.pos()))
 
+    def restore_runtime_state(self, action: str, *, paused: bool) -> None:
+        """恢复指定动作的首帧及暂停状态；缺失动作安全回退至 idle。"""
+        target = action if action in self.package.animations else "idle"
+        self.state_machine = self._make_state_machine(
+            self.package,
+            extra_bindings={"runtime.restore": target},
+        )
+        self.handle_pet_event(
+            PetEvent(
+                "runtime.restore",
+                source="runtime",
+                priority=self.package.animations["idle"].priority + 1,
+            )
+        )
+        self.set_paused(paused)
+
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
         if self.is_opaque_at(int(event.position().x()), int(event.position().y())):
             self._handle_event("mouse.enter")
@@ -272,7 +288,11 @@ class PetWindow(QWidget):
         return self._mouse_interaction_enabled and self.is_opaque_at(int(event.position().x()), int(event.position().y()))
 
     @staticmethod
-    def _make_state_machine(package: PetPackage) -> PetStateMachine:
+    def _make_state_machine(
+        package: PetPackage,
+        *,
+        extra_bindings: Mapping[str, str] | None = None,
+    ) -> PetStateMachine:
         standard_bindings = {
             "system.bored": "bored",
             "system.sleep": "sleep",
@@ -285,7 +305,7 @@ class PetWindow(QWidget):
         }
         return PetStateMachine(
             package.animations,
-            {**standard_bindings, **package.bindings},
+            {**standard_bindings, **package.bindings, **(extra_bindings or {})},
             {**standard_fallbacks, **package.fallbacks},
         )
 

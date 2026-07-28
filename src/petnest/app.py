@@ -10,6 +10,7 @@ import sys
 from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtWidgets import QApplication
 
+from petnest.core.animation_action_synchronizer import AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
 from petnest.core.package_loader import PackageLoader
 from petnest.core.settings_manager import SettingsManager
@@ -54,6 +55,7 @@ class PetNest:
         self.settings = self.settings_manager.load()
         self.pets_root = pets_root or bundled_pets_directory()
         self.loader = PackageLoader()
+        self.action_synchronizer = AnimationActionSynchronizer()
         self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
         if not self.packages:
             raise RuntimeError(f"未找到可用宠物包：{self.pets_root}")
@@ -129,15 +131,38 @@ class PetNest:
         """重新从磁盘校验并载入当前包，失败时保留现有资源。"""
         previous = self.package
         position = self.window.pos()
+        previous_action = self.window.current_action
+        previous_paused = self.window.player.is_paused
+        window_load_attempted = False
+        sync_result = None
+        original_config: bytes | None = None
         try:
+            original_config = self.action_synchronizer.snapshot_config_bytes(previous.root)
+            sync_result = self.action_synchronizer.sync(previous.root)
             reloaded = self._apply_animation_overrides(self.loader.load(previous.root))
+            window_load_attempted = True
             self.window.load_package(reloaded)
             self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
+            if sync_result is not None and sync_result.added and original_config is not None:
+                try:
+                    self.action_synchronizer.restore_config_bytes(previous.root, original_config)
+                except (OSError, ValueError, RuntimeError):
+                    LOGGER.exception("重新加载失败后恢复宠物包配置失败：%s", previous.identifier)
+            if window_load_attempted:
+                try:
+                    self.window.load_package(previous)
+                    self.window.restore_runtime_state(previous_action, paused=previous_paused)
+                    self.window.move(self.window.clamp_position(position))
+                except (OSError, ValueError, RuntimeError):
+                    LOGGER.exception("重新加载失败后恢复旧宠物包失败：%s", previous.identifier)
             LOGGER.exception("重新加载宠物包失败：%s", previous.identifier)
             return False
         self.package = reloaded
         self.packages = [reloaded if item.identifier == reloaded.identifier else item for item in self.packages]
+        if sync_result.added and self.tray is not None:
+            summary = "、".join(f"{action.name}（{action.frame_count} 帧）" for action in sync_result.added)
+            self.tray.showMessage("PetNest", f"已自动登记：{summary}")
         return True
 
     def apply_settings(self, settings: Settings) -> None:
