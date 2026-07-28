@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtCore import QPoint, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication
 
 from petnest.core.animation_action_synchronizer import AnimationActionSynchronizer
@@ -78,6 +79,8 @@ class PetNest:
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
                 on_import=self.show_spritesheet_import_dialog,
+                on_open_pets_folder=self.open_pets_folder,
+                on_refresh_pets=self.refresh_pets,
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
                 on_quit=self.shutdown,
@@ -194,6 +197,23 @@ class PetNest:
         if dialog.exec() and dialog.imported_result is not None:
             self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
             self.switch_pet(dialog.imported_result.package_id)
+
+    def open_pets_folder(self) -> None:
+        """打开用户放置目录式宠物包的位置。"""
+        self.pets_root.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.pets_root)))
+
+    def refresh_pets(self) -> None:
+        """重新扫描宠物目录，立即让手动放入的包出现在托盘菜单。"""
+        current_id = self.package.identifier
+        self.packages = [self._apply_animation_overrides(item) for item in self.loader.discover(self.pets_root)]
+        if self.tray is not None:
+            self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
+        if not any(item.identifier == current_id for item in self.packages):
+            return
+        self.reload_current_pet()
+        if self.tray is not None:
+            self.tray.showMessage("PetNest", f"已发现 {len(self.packages)} 只宠物")
 
     def show_animation_editor_dialog(self) -> None:
         """编辑当前包的本地播放覆盖，并在保存后立即重新载入。"""

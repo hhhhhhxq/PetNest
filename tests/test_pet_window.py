@@ -295,6 +295,19 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     assert tray.import_action.text() == "导入精灵图…"
 
 
+def test_tray_exposes_pet_folder_and_refresh_actions(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    tray = PetTrayIcon(window, on_open_pets_folder=lambda: calls.append("open"), on_refresh_pets=lambda: calls.append("refresh"))
+
+    assert tray.open_pets_folder_action.text() == "打开宠物文件夹"
+    assert tray.refresh_pets_action.text() == "刷新宠物列表"
+    tray.open_pets_folder_action.trigger()
+    tray.refresh_pets_action.trigger()
+    assert calls == ["open", "refresh"]
+
+
 def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     package = _package(tmp_path)
     machine = PetWindow._make_state_machine(package)
