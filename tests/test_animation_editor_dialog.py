@@ -82,3 +82,16 @@ def test_clicking_thumbnail_pauses_preview_on_that_frame_and_close_stops_timer(q
     assert not dialog.preview_timer.isActive()
     dialog.close()
     assert not dialog.preview_timer.isActive()
+
+
+def test_preview_highlight_does_not_change_the_frame_list_selection(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.per_frame_radio.click()
+    dialog.frame_list.setCurrentRow(0)
+
+    dialog._advance_preview()
+
+    assert dialog.preview_frame_index == 1
+    assert dialog.frame_list.currentRow() == 0

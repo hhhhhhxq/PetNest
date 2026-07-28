@@ -266,8 +266,18 @@ class AnimationEditorDialog(QDialog):
             self.preview_label.setPixmap(
                 pixmap.scaled(available, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             )
-        if self.frame_list.count():
-            self.frame_list.setCurrentRow(self.preview_frame_index)
+        self._set_preview_highlight()
+
+    def _set_preview_highlight(self) -> None:
+        """仅更新行的视觉高亮，绝不改变列表选择或滚动位置。"""
+        for row in range(self.frame_list.count()):
+            item_widget = self.frame_list.itemWidget(self.frame_list.item(row))
+            if item_widget is not None:
+                item_widget.setStyleSheet(
+                    "background: #dcecff; border: 1px solid #5b8dd9; border-radius: 5px;"
+                    if row == self.preview_frame_index
+                    else ""
+                )
 
     def _select_preview_frame(self, item: QListWidgetItem) -> None:
         self.preview_timer.stop()
