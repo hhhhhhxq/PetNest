@@ -10,7 +10,11 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert 'dist\\PetNest\\*' in contents
     assert 'Excludes: "pets\\*"' in contents
     assert 'Source: "..\\pets\\sample_pet\\*"; DestDir: "{code:GetPetsRoot}\\sample_pet"' in contents
-    assert "ShouldInstallSamplePet" in contents
+    assert "Check: SamplePetNeedsRepair" in contents
+    assert "function SamplePetNeedsRepair" in contents
+    assert "not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\\pet.json')" in contents
+    assert "not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\\animations\\idle\\001.png')" in contents
+    assert "ShouldInstallSamplePet" not in contents
     assert "CreateInputDirPage" in contents
     assert "{localappdata}\\PetNest\\pets" in contents
     assert "DefaultPetsRoot" in contents

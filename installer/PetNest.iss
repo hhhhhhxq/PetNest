@@ -16,7 +16,7 @@ WizardStyle=modern
 
 [Files]
 Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "pets\*"
-Source: "..\pets\sample_pet\*"; DestDir: "{code:GetPetsRoot}\sample_pet"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: ShouldInstallSamplePet
+Source: "..\pets\sample_pet\*"; DestDir: "{code:GetPetsRoot}\sample_pet"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: SamplePetNeedsRepair
 
 [Icons]
 Name: "{autoprograms}\PetNest"; Filename: "{app}\PetNest.exe"
@@ -116,7 +116,9 @@ begin
   Result := PetsRootDirectory.Values[0];
 end;
 
-function ShouldInstallSamplePet: Boolean;
+function SamplePetNeedsRepair: Boolean;
 begin
-  Result := not DirExists(AddBackslash(GetPetsRoot('')) + 'sample_pet');
+  Result :=
+    not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\pet.json') or
+    not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\animations\idle\001.png');
 end;
