@@ -409,8 +409,10 @@ def test_enabling_system_idle_in_settings_starts_monitor_immediately(qtbot: pyte
     app = QApplication.instance() or QApplication([])
     del app
     create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(system_idle_enabled=False))
     application = PetNest(
-        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"),
+        pets_root=tmp_path / "pets", settings_manager=settings_manager,
         platform_adapter=_IdleAdapter(), enable_tray=False,
     )
     qtbot.addWidget(application.window)
@@ -425,8 +427,10 @@ def test_unrelated_settings_change_does_not_republish_current_idle_state(qtbot: 
     del app
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     adapter = _IdleAdapter(30)
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(system_idle_enabled=False))
     application = PetNest(
-        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"),
+        pets_root=tmp_path / "pets", settings_manager=settings_manager,
         platform_adapter=adapter, enable_tray=False,
     )
     qtbot.addWidget(application.window)

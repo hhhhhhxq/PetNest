@@ -13,6 +13,12 @@ def test_defaults_are_available_without_a_file(tmp_path) -> None:
     assert settings == Settings()
 
 
+def test_new_users_have_system_idle_actions_enabled_with_short_thresholds(tmp_path) -> None:
+    settings = SettingsManager(tmp_path / "settings.json").load()
+
+    assert (settings.system_idle_enabled, settings.system_bored_seconds, settings.system_sleep_seconds) == (True, 20, 35)
+
+
 def test_settings_are_saved_and_loaded_atomically(tmp_path) -> None:
     path = tmp_path / "settings.json"
     manager = SettingsManager(path)

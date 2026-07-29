@@ -32,10 +32,10 @@ class Settings:
     mouse_interaction_enabled: bool = True
     external_event_server_enabled: bool = False
     external_event_port: int = 18486
-    system_idle_enabled: bool = False
+    system_idle_enabled: bool = True
     system_idle_seconds: int = 300
-    system_bored_seconds: int = 30
-    system_sleep_seconds: int = 180
+    system_bored_seconds: int = 20
+    system_sleep_seconds: int = 35
     run_at_startup: bool = False
     pets_root: str | None = None
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
