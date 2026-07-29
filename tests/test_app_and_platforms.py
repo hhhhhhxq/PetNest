@@ -305,6 +305,31 @@ def test_animation_editor_reloads_and_syncs_frames_added_while_the_app_is_runnin
     assert saved["animations"]["idle"]["frame_durations_ms"] == [120, 120]
 
 
+def test_refresh_pets_syncs_frames_added_to_a_newly_copied_pet_before_discovery(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "pingan")
+    config = json.loads((package_root / "pet.json").read_text(encoding="utf-8"))
+    config["id"] = "pingan"
+    config["name"] = "平安"
+    config["animations"]["idle"]["frame_durations_ms"] = [120]
+    (package_root / "pet.json").write_text(json.dumps(config), encoding="utf-8")
+    Image.new("RGBA", (16, 16), (1, 0, 0, 255)).save(package_root / "animations" / "idle" / "002.png")
+
+    application.refresh_pets()
+
+    assert {package.identifier for package in application.packages} == {"sample_pet", "pingan"}
+    saved = json.loads((package_root / "pet.json").read_text(encoding="utf-8"))
+    assert saved["animations"]["idle"]["frame_durations_ms"] == [120, 120]
+
+
 def test_reload_current_pet_preserves_current_package_when_sync_fails(qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = QApplication.instance() or QApplication([])
     del app

@@ -218,6 +218,7 @@ class PetNest:
     def refresh_pets(self) -> None:
         """重新扫描宠物目录，立即让手动放入的包出现在托盘菜单。"""
         current_id = self.package.identifier
+        self._synchronize_pet_library()
         self.packages = self.loader.discover(self.pets_root)
         if self.tray is not None:
             self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
@@ -226,6 +227,19 @@ class PetNest:
         self.reload_current_pet()
         if self.tray is not None:
             self.tray.showMessage("PetNest", f"已发现 {len(self.packages)} 只宠物")
+
+    def _synchronize_pet_library(self) -> None:
+        """在发现宠物前对齐手动增删 PNG 后失配的逐帧时长。"""
+        root = self.pets_root.expanduser()
+        if not root.is_dir():
+            return
+        for candidate in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+            if not (candidate / "pet.json").exists():
+                continue
+            try:
+                self.action_synchronizer.sync(candidate)
+            except AnimationActionSyncError:
+                LOGGER.warning("跳过无法同步的宠物包：%s", candidate, exc_info=True)
 
     def show_animation_editor_dialog(self) -> None:
         """编辑并保存当前宠物包的可分享动画时长。"""
