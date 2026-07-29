@@ -25,36 +25,20 @@ Name: "{autodesktop}\PetNest"; Filename: "{app}\PetNest.exe"; Tasks: desktopicon
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "其他选项："; Flags: unchecked
 
 [Run]
-Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}"""; Flags: runhidden waituntilterminated; Check: UseCustomPetsRoot
+Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\PetNest.exe"; Description: "启动 PetNest"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
-  PetsRootOptions: TInputOptionWizardPage;
   PetsRootDirectory: TInputDirWizardPage;
 
 procedure InitializeWizard;
 begin
-  PetsRootOptions := CreateInputOptionPage(wpSelectDir,
-    '高级选项', '宠物库位置',
-    '默认会将可修改的宠物资源保存到当前用户的本地应用数据目录。',
-    False, False);
-  PetsRootOptions.Add('将宠物库保存到自定义位置');
-
-  PetsRootDirectory := CreateInputDirPage(PetsRootOptions.ID,
-    '选择宠物库位置', '选择存放可修改宠物资源的文件夹',
-    '此目录将保存导入的宠物与动画时长配置。', False, '新建文件夹');
+  PetsRootDirectory := CreateInputDirPage(wpSelectDir,
+    '宠物库位置（可选）', '确认可修改宠物资源的保存位置',
+    '默认位置已显示在下方。直接输入路径或点击“浏览…”选择文件夹；此目录将保存导入的宠物与动画时长配置。',
+    False, '新建文件夹');
   PetsRootDirectory.Add(ExpandConstant('{localappdata}\PetNest\pets'));
-end;
-
-function ShouldSkipPage(PageID: Integer): Boolean;
-begin
-  Result := (PageID = PetsRootDirectory.ID) and (not PetsRootOptions.Values[0]);
-end;
-
-function UseCustomPetsRoot(): Boolean;
-begin
-  Result := PetsRootOptions.Values[0];
 end;
 
 function GetPetsRoot(Param: String): String;
