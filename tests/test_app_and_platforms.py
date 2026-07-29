@@ -272,6 +272,39 @@ def test_reload_current_pet_without_added_actions_does_not_notify_tray(qtbot: py
     assert messages == []
 
 
+def test_animation_editor_reloads_and_syncs_frames_added_while_the_app_is_running(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    package_root = _create_reloadable_pet(tmp_path / "pets" / "reloadable_pet")
+    config = json.loads((package_root / "pet.json").read_text(encoding="utf-8"))
+    config["animations"]["idle"]["frame_durations_ms"] = [120]
+    (package_root / "pet.json").write_text(json.dumps(config), encoding="utf-8")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    Image.new("RGBA", (16, 16), (1, 0, 0, 255)).save(package_root / "animations" / "idle" / "002.png")
+
+    received_packages = []
+
+    class _CancelledEditor:
+        def __init__(self, package: object, _parent: object) -> None:
+            received_packages.append(package)
+
+        def exec(self) -> bool:
+            return False
+
+    monkeypatch.setattr("petnest.app.AnimationEditorDialog", _CancelledEditor)
+
+    application.show_animation_editor_dialog()
+
+    assert len(received_packages[0].animations["idle"].frames) == 2
+    saved = json.loads((package_root / "pet.json").read_text(encoding="utf-8"))
+    assert saved["animations"]["idle"]["frame_durations_ms"] == [120, 120]
+
+
 def test_reload_current_pet_preserves_current_package_when_sync_fails(qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = QApplication.instance() or QApplication([])
     del app

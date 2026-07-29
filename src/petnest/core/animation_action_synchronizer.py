@@ -8,7 +8,7 @@ import shutil
 import stat
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping
 
 from .package_validator import PackageValidator
@@ -27,10 +27,24 @@ class SyncedAction:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncedTimeline:
+    """一个因磁盘 PNG 帧增删而自动调整过的逐帧时长。"""
+
+    name: str
+    frame_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class AnimationActionSyncResult:
-    """同步操作新增的动作，按不区分大小写的目录名排序。"""
+    """同步操作新增的动作及自动对齐的时间线。"""
 
     added: tuple[SyncedAction, ...]
+    reconciled: tuple[SyncedTimeline, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        """本次同步是否会写入 ``pet.json``。"""
+        return bool(self.added or self.reconciled)
 
 
 class AnimationActionSynchronizer:
@@ -72,18 +86,19 @@ class AnimationActionSynchronizer:
                 raise AnimationActionSyncError("pet.json 的 animations 必须是对象")
 
             additions = self._discover_additions(root, animations)
-            if not additions:
-                return AnimationActionSyncResult(added=())
-
             candidate = dict(config)
             candidate_animations = dict(animations)
             candidate["animations"] = candidate_animations
             for action in additions:
                 candidate_animations[action.name] = self._definition_for(action.name)
 
+            reconciled = self._reconcile_frame_durations(root, candidate_animations)
+            if not additions and not reconciled:
+                return AnimationActionSyncResult(added=())
+
             self._validate_candidate(root, candidate)
             self._replace_config_atomically(config_path, candidate)
-            return AnimationActionSyncResult(added=additions)
+            return AnimationActionSyncResult(added=additions, reconciled=reconciled)
         except AnimationActionSyncError:
             raise
         except Exception as error:
@@ -180,6 +195,52 @@ class AnimationActionSynchronizer:
         if name == "wake":
             definition["next"] = "context"
         return definition
+
+    @staticmethod
+    def _reconcile_frame_durations(root: Path, animations: dict[str, Any]) -> tuple[SyncedTimeline, ...]:
+        """按磁盘上的直接 PNG 帧数补齐或截断已有逐帧时长。"""
+        reconciled: list[SyncedTimeline] = []
+        for name, definition in animations.items():
+            if not isinstance(name, str) or not isinstance(definition, dict):
+                continue
+            durations = definition.get("frame_durations_ms")
+            if not isinstance(durations, list) or any(
+                isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations
+            ):
+                continue
+            frame_count = AnimationActionSynchronizer._direct_png_frame_count(root, definition)
+            if frame_count is None or frame_count == 0 or len(durations) == frame_count:
+                continue
+            if len(durations) > frame_count:
+                synced_durations = durations[:frame_count]
+            else:
+                fallback_duration = durations[-1] if durations else AnimationActionSynchronizer._fps_duration(definition)
+                synced_durations = durations + [fallback_duration] * (frame_count - len(durations))
+            candidate_definition = dict(definition)
+            candidate_definition["frame_durations_ms"] = synced_durations
+            animations[name] = candidate_definition
+            reconciled.append(SyncedTimeline(name, frame_count))
+        return tuple(reconciled)
+
+    @staticmethod
+    def _direct_png_frame_count(root: Path, definition: dict[str, Any]) -> int | None:
+        configured_path = definition.get("path")
+        if not isinstance(configured_path, str) or not configured_path.strip():
+            return None
+        path = Path(configured_path)
+        if path.is_absolute() or PureWindowsPath(configured_path).is_absolute():
+            return None
+        animation_path = (root / path).resolve()
+        if not animation_path.is_relative_to(root) or not animation_path.is_dir():
+            return None
+        return sum(item.is_file() and item.suffix.casefold() == ".png" for item in animation_path.iterdir())
+
+    @staticmethod
+    def _fps_duration(definition: dict[str, Any]) -> int:
+        fps = definition.get("fps")
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+            return 100
+        return max(1, round(1000 / fps))
 
     @staticmethod
     def _validate_candidate(root: Path, config: dict[str, Any]) -> None:

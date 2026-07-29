@@ -101,6 +101,40 @@ def test_update_frame_durations_writes_a_shareable_timeline_to_pet_json(tmp_path
     assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [180, 90]
 
 
+def test_sync_extends_a_registered_timeline_when_a_png_frame_is_added(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "added-frame",
+        animations={
+            "idle": {
+                "path": "animations/idle", "fps": 8, "loop": True,
+                "priority": 10, "frame_durations_ms": [90, 110],
+            }
+        },
+    )
+    _write_png(root / "animations" / "idle" / "11.png")
+
+    result = AnimationActionSynchronizer().sync(root)
+
+    assert result.added == ()
+    assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [90, 110, 110]
+
+
+def test_sync_trims_a_registered_timeline_when_a_png_frame_is_removed(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "removed-frame",
+        animations={
+            "idle": {
+                "path": "animations/idle", "fps": 8, "loop": True,
+                "priority": 10, "frame_durations_ms": [90, 110, 130],
+            }
+        },
+    )
+
+    AnimationActionSynchronizer().sync(root)
+
+    assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [90, 110]
+
+
 def test_sync_ignores_png_frames_nested_below_an_animation_directory(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "nested-frame")
     _write_png(root / "animations" / "outer" / "nested" / "001.png")

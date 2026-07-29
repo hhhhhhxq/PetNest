@@ -156,7 +156,7 @@ class PetNest:
             self.window.load_package(reloaded)
             self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
-            if sync_result is not None and sync_result.added and original_config is not None:
+            if sync_result is not None and sync_result.changed and original_config is not None:
                 try:
                     self.action_synchronizer.restore_config_bytes(previous.root, original_config)
                 except (OSError, ValueError, RuntimeError):
@@ -175,6 +175,9 @@ class PetNest:
         if sync_result.added and self.tray is not None:
             summary = "、".join(f"{action.name}（{action.frame_count} 帧）" for action in sync_result.added)
             self.tray.showMessage("PetNest", f"已自动登记：{summary}")
+        elif sync_result.reconciled and self.tray is not None:
+            summary = "、".join(f"{timeline.name}（{timeline.frame_count} 帧）" for timeline in sync_result.reconciled)
+            self.tray.showMessage("PetNest", f"已同步逐帧时长：{summary}")
         return True
 
     def apply_settings(self, settings: Settings) -> None:
@@ -226,6 +229,9 @@ class PetNest:
 
     def show_animation_editor_dialog(self) -> None:
         """编辑并保存当前宠物包的可分享动画时长。"""
+        if not self.reload_current_pet():
+            QMessageBox.warning(self.window, "无法编辑动画时长", "当前宠物资源无法重新载入，请检查新增图片后重试。")
+            return
         dialog = AnimationEditorDialog(self.package, self.window)
         if dialog.exec():
             try:
