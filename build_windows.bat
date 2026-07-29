@@ -5,7 +5,7 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 call .venv\Scripts\activate.bat
-pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets\sample_pet;pets\sample_pet" --add-data "assets;assets" src\petnest_launcher.py
+pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "assets;assets" src\petnest_launcher.py
 if errorlevel 1 exit /b 1
 
 set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
