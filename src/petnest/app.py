@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
 from petnest.core.package_loader import PackageLoader
+from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
@@ -54,7 +55,13 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
-        self.pets_root = pets_root or bundled_pets_directory()
+        if pets_root is not None:
+            self.pets_root = pets_root
+        elif getattr(sys, "frozen", False):
+            requested_root = Path(self.settings.pets_root) if self.settings.pets_root else default_user_pets_directory()
+            self.pets_root = prepare_pet_library(requested_root, bundled_pets_directory())
+        else:
+            self.pets_root = bundled_pets_directory()
         self.loader = PackageLoader()
         self.action_synchronizer = AnimationActionSynchronizer()
         discovered_packages = self.loader.discover(self.pets_root)

@@ -162,7 +162,7 @@ PetNest 会重新扫描并自动切换到这个宠物。
 - **按总时长播放**：输入目标总时长（毫秒）；数值越小，播放越快，原有帧间节奏保持不变。
 - **手动编辑每帧时长**：逐帧填写毫秒数；此模式会忽略总时长缩放，表格合计即为实际总时长。
 
-保存后 PetNest 会自动重载当前宠物，并通过托盘提示已应用的动作、方式和时长；不需要手动点击「重新加载当前宠物」。设置仅保存在当前计算机的用户配置中，**不会修改** `pet.json` 或 PNG 资源。
+保存后 PetNest 会自动重载当前宠物，并通过托盘提示已应用的动作、方式和时长；不需要手动点击「重新加载当前宠物」。时长设置会写入当前宠物包的 `pet.json`，因此连同整个宠物文件夹一起分享时会保留；不会修改 PNG 资源。
 
 ### 命令行导入
 
@@ -201,11 +201,13 @@ python tools/emit_event.py agent.error --source script
 
 ## 打包
 
-第一阶段使用 PyInstaller `--onedir` 并带入 `pets/` 资源。Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
+Windows 使用 PyInstaller `--onedir` 生成应用目录，再用 Inno Setup 生成 `PetNest-Setup.exe`。构建机需要先安装 Inno Setup 6；Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
 
 ```powershell
 .\build_windows.bat
 ```
+
+完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。
 
 ```bash
 ./build_macos.sh

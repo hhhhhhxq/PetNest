@@ -57,3 +57,10 @@ def test_system_idle_thresholds_round_trip(tmp_path) -> None:
 
     loaded = SettingsManager(path).load()
     assert (loaded.system_idle_enabled, loaded.system_bored_seconds, loaded.system_sleep_seconds) == (True, 30, 180)
+
+
+def test_custom_pets_root_round_trips(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    SettingsManager(path).save(Settings(pets_root="D:/PetNestPets"))
+
+    assert SettingsManager(path).load().pets_root == "D:/PetNestPets"

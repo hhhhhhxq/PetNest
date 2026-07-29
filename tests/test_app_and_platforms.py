@@ -133,6 +133,27 @@ def test_check_mode_can_load_bundled_sample_package() -> None:
     assert PetNest.check_installation() == 0
 
 
+def test_frozen_application_bootstraps_the_configured_writable_pets_root(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    bundled = tmp_path / "bundled"
+    create_sample_pet(bundled / "sample_pet")
+    custom_root = tmp_path / "custom-pets"
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(pets_root=str(custom_root)))
+    monkeypatch.setattr("petnest.app.bundled_pets_directory", lambda: bundled)
+    monkeypatch.setattr("petnest.app.sys.frozen", True, raising=False)
+
+    application = PetNest(settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+
+    assert application.pets_root == custom_root
+    assert application.package.identifier == "sample_pet"
+    assert (custom_root / "sample_pet" / "pet.json").exists()
+
+
 def test_application_migrates_legacy_animation_override_into_shareable_pet_json(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app

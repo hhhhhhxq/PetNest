@@ -97,6 +97,10 @@ class SettingsManager:
         if version == 4:
             migrated.setdefault("system_bored_seconds", 30)
             migrated.setdefault("system_sleep_seconds", 180)
+            migrated["schema_version"] = 5
+            version = 5
+        if version == 5:
+            migrated.setdefault("pets_root", None)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
