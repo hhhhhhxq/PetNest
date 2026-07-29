@@ -33,13 +33,9 @@ def main(arguments: list[str] | None = None) -> int:
     application = QApplication(sys.argv)
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(petnest_icon())
-    try:
-        petnest = PetNest()
-        petnest.start()
-        return application.exec()
-    except (OSError, RuntimeError, ValueError) as error:
-        print(f"PetNest 启动失败：{error}", file=sys.stderr)
-        return 1
+    petnest = PetNest()
+    petnest.start()
+    return application.exec()
 
 
 if __name__ == "__main__":
