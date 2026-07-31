@@ -111,6 +111,16 @@ def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: p
     assert window.size().height() == 12
 
 
+def test_macos_tool_window_remains_visible_when_application_is_inactive(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("petnest.ui.pet_window.sys.platform", "darwin")
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+
+    assert window.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+
+
 def test_idle_frame_is_rendered_and_alpha_hit_testing_uses_current_frame_cache(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)

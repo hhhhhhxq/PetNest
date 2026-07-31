@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from math import hypot
+import sys
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt
@@ -45,6 +46,11 @@ class PetWindow(QWidget):
         super().__init__(parent, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        if sys.platform == "darwin":
+            # Qt.Tool 在 macOS 上映射为 NSPanel，默认会随应用失去焦点而
+            # 隐藏。桌宠需要跨应用保持可见，才能让 WindowStaysOnTopHint
+            # 真正符合“始终置顶”的用户预期。
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
 
