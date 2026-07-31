@@ -108,6 +108,22 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     assert application.external_server is None
 
 
+def test_application_reveal_restores_a_hidden_pet_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    application.window.hide()
+
+    application.reveal()
+
+    assert application.window.isVisible()
+
+
 def test_application_clamps_saved_position_that_is_outside_all_screens(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

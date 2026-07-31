@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QPoint, QTimer, QUrl
+from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -121,6 +121,17 @@ class PetNest:
             self.tray.show()
         self.window.show()
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
+
+    def reveal(self) -> None:
+        """供第二次启动请求恢复已隐藏的现有宠物。"""
+        self.window.move(self.window.clamp_position(self.window.pos()))
+        self.window.setWindowState(self.window.windowState() & ~Qt.WindowState.WindowMinimized)
+        if self.tray is not None:
+            self.tray.show()
+        self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
+        LOGGER.info("已响应新的启动请求并显示现有宠物")
 
     def switch_pet(self, identifier: str) -> bool:
         """无重启切换已验证宠物，保留窗口位置；失败不改变当前宠物。"""

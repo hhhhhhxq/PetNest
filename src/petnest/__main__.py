@@ -8,10 +8,12 @@ from pathlib import Path
 import sys
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QMessageBox
 
 from .app import PetNest
 from .logging_config import configure_logging
 from .core.settings_manager import SettingsManager
+from .core.single_instance import InstanceClaim, SingleInstanceCoordinator
 from .ui.tray_icon import application_icon
 
 
@@ -33,9 +35,31 @@ def main(arguments: list[str] | None = None) -> int:
     application = QApplication(sys.argv)
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(application_icon())
-    petnest = PetNest()
-    petnest.start()
-    return application.exec()
+    coordinator = SingleInstanceCoordinator("PetNest-single-instance", SettingsManager.default_path().with_name("instance.pid"))
+    claim = coordinator.claim()
+    if claim is InstanceClaim.ACTIVATED_EXISTING:
+        return 0
+    if claim is InstanceClaim.UNRESPONSIVE:
+        choice = QMessageBox.question(
+            None,
+            "PetNest 已在运行",
+            "已有 PetNest 没有响应。为避免出现两只宠物，是否强制重启它？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice is not QMessageBox.StandardButton.Yes or not coordinator.force_restart():
+            return 1
+        claim = coordinator.claim()
+        if claim is not InstanceClaim.PRIMARY:
+            QMessageBox.warning(None, "无法重启 PetNest", "已有实例仍未退出，请稍后再试。")
+            return 1
+    try:
+        petnest = PetNest()
+        coordinator.set_activation_handler(petnest.reveal)
+        petnest.start()
+        return application.exec()
+    finally:
+        coordinator.release()
 
 
 if __name__ == "__main__":
