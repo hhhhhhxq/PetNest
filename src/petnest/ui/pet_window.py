@@ -7,8 +7,8 @@ from math import hypot
 import sys
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt
-from PySide6.QtGui import QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from petnest.core.animation_player import AnimationPlayer
@@ -28,6 +28,7 @@ class PetWindow(QWidget):
 
     drag_threshold = 6
     minimum_visible_pixels = 48
+    context_menu_requested = Signal(QPoint)
 
     def __init__(
         self,
@@ -237,6 +238,15 @@ class PetWindow(QWidget):
         elif self._is_interactive(event):
             self._handle_event("mouse.click")
         event.accept()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        """仅在宠物当前可见像素上请求快捷菜单。"""
+        position = event.pos()
+        if self._mouse_interaction_enabled and self.is_opaque_at(position.x(), position.y()):
+            self.context_menu_requested.emit(event.globalPos())
+            event.accept()
+            return
+        event.ignore()
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         if self._current_pixmap.isNull():

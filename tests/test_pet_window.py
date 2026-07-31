@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -119,6 +119,31 @@ def test_macos_tool_window_remains_visible_when_application_is_inactive(
     qtbot.addWidget(window)
 
     assert window.testAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
+
+
+def test_context_menu_is_requested_only_on_an_opaque_pet_pixel(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    opaque_root = tmp_path / "opaque"
+    opaque_root.mkdir()
+    opaque = _window(opaque_root)
+    qtbot.addWidget(opaque)
+    requested: list[QPoint] = []
+    opaque.context_menu_requested.connect(requested.append)
+    event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(1, 1), QPoint(50, 60))
+
+    QApplication.sendEvent(opaque, event)
+
+    assert requested == [QPoint(50, 60)]
+
+    transparent_root = tmp_path / "transparent"
+    transparent_root.mkdir()
+    transparent = PetWindow(_package(transparent_root, colour=(255, 0, 0, 0)))
+    qtbot.addWidget(transparent)
+    transparent.context_menu_requested.connect(requested.append)
+    transparent_event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(1, 1), QPoint(70, 80))
+
+    QApplication.sendEvent(transparent, transparent_event)
+
+    assert requested == [QPoint(50, 60)]
 
 
 def test_idle_frame_is_rendered_and_alpha_hit_testing_uses_current_frame_cache(qtbot: pytest.QtBot, tmp_path: Path) -> None:

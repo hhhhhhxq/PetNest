@@ -124,6 +124,31 @@ def test_application_reveal_restores_a_hidden_pet_window(qtbot: pytest.QtBot, tm
     assert application.window.isVisible()
 
 
+def test_pet_context_menu_updates_scale_pause_and_always_on_top(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False
+    )
+    qtbot.addWidget(application.window)
+
+    application._sync_pet_context_menu()
+    application.zoom_in_action.trigger()
+    application.pause_context_action.trigger()
+    application.always_on_top_context_action.trigger()
+
+    assert application.window.scale == 1.1
+    assert application.window.player.is_paused
+    assert application.settings.always_on_top is False
+    assert settings_manager.load().scale == 1.1
+    assert settings_manager.load().animation_paused is True
+    assert settings_manager.load().always_on_top is False
+
+
 def test_application_clamps_saved_position_that_is_outside_all_screens(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

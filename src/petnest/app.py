@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QMenuBar, QMessageBox
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QPalette
+from PySide6.QtWidgets import QApplication, QMenu, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
@@ -72,6 +72,29 @@ class PetNest:
         self.package = self._select_package(self.settings.current_pet_id)
         self.event_bus = EventBus()
         self.window = PetWindow(self.package, position_saved=self._save_window_position)
+        self.pet_context_menu = QMenu(self.window)
+        self.pet_context_menu.setObjectName("petContextMenu")
+        self.pet_context_menu.setStyleSheet(_pet_context_menu_stylesheet(QApplication.palette()))
+        self.context_header_action = QAction(self.pet_context_menu)
+        self.context_header_action.setEnabled(False)
+        self.pet_context_menu.addAction(self.context_header_action)
+        self.pet_context_menu.addSeparator()
+        self.zoom_out_action = self.pet_context_menu.addAction("－  缩小")
+        self.zoom_in_action = self.pet_context_menu.addAction("＋  放大")
+        self.reset_scale_action = self.pet_context_menu.addAction("↺  恢复默认大小")
+        self.pet_context_menu.addSeparator()
+        self.pause_context_action = QAction("Ⅱ  暂停动画", self.pet_context_menu)
+        self.always_on_top_context_action = QAction("始终置顶", self.pet_context_menu)
+        self.always_on_top_context_action.setCheckable(True)
+        self.pet_context_menu.addAction(self.pause_context_action)
+        self.pet_context_menu.addAction(self.always_on_top_context_action)
+        self.zoom_in_action.triggered.connect(lambda: self._adjust_context_scale(0.1))
+        self.zoom_out_action.triggered.connect(lambda: self._adjust_context_scale(-0.1))
+        self.reset_scale_action.triggered.connect(self._reset_context_scale)
+        self.pause_context_action.triggered.connect(self._toggle_context_pause)
+        self.always_on_top_context_action.triggered.connect(self._toggle_context_always_on_top)
+        self.pet_context_menu.aboutToShow.connect(self._sync_pet_context_menu)
+        self.window.context_menu_requested.connect(self._show_pet_context_menu)
         self._restore_window_settings()
         self.event_bus.subscribe(self.window.handle_pet_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
@@ -215,6 +238,36 @@ class PetNest:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
         self.settings_manager.save(settings)
+
+    def _show_pet_context_menu(self, position: QPoint) -> None:
+        """在宠物右键位置弹出跨平台快捷菜单。"""
+        self._sync_pet_context_menu()
+        self.pet_context_menu.popup(position)
+
+    def _sync_pet_context_menu(self) -> None:
+        """让快捷菜单文字、勾选状态与当前运行状态保持一致。"""
+        scale = self.window.scale
+        display = self.package.display
+        self.context_header_action.setText(f"{self.package.name}  ·  {round(scale * 100)}%")
+        self.zoom_in_action.setEnabled(scale < display.max_scale)
+        self.zoom_out_action.setEnabled(scale > display.min_scale)
+        self.reset_scale_action.setEnabled(scale != display.default_scale)
+        self.pause_context_action.setText("▶  继续动画" if self.window.player.is_paused else "Ⅱ  暂停动画")
+        self.always_on_top_context_action.setChecked(self.settings.always_on_top)
+
+    def _adjust_context_scale(self, delta: float) -> None:
+        display = self.package.display
+        scale = min(display.max_scale, max(display.min_scale, round(self.window.scale + delta, 2)))
+        self.apply_settings(replace(self.settings, scale=scale))
+
+    def _reset_context_scale(self) -> None:
+        self.apply_settings(replace(self.settings, scale=self.package.display.default_scale))
+
+    def _toggle_context_pause(self) -> None:
+        self.apply_settings(replace(self.settings, animation_paused=not self.window.player.is_paused))
+
+    def _toggle_context_always_on_top(self, enabled: bool) -> None:
+        self.apply_settings(replace(self.settings, always_on_top=enabled))
 
     def show_settings_dialog(self) -> None:
         """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
@@ -378,6 +431,45 @@ class PetNest:
             return override.frame_durations_ms
         target_total = round(sum(source) / override.speed_multiplier)
         return _scaled_timeline(source, target_total)
+
+
+def _pet_context_menu_stylesheet(palette: QPalette) -> str:
+    """生成兼容 macOS/Windows 深浅色主题的紧凑快捷菜单样式。"""
+    dark = palette.color(QPalette.ColorRole.Window).lightness() < 128
+    background = "#242529" if dark else "#FFFFFF"
+    border = "#3A3B40" if dark else "#D9D9DE"
+    text = palette.color(QPalette.ColorRole.Text).name(QColor.NameFormat.HexRgb)
+    muted = "#9A9BA1" if dark else "#777880"
+    selected = "#0A84FF" if dark else "#007AFF"
+    return f"""
+        QMenu#petContextMenu {{
+            background-color: {background};
+            color: {text};
+            border: 1px solid {border};
+            border-radius: 10px;
+            padding: 7px;
+            font-size: 13px;
+        }}
+        QMenu#petContextMenu::item {{
+            min-width: 190px;
+            padding: 7px 28px 7px 12px;
+            margin: 1px 0;
+            border-radius: 6px;
+        }}
+        QMenu#petContextMenu::item:selected {{
+            background-color: {selected};
+            color: #FFFFFF;
+        }}
+        QMenu#petContextMenu::item:disabled {{
+            color: {muted};
+            background-color: transparent;
+        }}
+        QMenu#petContextMenu::separator {{
+            height: 1px;
+            background-color: {border};
+            margin: 6px 8px;
+        }}
+    """
 
 
 def _scaled_timeline(source: tuple[int, ...], target_total: int) -> tuple[int, ...]:
