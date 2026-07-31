@@ -9,7 +9,7 @@ import sys
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
@@ -97,6 +97,14 @@ class PetNest:
             if enable_tray
             else None
         )
+        self.menu_bar: QMenuBar | None = None
+        if sys.platform == "darwin" and self.tray is not None:
+            # 桌宠没有普通主窗口；显式提供原生全局菜单，避免所有功能只能
+            # 从状态栏图标进入。托盘菜单与顶部“桌宠”菜单共享同一组动作。
+            self.tray.menu.setTitle("Menu")
+            self.menu_bar = QMenuBar()
+            self.menu_bar.setNativeMenuBar(True)
+            self.menu_bar.addMenu(self.tray.menu)
 
     @staticmethod
     def check_installation() -> int:

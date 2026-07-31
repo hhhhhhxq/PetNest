@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 import sys
 
+from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMessageBox
 
@@ -32,7 +33,13 @@ def main(arguments: list[str] | None = None) -> int:
         manager.save(replace(manager.load(), pets_root=str(root)))
         return 0
     configure_logging()
+    # macOS 在 QApplication 构造期间创建全局应用菜单，所以名称必须在
+    # QApplication 之前设置，否则菜单会沿用 python / __main__.py。
+    QCoreApplication.setApplicationName("PetNest")
+    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setOrganizationName("PetNest")
     application = QApplication(sys.argv)
+    application.setApplicationDisplayName("PetNest")
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(application_icon())
     coordinator = SingleInstanceCoordinator("PetNest-single-instance", SettingsManager.default_path().with_name("instance.pid"))

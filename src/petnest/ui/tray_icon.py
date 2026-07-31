@@ -15,7 +15,10 @@ from .pet_window import PetWindow
 def petnest_icon() -> QIcon:
     """加载项目图标；缺失资源时安全回退为 Qt 默认图标。"""
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
-    icon = QIcon(str(root / "assets" / "icons" / "petnest.ico"))
+    # macOS 状态栏对 PNG 的显示比 Windows ICO 更可靠；其他平台保留
+    # 多尺寸 ICO，避免改变已有 Windows 行为。
+    icon_name = "petnest.png" if sys.platform == "darwin" else "petnest.ico"
+    icon = QIcon(str(root / "assets" / "icons" / icon_name))
     if not icon.isNull():
         return icon
     return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
