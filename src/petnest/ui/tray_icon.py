@@ -21,6 +21,15 @@ def petnest_icon() -> QIcon:
     return QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
 
 
+def application_icon() -> QIcon:
+    """加载安装包与窗口使用的图标；托盘图标保持独立。"""
+    root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+    icon = QIcon(str(root / "assets" / "icons" / "petnest-app.ico"))
+    if not icon.isNull():
+        return icon
+    return petnest_icon()
+
+
 class PetTrayIcon(QSystemTrayIcon):
     """提供显示切换、暂停切换和退出动作的托盘图标。"""
 

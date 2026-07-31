@@ -5,6 +5,7 @@ AppId={{A6247183-E067-48E4-A2B4-19A46F8B4DD5}
 AppName=PetNest
 AppVersion=0.1.0
 AppPublisher=PetNest
+SetupIconFile=..\assets\icons\petnest-app.ico
 DefaultDirName={autopf}\PetNest
 DefaultGroupName=PetNest
 DisableProgramGroupPage=yes

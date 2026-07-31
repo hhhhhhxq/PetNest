@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 from .app import PetNest
 from .logging_config import configure_logging
 from .core.settings_manager import SettingsManager
-from .ui.tray_icon import petnest_icon
+from .ui.tray_icon import application_icon
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -32,7 +32,7 @@ def main(arguments: list[str] | None = None) -> int:
     configure_logging()
     application = QApplication(sys.argv)
     application.setQuitOnLastWindowClosed(False)
-    application.setWindowIcon(petnest_icon())
+    application.setWindowIcon(application_icon())
     petnest = PetNest()
     petnest.start()
     return application.exec()

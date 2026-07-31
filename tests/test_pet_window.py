@@ -25,7 +25,7 @@ from petnest.models.pet_package import (
     PetPackage,
 )
 from petnest.ui.pet_window import PetWindow
-from petnest.ui.tray_icon import PetTrayIcon
+from petnest.ui.tray_icon import PetTrayIcon, application_icon
 
 
 def _package(tmp_path: Path, *, identifier: str = "cat", colour: tuple[int, int, int, int] = (255, 0, 0, 255)) -> PetPackage:
@@ -293,6 +293,10 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     tray = PetTrayIcon(window, on_import=lambda: None)
 
     assert tray.import_action.text() == "导入精灵图…"
+
+
+def test_application_icon_uses_the_dedicated_app_asset(qtbot: pytest.QtBot) -> None:
+    assert not application_icon().isNull()
 
 
 def test_tray_exposes_pet_folder_and_refresh_actions(qtbot: pytest.QtBot, tmp_path: Path) -> None:

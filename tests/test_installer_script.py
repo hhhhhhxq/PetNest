@@ -24,3 +24,12 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert 'pets\\sample_pet;pets\\sample_pet' not in build_script
     assert "src\\petnest_launcher.py" in build_script
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
+
+
+def test_installer_and_application_use_the_dedicated_app_icon() -> None:
+    contents = Path("installer/PetNest.iss").read_text(encoding="utf-8")
+    build_script = Path("build_windows.bat").read_text(encoding="utf-8")
+
+    assert Path("assets/icons/petnest-app.ico").is_file()
+    assert "SetupIconFile=..\\assets\\icons\\petnest-app.ico" in contents
+    assert "--icon assets\\icons\\petnest-app.ico" in build_script
