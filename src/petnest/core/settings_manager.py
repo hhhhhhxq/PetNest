@@ -101,6 +101,20 @@ class SettingsManager:
             version = 5
         if version == 5:
             migrated.setdefault("pets_root", None)
+            migrated["schema_version"] = 6
+            version = 6
+        if version == 6:
+            migrated.setdefault("work_countdown_enabled", True)
+            migrated.setdefault("work_start_time", "09:00")
+            migrated.setdefault("work_end_time", "18:00")
+            migrated["schema_version"] = Settings.SCHEMA_VERSION
+            version = 7
+        if version == 7:
+            legacy_end = migrated.get("work_end_time", "18:00")
+            migrated.setdefault(
+                "daily_work_end_times",
+                {"0": legacy_end, "1": legacy_end, "2": legacy_end, "3": legacy_end, "4": legacy_end, "5": None, "6": None},
+            )
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

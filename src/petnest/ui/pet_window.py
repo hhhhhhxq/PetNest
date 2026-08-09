@@ -7,8 +7,8 @@ from math import hypot
 import sys
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from petnest.core.animation_player import AnimationPlayer
@@ -66,6 +66,7 @@ class PetWindow(QWidget):
         self._window_origin: QPoint | None = None
         self._dragging = False
         self._mouse_interaction_enabled = True
+        self._countdown_text: str | None = None
 
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._on_animation_tick)
@@ -94,7 +95,8 @@ class PetWindow(QWidget):
         frame = self.player.current_frame
         if frame is None:
             return False
-        logical_x, logical_y = int(x / self.scale), int(y / self.scale)
+        logical_x = int(x / self.scale)
+        logical_y = int((y - self._countdown_height()) / self.scale)
         if logical_x < 0 or logical_y < 0 or logical_x >= frame.width or logical_y >= frame.height:
             return False
         cache_key = id(frame)
@@ -159,6 +161,16 @@ class PetWindow(QWidget):
     def set_mouse_interaction_enabled(self, enabled: bool) -> None:
         """关闭后忽略宠物鼠标事件，保留窗口显示和动画。"""
         self._mouse_interaction_enabled = enabled
+
+    def set_countdown_text(self, text: str | None) -> None:
+        """在宠物上方显示倒计时；空值会移除预留区域。"""
+        normalized = text or None
+        height_changed = (self._countdown_text is None) != (normalized is None)
+        self._countdown_text = normalized
+        if height_changed:
+            self.setFixedSize(self._scaled_canvas_size())
+            self.move(self.clamp_position(self.pos()))
+        self.update()
 
     def handle_pet_event(self, event: PetEvent) -> None:
         """供应用事件总线传入统一事件，不暴露内部播放细节。"""
@@ -252,7 +264,20 @@ class PetWindow(QWidget):
         if self._current_pixmap.isNull():
             return
         painter = QPainter(self)
-        painter.drawPixmap(self.rect(), self._current_pixmap)
+        pet_rect = QRect(0, self._countdown_height(), self.width(), round(self.package.canvas.height * self.scale))
+        painter.drawPixmap(pet_rect, self._current_pixmap)
+        if self._countdown_text is not None:
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+            bubble = QRect(3, 2, self.width() - 6, self._countdown_height() - 6)
+            painter.setPen(QColor(255, 255, 255, 70))
+            painter.setBrush(QColor(35, 35, 40, 225))
+            painter.drawRoundedRect(bubble, 10, 10)
+            font = painter.font()
+            font.setPixelSize(12)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(QColor("white"))
+            painter.drawText(bubble, Qt.AlignmentFlag.AlignCenter, self._countdown_text)
 
     def _handle_event(self, event_name: str) -> None:
         transition = self.state_machine.handle(PetEvent(event_name, source="mouse"))
@@ -297,8 +322,11 @@ class PetWindow(QWidget):
     def _scaled_canvas_size(self) -> QSize:
         return QSize(
             round(self.package.canvas.width * self.scale),
-            round(self.package.canvas.height * self.scale),
+            round(self.package.canvas.height * self.scale) + self._countdown_height(),
         )
+
+    def _countdown_height(self) -> int:
+        return 36 if self._countdown_text is not None else 0
 
     def _is_interactive(self, event: QMouseEvent) -> bool:
         return self._mouse_interaction_enabled and self.is_opaque_at(int(event.position().x()), int(event.position().y()))

@@ -19,7 +19,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 8
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -38,6 +38,12 @@ class Settings:
     system_sleep_seconds: int = 35
     run_at_startup: bool = False
     pets_root: str | None = None
+    work_countdown_enabled: bool = True
+    work_start_time: str = "09:00"
+    work_end_time: str = "18:00"
+    daily_work_end_times: dict[str, str | None] = field(
+        default_factory=lambda: {"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None}
+    )
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

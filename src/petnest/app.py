@@ -28,6 +28,7 @@ from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
+from petnest.ui.work_countdown import WorkCountdownWindow
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ class PetNest:
         self.package = self._select_package(self.settings.current_pet_id)
         self.event_bus = EventBus()
         self.window = PetWindow(self.package, position_saved=self._save_window_position)
+        self.work_countdown = WorkCountdownWindow(self.window)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")
         self.pet_context_menu.setStyleSheet(_pet_context_menu_stylesheet(QApplication.palette()))
@@ -151,6 +153,7 @@ class PetNest:
         if self.tray is not None:
             self.tray.show()
         self.window.show()
+        self._configure_work_countdown()
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
     def reveal(self) -> None:
@@ -234,6 +237,7 @@ class PetNest:
         self.window.set_always_on_top(settings.always_on_top)
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
+        self._configure_work_countdown()
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
@@ -341,6 +345,8 @@ class PetNest:
             self.external_server.stop()
             self.external_server = None
         self.system_idle_timer.stop()
+        self.work_countdown.timer.stop()
+        self.work_countdown.hide()
         self.platform_adapter.stop()
         self._save_window_position(self.window.pos())
         if self.tray is not None:
@@ -390,6 +396,15 @@ class PetNest:
         self.window.set_paused(self.settings.animation_paused)
         self.window.set_always_on_top(self.settings.always_on_top)
         self.window.set_mouse_interaction_enabled(self.settings.mouse_interaction_enabled)
+
+    def _configure_work_countdown(self) -> None:
+        self.work_countdown.configure(
+            enabled=self.settings.work_countdown_enabled,
+            start_time=self.settings.work_start_time,
+            end_time=self.settings.work_end_time,
+            daily_end_times=self.settings.daily_work_end_times,
+            always_on_top=self.settings.always_on_top,
+        )
 
     def _save_window_position(self, position: QPoint) -> None:
         self.settings = replace(self.settings, window_x=position.x(), window_y=position.y())

@@ -70,3 +70,24 @@ def test_custom_pets_root_round_trips(tmp_path) -> None:
     SettingsManager(path).save(Settings(pets_root="D:/PetNestPets"))
 
     assert SettingsManager(path).load().pets_root == "D:/PetNestPets"
+
+
+def test_work_countdown_settings_round_trip(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    SettingsManager(path).save(
+        Settings(work_countdown_enabled=False, work_start_time="10:00", work_end_time="19:30")
+    )
+
+    loaded = SettingsManager(path).load()
+    assert (loaded.work_countdown_enabled, loaded.work_start_time, loaded.work_end_time) == (False, "10:00", "19:30")
+
+
+def test_version_7_countdown_migrates_to_weekday_schedule(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 7, "work_end_time": "18:30"}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.daily_work_end_times == {
+        "0": "18:30", "1": "18:30", "2": "18:30", "3": "18:30", "4": "18:30", "5": None, "6": None
+    }
