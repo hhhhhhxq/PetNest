@@ -91,3 +91,23 @@ def test_version_7_countdown_migrates_to_weekday_schedule(tmp_path) -> None:
     assert loaded.daily_work_end_times == {
         "0": "18:30", "1": "18:30", "2": "18:30", "3": "18:30", "4": "18:30", "5": None, "6": None
     }
+
+
+def test_version_8_adds_compact_countdown_card_layout_defaults(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert (loaded.countdown_gap, loaded.countdown_width, loaded.countdown_height, loaded.countdown_theme) == (
+        0, 132, 37, "cream"
+    )
+
+
+def test_countdown_theme_round_trips(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    SettingsManager(path).save(Settings(countdown_theme="night", countdown_width=142, countdown_height=32))
+
+    loaded = SettingsManager(path).load()
+
+    assert (loaded.countdown_theme, loaded.countdown_width, loaded.countdown_height) == ("night", 142, 32)

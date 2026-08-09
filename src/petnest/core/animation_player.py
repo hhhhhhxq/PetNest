@@ -54,6 +54,11 @@ class AnimationPlayer:
         return self._current_frames[self._current_frame_index]
 
     @property
+    def current_frames(self) -> tuple[Image.Image, ...]:
+        """当前动作已预加载的全部帧，供显示层计算稳定的可见边界。"""
+        return self._current_frames
+
+    @property
     def current_frame_index(self) -> int:
         """当前帧的从零开始索引。"""
         return self._current_frame_index

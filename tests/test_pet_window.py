@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -155,6 +155,58 @@ def test_idle_frame_is_rendered_and_alpha_hit_testing_uses_current_frame_cache(q
     assert not window.current_pixmap.isNull()
     assert window.is_opaque_at(0, 0)
     assert window.is_opaque_at(0, 0)  # repeated access must use the same cached alpha mask
+
+
+def test_countdown_card_is_below_centered_pet_and_uses_adjustable_geometry(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=12, width=200, height=60)
+    window.set_countdown_text("距离下班 01:23:45")
+    window.show()
+
+    assert window.size() == QSize(200, 84)
+    assert all(not skin.isNull() for skin in window._countdown_skins.values())
+    pet_left = (window.width() - 15) // 2
+    assert window.is_opaque_at(pet_left, 0)
+    assert not window.is_opaque_at(window.width() // 2, window.height() - 1)
+
+
+def test_countdown_ignores_transparent_padding_below_visible_pet(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        frame = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+        frame.paste((255, 0, 0, 255), (0, 0, 10, 4))
+        frame.save(path)
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=0, width=132, height=30)
+    window.set_countdown_text("下班啦")
+    window.show()
+
+    assert window.height() == 36  # 4 个可见像素 × 1.5 倍 + 30 像素卡片。
+
+
+def test_countdown_auto_expands_for_text_and_applies_all_layout_settings(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=7, width=110, height=26, theme="night")
+    window.set_countdown_text("距离下班 100:59:59")
+    window.show()
+
+    assert window.width() > 110
+    assert window._countdown_rect().height() == 26
+    assert window._countdown_rect().top() == 19
+
+    window.set_countdown_text("下班啦")
+    window.set_countdown_appearance(gap=20, width=300, height=80, theme="yarn")
+
+    assert window.width() == 300
+    assert window._countdown_rect().size() == QSize(300, 80)
+    assert window._countdown_rect().top() == 32
 
 
 def test_mouse_enter_and_click_drive_the_configured_state_machine(qtbot: pytest.QtBot, tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ from dataclasses import replace
 from PySide6.QtCore import QTime
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -50,6 +51,24 @@ class SettingsDialog(QDialog):
         self.work_countdown_input.setChecked(settings.work_countdown_enabled)
         self.work_start_input = QTimeEdit(QTime.fromString(settings.work_start_time, "HH:mm"), self)
         self.work_start_input.setDisplayFormat("HH:mm")
+        self.countdown_gap_input = QSpinBox(self)
+        self.countdown_gap_input.setRange(0, 80)
+        self.countdown_gap_input.setSuffix(" 像素")
+        self.countdown_gap_input.setValue(settings.countdown_gap)
+        self.countdown_width_input = QSpinBox(self)
+        self.countdown_width_input.setRange(110, 420)
+        self.countdown_width_input.setSuffix(" 像素")
+        self.countdown_width_input.setValue(settings.countdown_width)
+        self.countdown_height_input = QSpinBox(self)
+        self.countdown_height_input.setRange(26, 100)
+        self.countdown_height_input.setSuffix(" 像素")
+        self.countdown_height_input.setValue(settings.countdown_height)
+        self.countdown_theme_input = QComboBox(self)
+        self.countdown_theme_input.addItem("A · 奶油爪爪", "cream")
+        self.countdown_theme_input.addItem("B · 黑猫夜灯", "night")
+        self.countdown_theme_input.addItem("C · 毛线便签", "yarn")
+        theme_index = self.countdown_theme_input.findData(settings.countdown_theme)
+        self.countdown_theme_input.setCurrentIndex(max(0, theme_index))
         self.daily_work_inputs: dict[str, tuple[QCheckBox, QTimeEdit]] = {}
         layout.addRow("缩放", self.scale_input)
         layout.addRow("始终置顶", self.always_on_top_input)
@@ -59,6 +78,10 @@ class SettingsDialog(QDialog):
         layout.addRow("无操作后睡觉", self.system_sleep_input)
         layout.addRow("显示上下班倒计时", self.work_countdown_input)
         layout.addRow("上班时间", self.work_start_input)
+        layout.addRow("倒计时与宠物间距", self.countdown_gap_input)
+        layout.addRow("倒计时最小宽度", self.countdown_width_input)
+        layout.addRow("倒计时卡片高度", self.countdown_height_input)
+        layout.addRow("倒计时主题", self.countdown_theme_input)
         weekday_names = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
         for index, name in enumerate(weekday_names):
             key = str(index)
@@ -100,4 +123,8 @@ class SettingsDialog(QDialog):
             work_start_time=self.work_start_input.time().toString("HH:mm"),
             work_end_time=legacy_end,
             daily_work_end_times=daily_end_times,
+            countdown_gap=self.countdown_gap_input.value(),
+            countdown_width=self.countdown_width_input.value(),
+            countdown_height=self.countdown_height_input.value(),
+            countdown_theme=str(self.countdown_theme_input.currentData()),
         )

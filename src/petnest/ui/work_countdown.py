@@ -95,11 +95,19 @@ class WorkCountdownWindow(QLabel):
         start_time: str,
         end_time: str,
         daily_end_times: dict[str, str | None] | None,
+        gap: int,
+        width: int,
+        height: int,
+        theme: str,
         always_on_top: bool,
     ) -> None:
         self.start_time = start_time
         self.end_time = end_time
         self.daily_end_times = daily_end_times
+        if self.pet_window is not None:
+            self.pet_window.set_countdown_appearance(  # type: ignore[attr-defined]
+                gap=gap, width=width, height=height, theme=theme
+            )
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
         if enabled:
             self.refresh()

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from math import hypot
+from pathlib import Path
 import sys
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
+from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QFont, QFontMetrics, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from petnest.core.animation_player import AnimationPlayer
@@ -67,6 +68,11 @@ class PetWindow(QWidget):
         self._dragging = False
         self._mouse_interaction_enabled = True
         self._countdown_text: str | None = None
+        self._countdown_gap = 0
+        self._countdown_width = 132
+        self._countdown_card_height = 37
+        self._countdown_theme = "cream"
+        self._countdown_skins = self._load_countdown_skins()
 
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._on_animation_tick)
@@ -95,8 +101,8 @@ class PetWindow(QWidget):
         frame = self.player.current_frame
         if frame is None:
             return False
-        logical_x = int(x / self.scale)
-        logical_y = int((y - self._countdown_height()) / self.scale)
+        logical_x = int((x - self._pet_left()) / self.scale)
+        logical_y = int(y / self.scale)
         if logical_x < 0 or logical_y < 0 or logical_x >= frame.width or logical_y >= frame.height:
             return False
         cache_key = id(frame)
@@ -163,11 +169,22 @@ class PetWindow(QWidget):
         self._mouse_interaction_enabled = enabled
 
     def set_countdown_text(self, text: str | None) -> None:
-        """在宠物上方显示倒计时；空值会移除预留区域。"""
+        """在宠物下方显示倒计时；空值会移除预留区域。"""
         normalized = text or None
-        height_changed = (self._countdown_text is None) != (normalized is None)
         self._countdown_text = normalized
-        if height_changed:
+        target_size = self._scaled_canvas_size()
+        if self.size() != target_size:
+            self.setFixedSize(target_size)
+            self.move(self.clamp_position(self.pos()))
+        self.update()
+
+    def set_countdown_appearance(self, *, gap: int, width: int, height: int, theme: str = "cream") -> None:
+        """更新倒计时卡片尺寸及它与宠物之间的垂直间距。"""
+        self._countdown_gap = max(0, min(int(gap), 80))
+        self._countdown_width = max(110, min(int(width), 420))
+        self._countdown_card_height = max(26, min(int(height), 100))
+        self._countdown_theme = theme if theme in {"cream", "night", "yarn"} else "cream"
+        if self._countdown_text is not None:
             self.setFixedSize(self._scaled_canvas_size())
             self.move(self.clamp_position(self.pos()))
         self.update()
@@ -264,20 +281,26 @@ class PetWindow(QWidget):
         if self._current_pixmap.isNull():
             return
         painter = QPainter(self)
-        pet_rect = QRect(0, self._countdown_height(), self.width(), round(self.package.canvas.height * self.scale))
+        painter.setRenderHints(
+            QPainter.RenderHint.Antialiasing
+            | QPainter.RenderHint.TextAntialiasing
+            | QPainter.RenderHint.SmoothPixmapTransform
+        )
+        pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
         painter.drawPixmap(pet_rect, self._current_pixmap)
         if self._countdown_text is not None:
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-            bubble = QRect(3, 2, self.width() - 6, self._countdown_height() - 6)
-            painter.setPen(QColor(255, 255, 255, 70))
-            painter.setBrush(QColor(35, 35, 40, 225))
-            painter.drawRoundedRect(bubble, 10, 10)
-            font = painter.font()
-            font.setPixelSize(12)
-            font.setBold(True)
+            bubble = self._countdown_rect()
+            skin = self._countdown_skins.get(self._countdown_theme)
+            if skin is not None and not skin.isNull():
+                self._draw_countdown_skin(painter, bubble, skin)
+            font = self._countdown_font(bubble.height())
             painter.setFont(font)
-            painter.setPen(QColor("white"))
-            painter.drawText(bubble, Qt.AlignmentFlag.AlignCenter, self._countdown_text)
+            text_colours = {"cream": "#754453", "night": "#FFF9FF", "yarn": "#69483D"}
+            painter.setPen(QColor(text_colours[self._countdown_theme]))
+            left_inset, right_inset = self._countdown_text_insets(bubble.height())
+            text_rect = bubble.adjusted(left_inset, 0, -right_inset, 0)
+            painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self._countdown_text)
 
     def _handle_event(self, event_name: str) -> None:
         transition = self.state_machine.handle(PetEvent(event_name, source="mouse"))
@@ -320,13 +343,93 @@ class PetWindow(QWidget):
         self.update()
 
     def _scaled_canvas_size(self) -> QSize:
-        return QSize(
-            round(self.package.canvas.width * self.scale),
-            round(self.package.canvas.height * self.scale) + self._countdown_height(),
+        width = self._pet_width()
+        height = self._pet_height()
+        if self._countdown_text is not None:
+            width = max(width, self._effective_countdown_width())
+            height = max(height, self._countdown_top() + self._countdown_card_height)
+        return QSize(width, height)
+
+    def _pet_width(self) -> int:
+        return round(self.package.canvas.width * self.scale)
+
+    def _pet_height(self) -> int:
+        return round(self.package.canvas.height * self.scale)
+
+    def _pet_left(self) -> int:
+        return max(0, (self.width() - self._pet_width()) // 2)
+
+    def _countdown_rect(self) -> QRect:
+        width = self._effective_countdown_width()
+        height = self._countdown_card_height
+        left = (self.width() - width) // 2
+        top = self._countdown_top()
+        return QRect(left, top, width, height)
+
+    def _effective_countdown_width(self) -> int:
+        if self._countdown_text is None:
+            return self._countdown_width
+        font = self._countdown_font(self._countdown_card_height)
+        text_width = QFontMetrics(font).horizontalAdvance(self._countdown_text)
+        left, right = self._countdown_text_insets(self._countdown_card_height)
+        return max(self._countdown_width, text_width + left + right + 8)
+
+    def _countdown_font(self, height: int) -> QFont:
+        font = self.font()
+        font.setPixelSize(max(9, min(14, height // 3)))
+        font.setBold(True)
+        return font
+
+    def _countdown_text_insets(self, height: int) -> tuple[int, int]:
+        base = {"cream": (30, 8), "night": (29, 21), "yarn": (31, 23)}[self._countdown_theme]
+        scale = height / 37
+        return max(5, round(base[0] * scale)), max(5, round(base[1] * scale))
+
+    def _draw_countdown_skin(self, painter: QPainter, target: QRect, skin: QPixmap) -> None:
+        """固定两侧装饰，仅横向拉伸空白中段，保证设置尺寸真实生效。"""
+        source_caps = {"cream": (235, 75), "night": (205, 95), "yarn": (245, 145)}
+        source_left, source_right = source_caps[self._countdown_theme]
+        vertical_scale = target.height() / skin.height()
+        target_left = max(1, round(source_left * vertical_scale))
+        target_right = max(1, round(source_right * vertical_scale))
+        if target_left + target_right >= target.width():
+            ratio = target.width() / (target_left + target_right + 1)
+            target_left = max(1, round(target_left * ratio))
+            target_right = max(1, round(target_right * ratio))
+        target_middle = target.width() - target_left - target_right
+        source_middle = skin.width() - source_left - source_right
+        painter.drawPixmap(
+            QRect(target.left(), target.top(), target_left, target.height()),
+            skin,
+            QRect(0, 0, source_left, skin.height()),
+        )
+        painter.drawPixmap(
+            QRect(target.left() + target_left, target.top(), target_middle, target.height()),
+            skin,
+            QRect(source_left, 0, source_middle, skin.height()),
+        )
+        painter.drawPixmap(
+            QRect(target.right() - target_right + 1, target.top(), target_right, target.height()),
+            skin,
+            QRect(skin.width() - source_right, 0, source_right, skin.height()),
         )
 
-    def _countdown_height(self) -> int:
-        return 36 if self._countdown_text is not None else 0
+    def _countdown_top(self) -> int:
+        """按当前动作全部帧的实际 alpha 底边定位，忽略素材透明留白。"""
+        visible_bottom = 0
+        for frame in self.player.current_frames:
+            bounds = frame.getchannel("A").getbbox()
+            if bounds is not None:
+                visible_bottom = max(visible_bottom, bounds[3])
+        if visible_bottom == 0:
+            visible_bottom = self.package.canvas.height
+        return round(visible_bottom * self.scale) + self._countdown_gap
+
+    @staticmethod
+    def _load_countdown_skins() -> dict[str, QPixmap]:
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+        directory = root / "assets" / "countdown"
+        return {theme: QPixmap(str(directory / f"{theme}.png")) for theme in ("cream", "night", "yarn")}
 
     def _is_interactive(self, event: QMouseEvent) -> bool:
         return self._mouse_interaction_enabled and self.is_opaque_at(int(event.position().x()), int(event.position().y()))

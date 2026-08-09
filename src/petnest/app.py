@@ -403,6 +403,10 @@ class PetNest:
             start_time=self.settings.work_start_time,
             end_time=self.settings.work_end_time,
             daily_end_times=self.settings.daily_work_end_times,
+            gap=self.settings.countdown_gap,
+            width=self.settings.countdown_width,
+            height=self.settings.countdown_height,
+            theme=self.settings.countdown_theme,
             always_on_top=self.settings.always_on_top,
         )
 

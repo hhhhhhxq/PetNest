@@ -115,6 +115,40 @@ class SettingsManager:
                 "daily_work_end_times",
                 {"0": legacy_end, "1": legacy_end, "2": legacy_end, "3": legacy_end, "4": legacy_end, "5": None, "6": None},
             )
+            migrated["schema_version"] = 8
+            version = 8
+        if version == 8:
+            migrated.setdefault("countdown_gap", 8)
+            migrated.setdefault("countdown_width", 190)
+            migrated.setdefault("countdown_height", 48)
+            migrated["schema_version"] = 9
+            version = 9
+        if version == 9:
+            if (
+                migrated.get("countdown_gap") == 8
+                and migrated.get("countdown_width") == 190
+                and migrated.get("countdown_height") == 48
+            ):
+                migrated["countdown_gap"] = 5
+                migrated["countdown_width"] = 150
+                migrated["countdown_height"] = 34
+            migrated.setdefault("countdown_theme", "cream")
+            migrated["schema_version"] = 10
+            version = 10
+        if version == 10:
+            if (
+                migrated.get("countdown_gap") == 5
+                and migrated.get("countdown_width") == 150
+                and migrated.get("countdown_height") == 34
+            ):
+                migrated["countdown_gap"] = 0
+                migrated["countdown_width"] = 132
+                migrated["countdown_height"] = 30
+            migrated["schema_version"] = 11
+            version = 11
+        if version == 11:
+            if migrated.get("countdown_width") == 132 and migrated.get("countdown_height") == 30:
+                migrated["countdown_height"] = 37
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
