@@ -55,8 +55,8 @@
 - 修改：私有 GitHub 仓库 `hhhhhhxq/petnest-resources` 的资源文件、manifest 和 README
 
 - [x] 将任务 1 生成的资源提交并推送到私有仓库。
-- [ ] 通过 Worker URL 请求 `/v1/manifest.json` 和至少一个 cursor、effect、countdown 文件（需要当前 Worker 的准确公开 URL）。
-- [ ] 对返回内容重新计算 SHA-256，与 manifest 中记录一致。
+- [x] 通过 Worker URL 请求 `/v1/manifest.json` 和至少一个 cursor、effect、countdown 文件。
+- [x] 对返回内容重新计算 SHA-256，与 manifest 中记录一致。
 - [x] 不把 Token、`.env`、Cloudflare Account ID 或本地临时文件提交。
 
 ---
