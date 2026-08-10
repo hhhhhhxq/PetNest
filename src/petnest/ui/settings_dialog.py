@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QTime
+from PySide6.QtCore import QTime, Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,19 +13,30 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
+    QLabel,
+    QPushButton,
     QSpinBox,
     QTimeEdit,
+    QVBoxLayout,
     QWidget,
 )
 
+from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.models.settings import Settings
 
 
 class SettingsDialog(QDialog):
     """编辑可由应用层持久化的 ``Settings``，不直接写磁盘。"""
 
-    def __init__(self, settings: Settings, parent: QDialog | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        parent: QDialog | None = None,
+        *,
+        cursor_styles: list[CursorStyle] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("PetNest 设置")
         self._settings = settings
@@ -47,6 +59,40 @@ class SettingsDialog(QDialog):
         self.mouse_follow_scale_input.setValue(settings.mouse_follow_scale)
         self.mouse_follow_input.toggled.connect(self.mouse_follow_scale_input.setEnabled)
         self.mouse_follow_scale_input.setEnabled(self.mouse_follow_input.isChecked())
+        self._cursor_styles = list(cursor_styles or [])
+        self.cursor_style_enabled_input = QCheckBox("使用自定义鼠标样式", self)
+        self.cursor_style_enabled_input.setChecked(settings.cursor_style_enabled)
+        self.cursor_style_input = QComboBox(self)
+        self.cursor_style_input.addItem("系统默认", None)
+        for style in self._cursor_styles:
+            self.cursor_style_input.addItem(style.display_name, style.identifier)
+        selected_cursor_style = self.cursor_style_input.findData(settings.cursor_style_id)
+        self.cursor_style_input.setCurrentIndex(max(0, selected_cursor_style))
+        self.cursor_preview = QLabel("选择样式后将在此预览", self)
+        self.cursor_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cursor_preview.setMinimumSize(96, 96)
+        self.restore_cursor_button = QPushButton("恢复 Windows 默认样式", self)
+        self.cursor_advanced_group = QGroupBox("高级光标设置（暂未添加其它样式）", self)
+        advanced_layout = QFormLayout(self.cursor_advanced_group)
+        for role in ("忙碌中", "文本选择", "拖拽/移动", "水平调整", "垂直调整", "左上↘右下调整", "右上↙左下调整"):
+            unavailable = QComboBox(self.cursor_advanced_group)
+            unavailable.addItem("使用系统默认")
+            unavailable.setEnabled(False)
+            advanced_layout.addRow(role, unavailable)
+        cursor_widget = QWidget(self)
+        cursor_layout = QVBoxLayout(cursor_widget)
+        cursor_layout.setContentsMargins(0, 0, 0, 0)
+        cursor_layout.addWidget(self.cursor_style_enabled_input)
+        cursor_layout.addWidget(self.cursor_style_input)
+        cursor_layout.addWidget(self.cursor_preview)
+        cursor_layout.addWidget(QLabel("点击位置为箭头尖端。", cursor_widget))
+        cursor_layout.addWidget(self.restore_cursor_button)
+        cursor_layout.addWidget(self.cursor_advanced_group)
+        self.cursor_style_enabled_input.toggled.connect(self._update_cursor_style_controls)
+        self.cursor_style_input.currentIndexChanged.connect(self._update_cursor_preview)
+        self.restore_cursor_button.clicked.connect(self._restore_system_cursor_selection)
+        self._update_cursor_style_controls(self.cursor_style_enabled_input.isChecked())
+        self._update_cursor_preview()
         self.system_idle_input = QCheckBox(self)
         self.system_idle_input.setChecked(settings.system_idle_enabled)
         self.system_bored_input = QSpinBox(self)
@@ -85,6 +131,7 @@ class SettingsDialog(QDialog):
         layout.addRow("启用鼠标交互", self.mouse_interaction_input)
         layout.addRow("跟随鼠标", self.mouse_follow_input)
         layout.addRow("跟随时大小", self.mouse_follow_scale_input)
+        layout.addRow("鼠标样式", cursor_widget)
         layout.addRow("启用系统空闲动作", self.system_idle_input)
         layout.addRow("无操作后无聊", self.system_bored_input)
         layout.addRow("无操作后睡觉", self.system_sleep_input)
@@ -130,6 +177,8 @@ class SettingsDialog(QDialog):
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
             mouse_follow_enabled=self.mouse_follow_input.isChecked(),
             mouse_follow_scale=self.mouse_follow_scale_input.value(),
+            cursor_style_enabled=self.cursor_style_enabled_input.isChecked(),
+            cursor_style_id=self._selected_cursor_style_id(),
             system_idle_enabled=self.system_idle_input.isChecked(),
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),
@@ -142,3 +191,32 @@ class SettingsDialog(QDialog):
             countdown_height=self.countdown_height_input.value(),
             countdown_theme=str(self.countdown_theme_input.currentData()),
         )
+
+    def _selected_cursor_style_id(self) -> str | None:
+        selected = self.cursor_style_input.currentData()
+        return str(selected) if self.cursor_style_enabled_input.isChecked() and isinstance(selected, str) else None
+
+    def _update_cursor_style_controls(self, enabled: bool) -> None:
+        if enabled and self.cursor_style_input.currentData() is None and self.cursor_style_input.count() > 1:
+            self.cursor_style_input.setCurrentIndex(1)
+        self.cursor_style_input.setEnabled(enabled)
+        self.cursor_preview.setEnabled(enabled)
+
+    def _update_cursor_preview(self) -> None:
+        identifier = self.cursor_style_input.currentData()
+        selected = next((style for style in self._cursor_styles if style.identifier == identifier), None)
+        if selected is None:
+            self.cursor_preview.setPixmap(QPixmap())
+            self.cursor_preview.setText("使用 Windows 系统默认样式")
+            return
+        pixmap = QPixmap(str(selected.preview_path))
+        if pixmap.isNull():
+            self.cursor_preview.setPixmap(QPixmap())
+            self.cursor_preview.setText("预览不可用")
+            return
+        self.cursor_preview.setText("")
+        self.cursor_preview.setPixmap(pixmap.scaled(88, 88, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def _restore_system_cursor_selection(self) -> None:
+        self.cursor_style_enabled_input.setChecked(False)
+        self.cursor_style_input.setCurrentIndex(0)

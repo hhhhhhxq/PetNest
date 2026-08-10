@@ -310,7 +310,7 @@ class PetNest:
 
     def show_settings_dialog(self) -> None:
         """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
-        dialog = SettingsDialog(self.settings, self.window)
+        dialog = SettingsDialog(self.settings, self.window, cursor_styles=self.cursor_catalog.discover())
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
 
