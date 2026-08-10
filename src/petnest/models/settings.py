@@ -19,7 +19,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 14
+    SCHEMA_VERSION = 15
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -50,6 +50,9 @@ class Settings:
     countdown_theme: str = "cream"
     mouse_follow_enabled: bool = False
     mouse_follow_scale: float = 0.45
+    cursor_style_enabled: bool = False
+    cursor_style_id: str | None = None
+    cursor_restore_pending: bool = False
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

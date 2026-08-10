@@ -124,3 +124,12 @@ def test_mouse_follow_defaults_round_trip_and_migrate(tmp_path) -> None:
     path.write_text(json.dumps({"schema_version": 13, "mouse_follow_scale": 0.55}), encoding="utf-8")
     migrated = manager.load()
     assert (migrated.mouse_follow_enabled, migrated.mouse_follow_scale) == (False, 0.45)
+
+
+def test_cursor_style_preferences_migrate_from_schema_14(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 14}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert (loaded.cursor_style_enabled, loaded.cursor_style_id, loaded.cursor_restore_pending) == (False, None, False)

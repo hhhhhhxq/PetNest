@@ -159,6 +159,12 @@ class SettingsManager:
         if version == 13:
             if migrated.get("mouse_follow_scale") == 0.55:
                 migrated["mouse_follow_scale"] = 0.45
+            migrated["schema_version"] = 14
+            version = 14
+        if version == 14:
+            migrated.setdefault("cursor_style_enabled", False)
+            migrated.setdefault("cursor_style_id", None)
+            migrated.setdefault("cursor_restore_pending", False)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
