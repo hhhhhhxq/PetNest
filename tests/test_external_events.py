@@ -33,6 +33,8 @@ def test_server_binds_strictly_to_loopback_and_publishes_valid_json() -> None:
     assert server.host == "127.0.0.1"
     assert server.start()
     try:
+        assert server._thread is not None
+        assert server._thread.daemon is True
         _send(server.port, json.dumps({"event": "agent.working", "source": "test", "payload": {"task": "build"}}).encode() + b"\n")
         _wait_for(lambda: len(received) == 1)
         assert received[0].event_name == "agent.working"

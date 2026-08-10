@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -36,6 +37,16 @@ from petnest.ui.tray_icon import PetTrayIcon
 from petnest.ui.work_countdown import WorkCountdownWindow
 
 LOGGER = logging.getLogger(__name__)
+_CURSOR_STYLE_ROLES = (
+    "arrow",
+    "busy",
+    "text",
+    "move",
+    "resize_horizontal",
+    "resize_vertical",
+    "resize_diag_1",
+    "resize_diag_2",
+)
 
 
 def bundled_pets_directory() -> Path:
@@ -384,20 +395,30 @@ class PetNest:
         if self._shutdown:
             return
         self._shutdown = True
-        if self.external_server is not None:
-            self.external_server.stop()
-            self.external_server = None
-        self.system_idle_timer.stop()
-        self.mouse_follow_timer.stop()
-        self.work_countdown.timer.stop()
-        self.platform_adapter.stop()
-        self._restore_cursor_style()
-        if not self.settings.mouse_follow_enabled:
-            self._save_window_position(self.window.pos())
+        # 首先撤掉用户可见的界面。外部服务的停止可能需要等待 socket
+        # 超时，不能让“退出”菜单看起来像没有响应。
         if self.tray is not None:
-            self.tray.hide()
-        self.window.hide()
-        QApplication.quit()
+            self._run_shutdown_step("隐藏托盘图标", self.tray.hide)
+        self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
+        server, self.external_server = self.external_server, None
+        if server is not None:
+            self._run_shutdown_step("停止外部事件服务", server.stop)
+        self._run_shutdown_step("停止系统空闲计时器", self.system_idle_timer.stop)
+        self._run_shutdown_step("停止鼠标跟随计时器", self.mouse_follow_timer.stop)
+        self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
+        self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
+        self._run_shutdown_step("恢复系统鼠标样式", self._restore_cursor_style)
+        if not self.settings.mouse_follow_enabled:
+            self._run_shutdown_step("保存窗口位置", lambda: self._save_window_position(self.window.pos()))
+        self._run_shutdown_step("退出 Qt 事件循环", QApplication.quit)
+
+    @staticmethod
+    def _run_shutdown_step(name: str, operation: Callable[[], object]) -> None:
+        """退出清理失败时记录错误，仍继续执行后续退出步骤。"""
+        try:
+            operation()
+        except Exception:  # noqa: BLE001 - 退出必须优先让用户可见的进程结束。
+            LOGGER.exception("PetNest 退出时无法%s", name)
 
     def _start_external_server(self) -> None:
         server = ExternalEventServer(self.event_bus, port=self.settings.external_event_port)
@@ -467,17 +488,27 @@ class PetNest:
             self.tray.set_mouse_follow_enabled(enabled)
 
     def _recover_pending_cursor(self) -> None:
-        """上次进程未完成退出时，优先恢复当时替换的普通箭头。"""
+        """上次进程未完成退出时，恢复全部可能被主题替换的角色。"""
         if not self.settings.cursor_restore_pending:
             return
-        if self.cursor_controller.restore_normal():
+        if self._restore_cursor_roles(_CURSOR_STYLE_ROLES):
             self.settings = replace(self.settings, cursor_restore_pending=False)
             self.settings_manager.save(self.settings)
+
+    def _restore_cursor_roles(self, roles: Iterable[str]) -> bool:
+        """让 Windows 从用户保存的方案一次性恢复全部系统光标。"""
+        if not tuple(roles):
+            return True
+        return self.cursor_controller.restore_system_defaults()
 
     def _configure_cursor_style(self, *, previous_pending: bool) -> None:
         """根据当前设置应用一个样式，或恢复之前由 PetNest 接管的箭头。"""
         selected = self.cursor_catalog.get(self.settings.cursor_style_id)
         if self.settings.cursor_style_enabled and selected is not None:
+            # 新主题没有提供的角色必须立即回到用户原有系统样式，不能继续沿用
+            # 上一个主题留下的图标。
+            missing_roles = (role for role in _CURSOR_STYLE_ROLES if role not in selected.roles)
+            self._restore_cursor_roles(missing_roles)
             applied = {
                 role
                 for role, path in selected.roles.items()
@@ -488,8 +519,7 @@ class PetNest:
                 self.settings = replace(self.settings, cursor_restore_pending=True)
                 return
         if previous_pending or self.settings.cursor_restore_pending:
-            roles = self._active_cursor_roles or {"arrow"}
-            restored = all(self.cursor_controller.restore_normal() if role == "arrow" else self.cursor_controller.restore_role(role) for role in roles)
+            restored = self._restore_cursor_roles(_CURSOR_STYLE_ROLES)
             self.settings = replace(self.settings, cursor_restore_pending=not restored)
             if restored:
                 self._active_cursor_roles.clear()
@@ -500,8 +530,7 @@ class PetNest:
         """正常退出时恢复由本进程替换的普通箭头。"""
         if not self.settings.cursor_restore_pending:
             return
-        roles = self._active_cursor_roles or {"arrow"}
-        restored = all(self.cursor_controller.restore_normal() if role == "arrow" else self.cursor_controller.restore_role(role) for role in roles)
+        restored = self._restore_cursor_roles(_CURSOR_STYLE_ROLES)
         if restored:
             self.settings = replace(self.settings, cursor_restore_pending=False)
             self.settings_manager.save(self.settings)

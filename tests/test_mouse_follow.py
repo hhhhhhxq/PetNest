@@ -45,3 +45,13 @@ def test_target_position_keeps_gap_after_cursor_visible_bounds() -> None:
     )
 
     assert target == QPoint(140, 239)
+
+
+def test_default_follow_gap_is_two_pixels_after_visible_cursor_bounds() -> None:
+    controller = MouseFollowController()
+
+    target = controller.target_position(
+        QPoint(100, 200), QSize(80, 80), QRect(0, 0, 800, 600), visible_bounds=(0, 0, 31, 31)
+    )
+
+    assert target == QPoint(133, 233)

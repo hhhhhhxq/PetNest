@@ -16,6 +16,7 @@ from PySide6.QtCore import QPoint
 
 from petnest.app import PetNest
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
+from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
 from petnest.models.settings import Settings
@@ -41,18 +42,50 @@ class _IdleAdapter:
         return False
 
 
+class _FailingStopAdapter(_IdleAdapter):
+    def stop(self) -> None:
+        raise RuntimeError("simulated shutdown failure")
+
+
+class _ExitOrderServer:
+    def __init__(self, application: PetNest) -> None:
+        self.application = application
+        self.stopped_after_ui_hidden = False
+
+    def stop(self) -> None:
+        tray = self.application.tray
+        self.stopped_after_ui_hidden = not self.application.window.isVisible() and (
+            tray is None or not tray.isVisible()
+        )
+
+
 class _CursorController:
     def __init__(self, *, restore_result: bool = True) -> None:
         self.applied_paths: list[Path] = []
+        self.applied_roles: list[tuple[str, Path]] = []
         self.restore_calls = 0
+        self.restore_system_calls = 0
+        self.restored_roles: list[str] = []
         self.restore_result = restore_result
 
     def apply(self, path: Path) -> bool:
         self.applied_paths.append(path)
         return True
 
+    def apply_role(self, role: str, path: Path) -> bool:
+        self.applied_roles.append((role, path))
+        return True
+
     def restore_normal(self) -> bool:
         self.restore_calls += 1
+        return self.restore_result
+
+    def restore_role(self, role: str) -> bool:
+        self.restored_roles.append(role)
+        return self.restore_result
+
+    def restore_system_defaults(self) -> bool:
+        self.restore_system_calls += 1
         return self.restore_result
 
 
@@ -86,6 +119,26 @@ def _create_reloadable_pet(root: Path) -> Path:
     _create_animation_frames(root, "idle", 1)
     _create_animation_frames(root, "hover", 1)
     return root
+
+
+def _write_cursor_style(root: Path, identifier: str, roles: tuple[str, ...]) -> None:
+    style_root = root / identifier
+    style_root.mkdir(parents=True)
+    (style_root / "style.json").write_text(
+        json.dumps(
+            {
+                "id": identifier,
+                "name": identifier,
+                "preview": "arrow.png",
+                "arrow": "arrow.cur",
+                "hotspot": [0, 0],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (style_root / "arrow.png").write_bytes(b"preview")
+    for role in roles:
+        (style_root / f"{role}.cur").write_bytes(role.encode())
 
 
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
@@ -124,6 +177,45 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     assert application.external_server is None
 
 
+def test_tray_quit_still_hides_window_when_cleanup_fails(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        platform_adapter=_FailingStopAdapter(),
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    application.tray.quit_action.trigger()
+
+    assert application._shutdown is True
+    assert not application.window.isVisible()
+    assert not application.tray.isVisible()
+
+
+def test_tray_quit_hides_the_ui_before_stopping_external_services(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    server = _ExitOrderServer(application)
+    application.external_server = server  # type: ignore[assignment]
+
+    application.tray.quit_action.trigger()
+
+    assert server.stopped_after_ui_hidden is True
+
+
 def test_application_restores_pending_cursor_before_showing_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app
@@ -140,7 +232,7 @@ def test_application_restores_pending_cursor_before_showing_window(qtbot: pytest
     )
     qtbot.addWidget(application.window)
 
-    assert cursor_controller.restore_calls == 1
+    assert cursor_controller.restore_system_calls == 1
     assert settings_manager.load().cursor_restore_pending is False
 
 
@@ -163,8 +255,43 @@ def test_application_applies_selected_cursor_and_restores_it_on_shutdown(qtbot: 
     application.shutdown()
 
     assert [path.name for path in cursor_controller.applied_paths] == ["arrow.cur"]
-    assert cursor_controller.restore_calls == 1
+    assert {role for role, _path in cursor_controller.applied_roles} == {
+        "busy",
+        "move",
+        "resize_diag_1",
+        "resize_diag_2",
+        "resize_horizontal",
+        "resize_vertical",
+        "text",
+    }
+    assert cursor_controller.restore_system_calls == 1
     assert settings_manager.load().cursor_restore_pending is False
+
+
+def test_switching_to_theme_without_busy_restores_system_busy_cursor(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(cursor_style_enabled=True, cursor_style_id="complete"))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    styles_root = tmp_path / "cursor_styles"
+    _write_cursor_style(styles_root, "complete", ("arrow", "busy"))
+    _write_cursor_style(styles_root, "partial", ("arrow",))
+    cursor_controller = _CursorController()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        cursor_controller=cursor_controller,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.cursor_catalog = CursorStyleCatalog(styles_root)
+    application.start()
+
+    restore_calls_before_switch = cursor_controller.restore_system_calls
+    application.apply_settings(replace(application.settings, cursor_style_id="partial"))
+
+    assert cursor_controller.restore_system_calls == restore_calls_before_switch + 1
 
 
 def test_failed_cursor_recovery_keeps_the_pending_marker_for_the_next_start(qtbot: pytest.QtBot, tmp_path: Path) -> None:

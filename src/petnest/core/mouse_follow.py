@@ -8,7 +8,7 @@ from PySide6.QtCore import QPoint, QRect, QSize
 class MouseFollowController:
     """将连续的全局光标采样转换为“是否仍在移动”和安全窗口位置。"""
 
-    def __init__(self, *, stationary_ms: int = 150, offset: int = 8) -> None:
+    def __init__(self, *, stationary_ms: int = 150, offset: int = 2) -> None:
         self.stationary_ms = max(1, stationary_ms)
         self.offset = max(0, offset)
         self._last_cursor: QPoint | None = None

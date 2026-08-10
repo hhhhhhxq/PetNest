@@ -76,7 +76,10 @@ class PetTrayIcon(QSystemTrayIcon):
         self.refresh_pets_action = QAction("刷新宠物列表", self.menu)
         self.edit_animations_action = QAction("编辑动画时长…", self.menu)
         self.settings_action = QAction("设置…", self.menu)
-        self.cursor_styles_action = QAction("鼠标样式…", self.menu)
+        cursor_styles_supported = sys.platform == "win32"
+        cursor_styles_label = "鼠标样式…" if cursor_styles_supported else "鼠标样式…（暂时仅 Windows 支持）"
+        self.cursor_styles_action = QAction(cursor_styles_label, self.menu)
+        self.cursor_styles_action.setEnabled(cursor_styles_supported)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.toggle_mouse_follow_action.triggered.connect(self._toggle_mouse_follow)

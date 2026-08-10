@@ -15,12 +15,15 @@ class _FakeCursorApi:
         self.loaded_paths: list[Path] = []
         self.loaded_system_default = 0
         self.set_calls: list[tuple[int, int]] = []
+        self.system_cursor_restore_calls = 0
 
     def load_file_cursor(self, path: Path) -> int | None:
         self.loaded_paths.append(path)
         return 101
 
-    def load_saved_arrow_or_system_default(self) -> int | None:
+    def load_saved_cursor_or_system_default(self, value_name: str, resource_id: int) -> int | None:
+        assert value_name == "Arrow"
+        assert resource_id == OCR_NORMAL
         if self.registry_arrow is not None:
             self.loaded_paths.append(Path(self.registry_arrow))
         else:
@@ -33,6 +36,10 @@ class _FakeCursorApi:
 
     def set_system_cursor(self, handle: int, role: int) -> bool:
         self.set_calls.append((handle, role))
+        return True
+
+    def restore_system_cursors(self) -> bool:
+        self.system_cursor_restore_calls += 1
         return True
 
 
@@ -54,12 +61,22 @@ def test_restore_loads_only_users_saved_arrow() -> None:
     assert api.set_calls == [(1_102, OCR_NORMAL)]
 
 
+def test_restore_system_defaults_reloads_the_saved_windows_cursor_scheme() -> None:
+    api = _FakeCursorApi()
+    controller = WindowsCursorController(api=api, platform="win32")
+
+    assert controller.restore_system_defaults() is True
+    assert api.system_cursor_restore_calls == 1
+    assert api.set_calls == []
+
+
 def test_non_windows_controller_never_calls_the_system_api(tmp_path: Path) -> None:
     api = _FakeCursorApi()
     controller = WindowsCursorController(api=api, platform="darwin")
 
     assert controller.apply(tmp_path / "arrow.cur") is False
     assert controller.restore_normal() is False
+    assert controller.restore_system_defaults() is False
     assert api.set_calls == []
 
 
@@ -73,6 +90,7 @@ def test_ctypes_cursor_api_declares_pointer_sized_handle_parameters(monkeypatch)
         LoadCursorW = _Function()
         CopyImage = _Function()
         SetSystemCursor = _Function()
+        SystemParametersInfoW = _Function()
 
     user32 = _User32()
     monkeypatch.setattr("petnest.platforms.windows_cursor.ctypes.WinDLL", lambda *_args, **_kwargs: user32)
@@ -82,3 +100,4 @@ def test_ctypes_cursor_api_declares_pointer_sized_handle_parameters(monkeypatch)
     assert api._user32 is user32
     assert user32.CopyImage.argtypes[0] is wintypes.HANDLE
     assert user32.SetSystemCursor.argtypes == [wintypes.HANDLE, wintypes.DWORD]
+    assert user32.SystemParametersInfoW.argtypes == [wintypes.UINT, wintypes.UINT, wintypes.LPVOID, wintypes.UINT]

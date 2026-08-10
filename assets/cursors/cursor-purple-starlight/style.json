@@ -1,0 +1,16 @@
+{
+  "id": "cursor-purple-starlight",
+  "name": "黑猫夜灯",
+  "preview": "preview.png",
+  "arrow": "arrow.cur",
+  "hotspot": [
+    4,
+    0
+  ],
+  "follow_bounds": [
+    0,
+    0,
+    31,
+    31
+  ]
+}

@@ -19,16 +19,19 @@ _REGISTRY_VALUES = {"arrow": "Arrow", "text": "IBeam", "busy": "Wait", "resize_d
 _IMAGE_CURSOR = 2
 _LR_LOADFROMFILE = 0x0010
 _IDC_ARROW = 32_512
+_SPI_SETCURSORS = 0x0057
 
 
 class _CursorApi(Protocol):
     def load_file_cursor(self, path: Path) -> int | None: ...
 
-    def load_saved_arrow_or_system_default(self) -> int | None: ...
+    def load_saved_cursor_or_system_default(self, value_name: str, resource_id: int) -> int | None: ...
 
     def copy_cursor(self, handle: int) -> int | None: ...
 
     def set_system_cursor(self, handle: int, role: int) -> bool: ...
+
+    def restore_system_cursors(self) -> bool: ...
 
 
 class WindowsCursorController:
@@ -53,7 +56,10 @@ class WindowsCursorController:
         if self._platform != "win32":
             return False
         try:
-            return self._set_cursor(self._api.load_saved_arrow_or_system_default(), OCR_NORMAL)
+            return self._set_cursor(
+                self._api.load_saved_cursor_or_system_default(_REGISTRY_VALUES["arrow"], OCR_NORMAL),
+                OCR_NORMAL,
+            )
         except (OSError, ValueError):
             LOGGER.warning("无法恢复 Windows 普通箭头光标", exc_info=True)
             return False
@@ -74,6 +80,16 @@ class WindowsCursorController:
             return self._set_cursor(self._api.load_saved_cursor_or_system_default(_REGISTRY_VALUES[role], _ROLE_CODES[role]), _ROLE_CODES[role])
         except (OSError, ValueError):
             LOGGER.warning("无法恢复 Windows 光标角色：%s", role, exc_info=True)
+            return False
+
+    def restore_system_defaults(self) -> bool:
+        """让 Windows 从当前用户方案一次性重载全部系统光标。"""
+        if self._platform != "win32":
+            return False
+        try:
+            return self._api.restore_system_cursors()
+        except (OSError, ValueError):
+            LOGGER.warning("无法恢复 Windows 系统光标方案", exc_info=True)
             return False
 
     def _set_cursor(self, loaded_handle: int | None, role: int) -> bool:
@@ -110,6 +126,13 @@ class _CtypesCursorApi:
             ]
             self._user32.SetSystemCursor.restype = wintypes.BOOL
             self._user32.SetSystemCursor.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            self._user32.SystemParametersInfoW.restype = wintypes.BOOL
+            self._user32.SystemParametersInfoW.argtypes = [
+                wintypes.UINT,
+                wintypes.UINT,
+                wintypes.LPVOID,
+                wintypes.UINT,
+            ]
 
     def load_file_cursor(self, path: Path) -> int | None:
         if self._user32 is None or not path.is_file():
@@ -138,6 +161,11 @@ class _CtypesCursorApi:
         if self._user32 is None:
             return False
         return bool(self._user32.SetSystemCursor(handle, role))
+
+    def restore_system_cursors(self) -> bool:
+        if self._user32 is None:
+            return False
+        return bool(self._user32.SystemParametersInfoW(_SPI_SETCURSORS, 0, None, 0))
 
     @staticmethod
     def _saved_cursor_path(value_name: str) -> Path | None:

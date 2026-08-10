@@ -75,7 +75,9 @@ class ExternalEventServer:
             self.port = int(listener.getsockname()[1])
             self._server_socket = listener
             self._stop_requested.clear()
-            self._thread = Thread(target=self._serve, name="PetNestExternalEventServer", daemon=False)
+            # 服务线程只承载可选的本机事件入口；即便某个系统 socket 在
+            # 退出时迟迟不返回，也不能阻止用户关闭整个桌宠。
+            self._thread = Thread(target=self._serve, name="PetNestExternalEventServer", daemon=True)
             self._thread.start()
             return True
 
