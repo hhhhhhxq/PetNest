@@ -70,9 +70,26 @@ class _CtypesCursorApi:
         self._user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
         if self._user32 is not None:
             self._user32.LoadImageW.restype = wintypes.HANDLE
+            self._user32.LoadImageW.argtypes = [
+                wintypes.HANDLE,
+                wintypes.LPCWSTR,
+                wintypes.UINT,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
             self._user32.LoadCursorW.restype = wintypes.HANDLE
+            self._user32.LoadCursorW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
             self._user32.CopyImage.restype = wintypes.HANDLE
+            self._user32.CopyImage.argtypes = [
+                wintypes.HANDLE,
+                wintypes.UINT,
+                ctypes.c_int,
+                ctypes.c_int,
+                wintypes.UINT,
+            ]
             self._user32.SetSystemCursor.restype = wintypes.BOOL
+            self._user32.SetSystemCursor.argtypes = [wintypes.HANDLE, wintypes.DWORD]
 
     def load_file_cursor(self, path: Path) -> int | None:
         if self._user32 is None or not path.is_file():
@@ -88,7 +105,7 @@ class _CtypesCursorApi:
                 return loaded
         if self._user32 is None:
             return None
-        handle = self._user32.LoadCursorW(None, _IDC_ARROW)
+        handle = self._user32.LoadCursorW(None, ctypes.c_void_p(_IDC_ARROW))
         return int(handle) if handle else None
 
     def copy_cursor(self, handle: int) -> int | None:

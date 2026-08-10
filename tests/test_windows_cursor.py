@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 
-from petnest.platforms.windows_cursor import OCR_NORMAL, WindowsCursorController
+from petnest.platforms.windows_cursor import OCR_NORMAL, WindowsCursorController, _CtypesCursorApi
 
 
 class _FakeCursorApi:
@@ -59,3 +61,24 @@ def test_non_windows_controller_never_calls_the_system_api(tmp_path: Path) -> No
     assert controller.apply(tmp_path / "arrow.cur") is False
     assert controller.restore_normal() is False
     assert api.set_calls == []
+
+
+def test_ctypes_cursor_api_declares_pointer_sized_handle_parameters(monkeypatch) -> None:
+    class _Function:
+        restype = None
+        argtypes = None
+
+    class _User32:
+        LoadImageW = _Function()
+        LoadCursorW = _Function()
+        CopyImage = _Function()
+        SetSystemCursor = _Function()
+
+    user32 = _User32()
+    monkeypatch.setattr("petnest.platforms.windows_cursor.ctypes.WinDLL", lambda *_args, **_kwargs: user32)
+
+    api = _CtypesCursorApi()
+
+    assert api._user32 is user32
+    assert user32.CopyImage.argtypes[0] is wintypes.HANDLE
+    assert user32.SetSystemCursor.argtypes == [wintypes.HANDLE, wintypes.DWORD]
