@@ -16,6 +16,8 @@ class CursorStyle:
     preview_path: Path
     arrow_path: Path
     hotspot: tuple[int, int]
+    follow_bounds: tuple[int, int, int, int] | None
+    roles: dict[str, Path]
 
 
 class CursorStyleCatalog:
@@ -48,6 +50,7 @@ class CursorStyleCatalog:
         preview_name = raw.get("preview")
         arrow_name = raw.get("arrow")
         hotspot = raw.get("hotspot")
+        follow_bounds = raw.get("follow_bounds")
         if (
             not isinstance(identifier, str)
             or identifier != root.name
@@ -61,6 +64,14 @@ class CursorStyleCatalog:
             or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in hotspot)
         ):
             return None
+        if follow_bounds is not None and (
+            not isinstance(follow_bounds, list)
+            or len(follow_bounds) != 4
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in follow_bounds)
+            or follow_bounds[0] > follow_bounds[2]
+            or follow_bounds[1] > follow_bounds[3]
+        ):
+            return None
         preview_path = root / preview_name
         arrow_path = root / arrow_name
         if (
@@ -72,4 +83,10 @@ class CursorStyleCatalog:
             or not arrow_path.is_file()
         ):
             return None
-        return CursorStyle(identifier, name.strip(), preview_path, arrow_path, (hotspot[0], hotspot[1]))
+        roles = {"arrow": arrow_path}
+        for role in ("busy", "text", "move", "resize_horizontal", "resize_vertical", "resize_diag_1", "resize_diag_2"):
+            candidate = root / f"{role}.cur"
+            if candidate.is_file():
+                roles[role] = candidate
+        parsed_bounds = tuple(follow_bounds) if follow_bounds is not None else None
+        return CursorStyle(identifier, name.strip(), preview_path, arrow_path, (hotspot[0], hotspot[1]), parsed_bounds, roles)

@@ -14,6 +14,8 @@ from ctypes import wintypes
 LOGGER = logging.getLogger(__name__)
 
 OCR_NORMAL = 32_512
+_ROLE_CODES = {"arrow": 32512, "text": 32513, "busy": 32514, "resize_diag_1": 32642, "resize_diag_2": 32643, "resize_horizontal": 32644, "resize_vertical": 32645, "move": 32646}
+_REGISTRY_VALUES = {"arrow": "Arrow", "text": "IBeam", "busy": "Wait", "resize_diag_1": "SizeNWSE", "resize_diag_2": "SizeNESW", "resize_horizontal": "SizeWE", "resize_vertical": "SizeNS", "move": "SizeAll"}
 _IMAGE_CURSOR = 2
 _LR_LOADFROMFILE = 0x0010
 _IDC_ARROW = 32_512
@@ -41,7 +43,7 @@ class WindowsCursorController:
         if self._platform != "win32":
             return False
         try:
-            return self._set_normal(self._api.load_file_cursor(cursor_path))
+            return self.apply_role("arrow", cursor_path)
         except (OSError, ValueError):
             LOGGER.warning("无法应用 Windows 普通箭头光标：%s", cursor_path, exc_info=True)
             return False
@@ -51,16 +53,34 @@ class WindowsCursorController:
         if self._platform != "win32":
             return False
         try:
-            return self._set_normal(self._api.load_saved_arrow_or_system_default())
+            return self._set_cursor(self._api.load_saved_arrow_or_system_default(), OCR_NORMAL)
         except (OSError, ValueError):
             LOGGER.warning("无法恢复 Windows 普通箭头光标", exc_info=True)
             return False
 
-    def _set_normal(self, loaded_handle: int | None) -> bool:
+    def apply_role(self, role: str, cursor_path: Path) -> bool:
+        if self._platform != "win32" or role not in _ROLE_CODES:
+            return False
+        try:
+            return self._set_cursor(self._api.load_file_cursor(cursor_path), _ROLE_CODES[role])
+        except (OSError, ValueError):
+            LOGGER.warning("无法应用 Windows 光标角色：%s", role, exc_info=True)
+            return False
+
+    def restore_role(self, role: str) -> bool:
+        if self._platform != "win32" or role not in _ROLE_CODES:
+            return False
+        try:
+            return self._set_cursor(self._api.load_saved_cursor_or_system_default(_REGISTRY_VALUES[role], _ROLE_CODES[role]), _ROLE_CODES[role])
+        except (OSError, ValueError):
+            LOGGER.warning("无法恢复 Windows 光标角色：%s", role, exc_info=True)
+            return False
+
+    def _set_cursor(self, loaded_handle: int | None, role: int) -> bool:
         if loaded_handle is None:
             return False
         copied_handle = self._api.copy_cursor(loaded_handle)
-        return copied_handle is not None and self._api.set_system_cursor(copied_handle, OCR_NORMAL)
+        return copied_handle is not None and self._api.set_system_cursor(copied_handle, role)
 
 
 class _CtypesCursorApi:
@@ -97,15 +117,15 @@ class _CtypesCursorApi:
         handle = self._user32.LoadImageW(None, str(path), _IMAGE_CURSOR, 0, 0, _LR_LOADFROMFILE)
         return int(handle) if handle else None
 
-    def load_saved_arrow_or_system_default(self) -> int | None:
-        saved_path = self._saved_arrow_path()
+    def load_saved_cursor_or_system_default(self, value_name: str, resource_id: int) -> int | None:
+        saved_path = self._saved_cursor_path(value_name)
         if saved_path is not None:
             loaded = self.load_file_cursor(saved_path)
             if loaded is not None:
                 return loaded
         if self._user32 is None:
             return None
-        handle = self._user32.LoadCursorW(None, ctypes.c_void_p(_IDC_ARROW))
+        handle = self._user32.LoadCursorW(None, ctypes.c_void_p(resource_id))
         return int(handle) if handle else None
 
     def copy_cursor(self, handle: int) -> int | None:
@@ -120,14 +140,14 @@ class _CtypesCursorApi:
         return bool(self._user32.SetSystemCursor(handle, role))
 
     @staticmethod
-    def _saved_arrow_path() -> Path | None:
+    def _saved_cursor_path(value_name: str) -> Path | None:
         if sys.platform != "win32":
             return None
         try:
             import winreg
 
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Cursors") as key:
-                value, _ = winreg.QueryValueEx(key, "Arrow")
+                value, _ = winreg.QueryValueEx(key, value_name)
         except OSError:
             return None
         if not isinstance(value, str) or not value.strip():

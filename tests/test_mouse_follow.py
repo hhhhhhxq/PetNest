@@ -35,3 +35,13 @@ def test_direction_uses_primary_axis_and_keeps_horizontal_facing_on_vertical_mot
 
     controller.sample(QPoint(2, 30), now_ms=40)
     assert (controller.direction, controller.facing_left) == ("down", True)
+
+
+def test_target_position_keeps_gap_after_cursor_visible_bounds() -> None:
+    controller = MouseFollowController(offset=8)
+
+    target = controller.target_position(
+        QPoint(100, 200), QSize(80, 80), QRect(0, 0, 800, 600), visible_bounds=(2, 1, 32, 31)
+    )
+
+    assert target == QPoint(140, 239)

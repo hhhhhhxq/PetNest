@@ -30,6 +30,7 @@ from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.windows_cursor import WindowsCursorController
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
+from petnest.ui.cursor_style_dialog import CursorStyleDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
 from petnest.ui.work_countdown import WorkCountdownWindow
@@ -71,6 +72,7 @@ class PetNest:
         self.settings = self.settings_manager.load()
         self.cursor_catalog = CursorStyleCatalog(bundled_cursor_styles_directory())
         self.cursor_controller = cursor_controller or WindowsCursorController()
+        self._active_cursor_roles: set[str] = set()
         self._recover_pending_cursor()
         if pets_root is not None:
             self.pets_root = pets_root
@@ -141,6 +143,7 @@ class PetNest:
                 on_refresh_pets=self.refresh_pets,
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
+                on_cursor_styles=self.show_cursor_style_dialog,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_quit=self.shutdown,
             )
@@ -310,7 +313,12 @@ class PetNest:
 
     def show_settings_dialog(self) -> None:
         """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
-        dialog = SettingsDialog(self.settings, self.window, cursor_styles=self.cursor_catalog.discover())
+        dialog = SettingsDialog(self.settings, self.window)
+        if dialog.exec():
+            self.apply_settings(dialog.updated_settings())
+
+    def show_cursor_style_dialog(self) -> None:
+        dialog = CursorStyleDialog(self.settings, self.cursor_catalog.discover(), self.window)
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
 
@@ -470,12 +478,21 @@ class PetNest:
         """根据当前设置应用一个样式，或恢复之前由 PetNest 接管的箭头。"""
         selected = self.cursor_catalog.get(self.settings.cursor_style_id)
         if self.settings.cursor_style_enabled and selected is not None:
-            if self.cursor_controller.apply(selected.arrow_path):
+            applied = {
+                role
+                for role, path in selected.roles.items()
+                if (self.cursor_controller.apply(path) if role == "arrow" else self.cursor_controller.apply_role(role, path))
+            }
+            if applied:
+                self._active_cursor_roles = applied
                 self.settings = replace(self.settings, cursor_restore_pending=True)
                 return
         if previous_pending or self.settings.cursor_restore_pending:
-            restored = self.cursor_controller.restore_normal()
+            roles = self._active_cursor_roles or {"arrow"}
+            restored = all(self.cursor_controller.restore_normal() if role == "arrow" else self.cursor_controller.restore_role(role) for role in roles)
             self.settings = replace(self.settings, cursor_restore_pending=not restored)
+            if restored:
+                self._active_cursor_roles.clear()
             return
         self.settings = replace(self.settings, cursor_restore_pending=False)
 
@@ -483,9 +500,12 @@ class PetNest:
         """正常退出时恢复由本进程替换的普通箭头。"""
         if not self.settings.cursor_restore_pending:
             return
-        if self.cursor_controller.restore_normal():
+        roles = self._active_cursor_roles or {"arrow"}
+        restored = all(self.cursor_controller.restore_normal() if role == "arrow" else self.cursor_controller.restore_role(role) for role in roles)
+        if restored:
             self.settings = replace(self.settings, cursor_restore_pending=False)
             self.settings_manager.save(self.settings)
+            self._active_cursor_roles.clear()
 
     def _tick_mouse_follow(self) -> None:
         self.update_mouse_follow(QCursor.pos(), now_ms=round(monotonic() * 1000))
@@ -497,7 +517,13 @@ class PetNest:
         moving = self.mouse_follow_controller.sample(cursor, now_ms=now_ms)
         screen = QGuiApplication.screenAt(cursor) or self.window.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
-            target = self.mouse_follow_controller.target_position(cursor, self.window.size(), screen.availableGeometry())
+            style = self.cursor_catalog.get(self.settings.cursor_style_id) if self.settings.cursor_style_enabled else None
+            target = self.mouse_follow_controller.target_position(
+                cursor,
+                self.window.size(),
+                screen.availableGeometry(),
+                visible_bounds=style.follow_bounds if style is not None else None,
+            )
             self.window.move(target)
         self.window.set_follow_motion(
             moving,

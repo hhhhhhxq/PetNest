@@ -48,6 +48,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_refresh_pets: Callable[[], object] | None = None,
         on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
+        on_cursor_styles: Callable[[], object] | None = None,
         on_toggle_mouse_follow: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
@@ -61,6 +62,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_refresh_pets = on_refresh_pets
         self._on_edit_animations = on_edit_animations
         self._on_settings = on_settings
+        self._on_cursor_styles = on_cursor_styles
         self._on_toggle_mouse_follow = on_toggle_mouse_follow
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
@@ -73,7 +75,8 @@ class PetTrayIcon(QSystemTrayIcon):
         self.open_pets_folder_action = QAction("打开宠物文件夹", self.menu)
         self.refresh_pets_action = QAction("刷新宠物列表", self.menu)
         self.edit_animations_action = QAction("编辑动画时长…", self.menu)
-        self.settings_action = QAction("设置", self.menu)
+        self.settings_action = QAction("设置…", self.menu)
+        self.cursor_styles_action = QAction("鼠标样式…", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.toggle_mouse_follow_action.triggered.connect(self._toggle_mouse_follow)
@@ -84,6 +87,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.refresh_pets_action.triggered.connect(self._refresh_pets)
         self.edit_animations_action.triggered.connect(self._edit_animations)
         self.settings_action.triggered.connect(self._settings)
+        self.cursor_styles_action.triggered.connect(self._cursor_styles)
         self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_mouse_follow_action))
         self.pet_menu = self.menu.addMenu("切换宠物")
         self.set_pet_names(pet_names or {})
@@ -93,6 +97,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.menu.addAction(self.edit_animations_action)
         self.menu.addAction(self.reload_action)
         self.menu.addAction(self.settings_action)
+        self.menu.addAction(self.cursor_styles_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.setContextMenu(self.menu)
@@ -156,3 +161,7 @@ class PetTrayIcon(QSystemTrayIcon):
     def _settings(self) -> None:
         if self._on_settings is not None:
             self._on_settings()
+
+    def _cursor_styles(self) -> None:
+        if self._on_cursor_styles is not None:
+            self._on_cursor_styles()

@@ -51,14 +51,22 @@ class MouseFollowController:
             return True
         return self._last_moved_at is not None and now_ms - self._last_moved_at < self.stationary_ms
 
-    def target_position(self, cursor: QPoint, pet_size: QSize, screen: QRect) -> QPoint:
+    def target_position(
+        self,
+        cursor: QPoint,
+        pet_size: QSize,
+        screen: QRect,
+        *,
+        visible_bounds: tuple[int, int, int, int] | None = None,
+    ) -> QPoint:
         """在光标右下方定位；边缘不足时翻转到左上并完整限制在当前屏幕。"""
-        x = cursor.x() + self.offset
-        y = cursor.y() + self.offset
+        left, top, right, bottom = visible_bounds or (0, 0, 0, 0)
+        x = cursor.x() + right + self.offset
+        y = cursor.y() + bottom + self.offset
         if x + pet_size.width() > screen.right() + 1:
-            x = cursor.x() - self.offset - pet_size.width()
+            x = cursor.x() + left - self.offset - pet_size.width()
         if y + pet_size.height() > screen.bottom() + 1:
-            y = cursor.y() - self.offset - pet_size.height()
+            y = cursor.y() + top - self.offset - pet_size.height()
         x = max(screen.left(), min(x, screen.right() - pet_size.width() + 1))
         y = max(screen.top(), min(y, screen.bottom() - pet_size.height() + 1))
         return QPoint(x, y)
