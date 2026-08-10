@@ -524,7 +524,8 @@ class PetNest:
                 screen.availableGeometry(),
                 visible_bounds=style.follow_bounds if style is not None else None,
             )
-            self.window.move(target)
+            if target != self.window.pos():
+                self.window.move(target)
         self.window.set_follow_motion(
             moving,
             direction=self.mouse_follow_controller.direction,

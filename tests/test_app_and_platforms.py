@@ -253,6 +253,34 @@ def test_mouse_follow_moves_pet_without_replacing_its_saved_resting_position(
     assert application.window.pos() == QPoint(100, 100)
 
 
+def test_mouse_follow_does_not_move_window_when_target_is_unchanged(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+    application.start()
+    application.apply_settings(replace(application.settings, mouse_follow_enabled=True, mouse_follow_scale=0.55))
+
+    move_calls: list[QPoint] = []
+    original_move = application.window.move
+
+    def record_move(position: QPoint) -> None:
+        move_calls.append(QPoint(position))
+        original_move(position)
+
+    monkeypatch.setattr(application.window, "move", record_move)
+    cursor = QPoint(500, 400)
+    application.update_mouse_follow(cursor, now_ms=0)
+    move_calls.clear()
+    application.update_mouse_follow(cursor, now_ms=20)
+
+    assert move_calls == []
+
+
 def test_application_clamps_saved_position_that_is_outside_all_screens(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

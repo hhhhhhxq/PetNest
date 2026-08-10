@@ -63,6 +63,13 @@ class PetWindow(QWidget):
         self._position_saved = position_saved
         self._current_pixmap = QPixmap()
         self._playing_action = "idle"
+        # Pillow 帧会在 AnimationPlayer 中复用；按帧缓存 Qt 像素图，避免
+        # 动画每次换帧都重复做 Pillow -> QImage -> QPixmap 的转换。
+        # 只保留当前动作的像素图，避免切换大量动作后额外占用不必要的内存。
+        self._pixmap_cache: dict[int, QPixmap] = {}
+        # 倒计时卡片只需要当前动作的可见底边；透明边界不会随循环帧改变，
+        # 因此将 alpha 扫描结果按动作缓存，避免每个渲染 tick 重复 getbbox。
+        self._countdown_bottom_cache: dict[str, int] = {}
         self._alpha_cache: dict[int, tuple[int, int, bytes]] = {}
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
@@ -283,6 +290,8 @@ class PetWindow(QWidget):
         """切换宠物包，并释放旧动画缓存以避免积累图像内存。"""
         self.animation_timer.stop()
         self.player.clear()
+        self._pixmap_cache.clear()
+        self._countdown_bottom_cache.clear()
         self._alpha_cache.clear()
         self.package = package
         self._scale = package.display.default_scale
@@ -404,6 +413,8 @@ class PetWindow(QWidget):
 
     def _play_action(self, action: str) -> None:
         definition = self.package.animations[action]
+        if action != self._playing_action:
+            self._pixmap_cache.clear()
         self._playing_action = action
         self.player.play(definition)
         self._set_current_frame()
@@ -435,7 +446,12 @@ class PetWindow(QWidget):
             self._current_pixmap = QPixmap()
             self.update()
             return
-        self._current_pixmap = _pixmap_from_pillow(frame)
+        cache_key = id(frame)
+        pixmap = self._pixmap_cache.get(cache_key)
+        if pixmap is None:
+            pixmap = _pixmap_from_pillow(frame)
+            self._pixmap_cache[cache_key] = pixmap
+        self._current_pixmap = pixmap
         size = self._scaled_canvas_size()
         if self.size() != size:
             self.setFixedSize(size)
@@ -529,13 +545,16 @@ class PetWindow(QWidget):
 
     def _countdown_top(self) -> int:
         """按当前动作全部帧的实际 alpha 底边定位，忽略素材透明留白。"""
-        visible_bottom = 0
-        for frame in self.player.current_frames:
-            bounds = frame.getchannel("A").getbbox()
-            if bounds is not None:
-                visible_bottom = max(visible_bottom, bounds[3])
-        if visible_bottom == 0:
-            visible_bottom = self.package.canvas.height
+        if self._playing_action not in self._countdown_bottom_cache:
+            visible_bottom = 0
+            for frame in self.player.current_frames:
+                bounds = frame.getchannel("A").getbbox()
+                if bounds is not None:
+                    visible_bottom = max(visible_bottom, bounds[3])
+            if visible_bottom == 0:
+                visible_bottom = self.package.canvas.height
+            self._countdown_bottom_cache[self._playing_action] = visible_bottom
+        visible_bottom = self._countdown_bottom_cache[self._playing_action]
         return round(visible_bottom * self.scale) + self._countdown_gap
 
     @staticmethod

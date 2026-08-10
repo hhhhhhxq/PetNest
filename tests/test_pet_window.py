@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QContextMenuEvent, QMouseEvent
+from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -155,6 +155,47 @@ def test_idle_frame_is_rendered_and_alpha_hit_testing_uses_current_frame_cache(q
     assert not window.current_pixmap.isNull()
     assert window.is_opaque_at(0, 0)
     assert window.is_opaque_at(0, 0)  # repeated access must use the same cached alpha mask
+
+
+def test_repeated_render_of_same_frame_reuses_qpixmap(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[Image.Image] = []
+
+    def fake_pixmap(frame: Image.Image) -> QPixmap:
+        calls.append(frame)
+        return QPixmap(frame.width, frame.height)
+
+    monkeypatch.setattr("petnest.ui.pet_window._pixmap_from_pillow", fake_pixmap)
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+
+    window._set_current_frame()
+    window._set_current_frame()
+
+    assert len(calls) == 1
+
+
+def test_countdown_top_caches_alpha_bounds_for_current_action(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    calls = 0
+    original_getchannel = Image.Image.getchannel
+
+    def counted_getchannel(frame: Image.Image, channel: str | int) -> Image.Image:
+        nonlocal calls
+        calls += 1
+        return original_getchannel(frame, channel)
+
+    monkeypatch.setattr(Image.Image, "getchannel", counted_getchannel)
+
+    first = window._countdown_top()
+    second = window._countdown_top()
+
+    assert first == second
+    assert calls == len(window.player.current_frames)
 
 
 def test_countdown_card_is_below_centered_pet_and_uses_adjustable_geometry(
