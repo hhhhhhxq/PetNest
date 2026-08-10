@@ -2,7 +2,11 @@
 
 from datetime import datetime
 
-from petnest.ui.work_countdown import countdown_text
+import pytest
+from PySide6.QtWidgets import QApplication, QWidget
+from pytestqt.qtbot import QtBot
+
+from petnest.ui.work_countdown import WorkCountdownWindow, countdown_text
 
 
 def test_countdown_before_and_during_work() -> None:
@@ -33,3 +37,34 @@ def test_daily_schedule_uses_each_days_end_time() -> None:
     assert countdown_text(monday, "09:30", "18:00", schedule) == "距离下班 01:00:00"
     assert countdown_text(tuesday, "09:30", "18:00", schedule) == "距离下班 00:30:00"
     assert countdown_text(wednesday, "09:30", "18:00", schedule) == "今天休息 ☕"
+
+
+def test_countdown_controller_never_creates_a_second_visible_window(qtbot: QtBot) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times=None,
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+    )
+
+    pet.show()
+
+    assert countdown not in QApplication.topLevelWidgets()

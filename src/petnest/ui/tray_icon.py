@@ -48,6 +48,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_refresh_pets: Callable[[], object] | None = None,
         on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
+        on_toggle_mouse_follow: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
         super().__init__(petnest_icon(), window)
@@ -60,9 +61,12 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_refresh_pets = on_refresh_pets
         self._on_edit_animations = on_edit_animations
         self._on_settings = on_settings
+        self._on_toggle_mouse_follow = on_toggle_mouse_follow
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
         self.toggle_pause_action = QAction("暂停动画", self.menu)
+        self.toggle_mouse_follow_action = QAction("跟随鼠标", self.menu)
+        self.toggle_mouse_follow_action.setCheckable(True)
         self.quit_action = QAction("退出", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
@@ -72,6 +76,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.settings_action = QAction("设置", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
+        self.toggle_mouse_follow_action.triggered.connect(self._toggle_mouse_follow)
         self.quit_action.triggered.connect(self._quit)
         self.reload_action.triggered.connect(self._reload)
         self.import_action.triggered.connect(self._import)
@@ -79,7 +84,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.refresh_pets_action.triggered.connect(self._refresh_pets)
         self.edit_animations_action.triggered.connect(self._edit_animations)
         self.settings_action.triggered.connect(self._settings)
-        self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action))
+        self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_mouse_follow_action))
         self.pet_menu = self.menu.addMenu("切换宠物")
         self.set_pet_names(pet_names or {})
         self.menu.addAction(self.import_action)
@@ -98,6 +103,9 @@ class PetTrayIcon(QSystemTrayIcon):
             action = self.pet_menu.addAction(name)
             action.triggered.connect(lambda checked=False, value=identifier: self._switch(value))
 
+    def set_mouse_follow_enabled(self, enabled: bool) -> None:
+        self.toggle_mouse_follow_action.setChecked(enabled)
+
     def _toggle_visibility(self) -> None:
         if self.window.isVisible():
             self.window.hide()
@@ -110,6 +118,10 @@ class PetTrayIcon(QSystemTrayIcon):
         paused = not self.window.player.is_paused
         self.window.set_paused(paused)
         self.toggle_pause_action.setText("继续动画" if paused else "暂停动画")
+
+    def _toggle_mouse_follow(self) -> None:
+        if self._on_toggle_mouse_follow is not None:
+            self._on_toggle_mouse_follow()
 
     def _quit(self) -> None:
         if self._on_quit is not None:

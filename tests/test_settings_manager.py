@@ -111,3 +111,16 @@ def test_countdown_theme_round_trips(tmp_path) -> None:
     loaded = SettingsManager(path).load()
 
     assert (loaded.countdown_theme, loaded.countdown_width, loaded.countdown_height) == ("night", 142, 32)
+
+
+def test_mouse_follow_defaults_round_trip_and_migrate(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+
+    assert (manager.load().mouse_follow_enabled, manager.load().mouse_follow_scale) == (False, 0.45)
+    manager.save(Settings(mouse_follow_enabled=True, mouse_follow_scale=0.7))
+    assert (manager.load().mouse_follow_enabled, manager.load().mouse_follow_scale) == (True, 0.7)
+
+    path.write_text(json.dumps({"schema_version": 13, "mouse_follow_scale": 0.55}), encoding="utf-8")
+    migrated = manager.load()
+    assert (migrated.mouse_follow_enabled, migrated.mouse_follow_scale) == (False, 0.45)

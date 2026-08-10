@@ -62,6 +62,7 @@ class PetWindow(QWidget):
         self.state_machine = state_machine or self._make_state_machine(package)
         self._position_saved = position_saved
         self._current_pixmap = QPixmap()
+        self._playing_action = "idle"
         self._alpha_cache: dict[int, tuple[int, int, bytes]] = {}
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
@@ -73,6 +74,13 @@ class PetWindow(QWidget):
         self._countdown_card_height = 37
         self._countdown_theme = "cream"
         self._countdown_skins = self._load_countdown_skins()
+        self._follow_mode_enabled = False
+        self._follow_motion = False
+        self._normal_scale: float | None = None
+        self._normal_position: QPoint | None = None
+        self._follow_scale_multiplier = 0.45
+        self._follow_direction = "right"
+        self._follow_facing_left = False
 
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._on_animation_tick)
@@ -92,6 +100,26 @@ class PetWindow(QWidget):
     def scale(self) -> float:
         """当前包声明的显示倍率。"""
         return self._scale
+
+    @property
+    def playing_action(self) -> str:
+        """当前实际渲染的动作；跟随移动时可临时覆盖状态机动作。"""
+        return self._playing_action
+
+    @property
+    def countdown_is_visible(self) -> bool:
+        """倒计时在跟随模式中保留内容但不显示，以免影响鼠标操作。"""
+        return self._countdown_text is not None and not self._follow_mode_enabled
+
+    @property
+    def follow_direction(self) -> str:
+        """当前跟随移动的主方向，供方向动作选择与测试读取。"""
+        return self._follow_direction
+
+    @property
+    def follow_facing_left(self) -> bool:
+        """当前应当水平镜像的朝向。"""
+        return self._follow_facing_left
 
     def is_opaque_at(self, x: int, y: int) -> bool:
         """按当前帧的 alpha 通道判断窗口局部坐标是否可交互。
@@ -127,10 +155,66 @@ class PetWindow(QWidget):
         """更新显示倍率并重建当前帧的命中坐标关系。"""
         if not self.package.display.min_scale <= scale <= self.package.display.max_scale:
             raise ValueError("缩放比例不在宠物包允许范围内")
+        if self._follow_mode_enabled:
+            self._normal_scale = scale
+            scale = self._follow_scale(scale)
         self._scale = scale
         self._set_current_frame()
         self._start_animation_timer()
         self.move(self.clamp_position(self.pos()))
+
+    def set_follow_mode(self, enabled: bool, *, scale_multiplier: float) -> None:
+        """切换鼠标跟随显示层，并保留普通模式的缩放与倒计时内容。"""
+        multiplier = max(0.25, min(float(scale_multiplier), 1.0))
+        if enabled:
+            if not self._follow_mode_enabled:
+                self._normal_scale = self._scale
+                self._normal_position = QPoint(self.pos())
+            self._follow_mode_enabled = True
+            self._follow_scale_multiplier = multiplier
+            self._scale = self._follow_scale(self._normal_scale or self.package.display.default_scale)
+        else:
+            was_following = self._follow_mode_enabled
+            self._follow_mode_enabled = False
+            self._follow_motion = False
+            self._scale = self._normal_scale or self._scale
+            self._normal_scale = None
+            if was_following:
+                self._play_current_action()
+        self._set_follow_input_transparent(enabled)
+        self._set_current_frame()
+        target = self._normal_position if not enabled and self._normal_position is not None else self.pos()
+        self.move(self.clamp_position(target))
+        if not enabled:
+            self._normal_position = None
+
+    def set_follow_motion(self, moving: bool, *, direction: str = "right", facing_left: bool = False) -> None:
+        """在鼠标实际移动期间播放临时移动动作，静止后恢复状态机动作。"""
+        if not self._follow_mode_enabled:
+            return
+        direction = direction if direction in {"left", "right", "up", "down"} else "right"
+        direction_changed = (self._follow_direction, self._follow_facing_left) != (direction, facing_left)
+        if self._follow_motion == moving and not direction_changed:
+            return
+        self._follow_motion = moving
+        self._follow_direction = direction
+        self._follow_facing_left = facing_left
+        action = self._follow_action() if moving else self.state_machine.current_action
+        if action != self._playing_action:
+            self._play_action(action)
+        else:
+            self.update()
+
+    def _follow_scale(self, normal_scale: float) -> float:
+        display = self.package.display
+        return min(display.max_scale, max(display.min_scale, normal_scale * self._follow_scale_multiplier))
+
+    def _set_follow_input_transparent(self, enabled: bool) -> None:
+        was_visible = self.isVisible()
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
+        if was_visible:
+            self.show()
 
     def clamp_position(self, position: QPoint) -> QPoint:
         """将窗口位置限制在显示器可用区域内，始终保留可拖回的可见部分。
@@ -184,7 +268,7 @@ class PetWindow(QWidget):
         self._countdown_width = max(110, min(int(width), 420))
         self._countdown_card_height = max(26, min(int(height), 100))
         self._countdown_theme = theme if theme in {"cream", "night", "yarn"} else "cream"
-        if self._countdown_text is not None:
+        if self.countdown_is_visible:
             self.setFixedSize(self._scaled_canvas_size())
             self.move(self.clamp_position(self.pos()))
         self.update()
@@ -287,8 +371,15 @@ class PetWindow(QWidget):
             | QPainter.RenderHint.SmoothPixmapTransform
         )
         pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
-        painter.drawPixmap(pet_rect, self._current_pixmap)
-        if self._countdown_text is not None:
+        if self._follow_motion and self._follow_facing_left and self._playing_action in {"walk", "drag"}:
+            painter.save()
+            painter.translate(pet_rect.left() + pet_rect.width(), 0)
+            painter.scale(-1, 1)
+            painter.drawPixmap(QRect(0, pet_rect.top(), pet_rect.width(), pet_rect.height()), self._current_pixmap)
+            painter.restore()
+        else:
+            painter.drawPixmap(pet_rect, self._current_pixmap)
+        if self.countdown_is_visible:
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             bubble = self._countdown_rect()
             skin = self._countdown_skins.get(self._countdown_theme)
@@ -308,7 +399,12 @@ class PetWindow(QWidget):
             self._play_current_action()
 
     def _play_current_action(self) -> None:
-        definition = self.package.animations[self.state_machine.current_action]
+        action = self._follow_action() if self._follow_motion else self.state_machine.current_action
+        self._play_action(action)
+
+    def _play_action(self, action: str) -> None:
+        definition = self.package.animations[action]
+        self._playing_action = action
         self.player.play(definition)
         self._set_current_frame()
         self._start_animation_timer()
@@ -323,6 +419,9 @@ class PetWindow(QWidget):
     def _on_animation_tick(self) -> None:
         self.player.advance()
         if self.player.is_finished:
+            if self._follow_motion:
+                self._play_current_action()
+                return
             transition = self.state_machine.complete_current_animation()
             if transition.changed:
                 self._play_current_action()
@@ -345,13 +444,27 @@ class PetWindow(QWidget):
     def _scaled_canvas_size(self) -> QSize:
         width = self._pet_width()
         height = self._pet_height()
-        if self._countdown_text is not None:
+        if self.countdown_is_visible:
             width = max(width, self._effective_countdown_width())
             height = max(height, self._countdown_top() + self._countdown_card_height)
         return QSize(width, height)
 
     def _pet_width(self) -> int:
         return round(self.package.canvas.width * self.scale)
+
+    def _follow_action(self) -> str:
+        """优先方向专用帧；普通宠物包安全回退到 walk 或 drag。"""
+        for base in ("walk", "drag"):
+            directional = f"{base}_{self._follow_direction}"
+            if directional in self.package.animations:
+                return directional
+        if self._follow_direction in {"up", "down"}:
+            horizontal = "left" if self._follow_facing_left else "right"
+            for base in ("walk", "drag"):
+                directional = f"{base}_{horizontal}"
+                if directional in self.package.animations:
+                    return directional
+        return next((name for name in ("walk", "drag") if name in self.package.animations), self.state_machine.current_action)
 
     def _pet_height(self) -> int:
         return round(self.package.canvas.height * self.scale)

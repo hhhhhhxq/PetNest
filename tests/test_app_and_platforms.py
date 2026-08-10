@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint
 
 from petnest.app import PetNest
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
@@ -147,6 +148,31 @@ def test_pet_context_menu_updates_scale_pause_and_always_on_top(
     assert settings_manager.load().scale == 1.1
     assert settings_manager.load().animation_paused is True
     assert settings_manager.load().always_on_top is False
+
+
+def test_mouse_follow_moves_pet_without_replacing_its_saved_resting_position(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+    application.window.move(100, 100)
+    application.start()
+
+    application.apply_settings(replace(application.settings, mouse_follow_enabled=True, mouse_follow_scale=0.55))
+    application.update_mouse_follow(QPoint(500, 400), now_ms=0)
+    application.update_mouse_follow(QPoint(510, 400), now_ms=33)
+
+    assert application.mouse_follow_timer.isActive()
+    assert application.window.pos() != QPoint(100, 100)
+
+    application.apply_settings(replace(application.settings, mouse_follow_enabled=False))
+
+    assert not application.mouse_follow_timer.isActive()
+    assert application.window.pos() == QPoint(100, 100)
 
 
 def test_application_clamps_saved_position_that_is_outside_all_screens(

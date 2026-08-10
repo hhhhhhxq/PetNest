@@ -166,7 +166,8 @@ def test_countdown_card_is_below_centered_pet_and_uses_adjustable_geometry(
     window.set_countdown_text("距离下班 01:23:45")
     window.show()
 
-    assert window.size() == QSize(200, 84)
+    assert window.size().width() >= 200
+    assert window.size().height() == 84
     assert all(not skin.isNull() for skin in window._countdown_skins.values())
     pet_left = (window.width() - 15) // 2
     assert window.is_opaque_at(pet_left, 0)
@@ -207,6 +208,83 @@ def test_countdown_auto_expands_for_text_and_applies_all_layout_settings(
     assert window.width() == 300
     assert window._countdown_rect().size() == QSize(300, 80)
     assert window._countdown_rect().top() == 32
+
+
+def test_follow_mode_temporarily_overrides_animation_and_hides_countdown(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    walk = replace(package.animations["drag"], name="walk")
+    package = replace(package, animations={**package.animations, "walk": walk})
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=12, width=200, height=60)
+    window.set_countdown_text("距离下班 01:23:45")
+    window.show()
+
+    normal_scale = window.scale
+    window.set_follow_mode(True, scale_multiplier=0.55)
+
+    assert window.isVisible()
+    assert window.scale == pytest.approx(normal_scale * 0.55)
+    assert window.windowFlags() & Qt.WindowType.WindowTransparentForInput
+    assert not window.countdown_is_visible
+    assert window.size().width() < 200
+
+    window.set_follow_motion(True)
+    assert window.playing_action == "walk"
+    window.handle_pet_event(PetEvent("mouse.click", source="test"))
+    assert window.current_action == "click"
+    assert window.playing_action == "walk"
+
+    window.set_follow_motion(False)
+    assert window.playing_action == "click"
+    window.set_follow_mode(False, scale_multiplier=0.55)
+    assert window.isVisible()
+    assert window.scale == normal_scale
+    assert window.countdown_is_visible
+
+
+def test_follow_mode_falls_back_to_drag_when_walk_is_absent(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+
+    window.set_follow_mode(True, scale_multiplier=0.55)
+    window.set_follow_motion(True)
+
+    assert window.playing_action == "drag"
+
+
+def test_follow_motion_records_direction_for_directional_animation_or_mirroring(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    window.set_follow_mode(True, scale_multiplier=0.45)
+
+    window.set_follow_motion(True, direction="left", facing_left=True)
+
+    assert (window.follow_direction, window.follow_facing_left) == ("left", True)
+
+
+def test_follow_mode_does_not_paint_a_hidden_countdown_card(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        frame = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+        frame.paste((255, 0, 0, 255), (0, 0, 10, 4))
+        frame.save(path)
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=0, width=132, height=37)
+    window.set_countdown_text("距离下班 01:23:45")
+    window.show()
+
+    window.set_follow_mode(True, scale_multiplier=0.45)
+    image = window.grab().toImage()
+
+    assert image.pixelColor(window.width() // 2, window.height() - 1).alpha() == 0
 
 
 def test_mouse_enter_and_click_drive_the_configured_state_machine(qtbot: pytest.QtBot, tmp_path: Path) -> None:

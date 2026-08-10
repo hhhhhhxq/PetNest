@@ -37,6 +37,16 @@ class SettingsDialog(QDialog):
         self.always_on_top_input.setChecked(settings.always_on_top)
         self.mouse_interaction_input = QCheckBox(self)
         self.mouse_interaction_input.setChecked(settings.mouse_interaction_enabled)
+        self.mouse_follow_input = QCheckBox(self)
+        self.mouse_follow_input.setChecked(settings.mouse_follow_enabled)
+        self.mouse_follow_scale_input = QDoubleSpinBox(self)
+        self.mouse_follow_scale_input.setRange(0.25, 1.0)
+        self.mouse_follow_scale_input.setSingleStep(0.05)
+        self.mouse_follow_scale_input.setDecimals(2)
+        self.mouse_follow_scale_input.setSuffix(" 倍")
+        self.mouse_follow_scale_input.setValue(settings.mouse_follow_scale)
+        self.mouse_follow_input.toggled.connect(self.mouse_follow_scale_input.setEnabled)
+        self.mouse_follow_scale_input.setEnabled(self.mouse_follow_input.isChecked())
         self.system_idle_input = QCheckBox(self)
         self.system_idle_input.setChecked(settings.system_idle_enabled)
         self.system_bored_input = QSpinBox(self)
@@ -73,6 +83,8 @@ class SettingsDialog(QDialog):
         layout.addRow("缩放", self.scale_input)
         layout.addRow("始终置顶", self.always_on_top_input)
         layout.addRow("启用鼠标交互", self.mouse_interaction_input)
+        layout.addRow("跟随鼠标", self.mouse_follow_input)
+        layout.addRow("跟随时大小", self.mouse_follow_scale_input)
         layout.addRow("启用系统空闲动作", self.system_idle_input)
         layout.addRow("无操作后无聊", self.system_bored_input)
         layout.addRow("无操作后睡觉", self.system_sleep_input)
@@ -116,6 +128,8 @@ class SettingsDialog(QDialog):
             scale=self.scale_input.value(),
             always_on_top=self.always_on_top_input.isChecked(),
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
+            mouse_follow_enabled=self.mouse_follow_input.isChecked(),
+            mouse_follow_scale=self.mouse_follow_scale_input.value(),
             system_idle_enabled=self.system_idle_input.isChecked(),
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),

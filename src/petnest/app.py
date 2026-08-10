@@ -6,13 +6,15 @@ from dataclasses import replace
 import logging
 from pathlib import Path
 import sys
+from time import monotonic
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QPalette
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QMenu, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest.core.event_bus import EventBus
+from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
 from petnest.core.settings_manager import SettingsManager
@@ -88,13 +90,17 @@ class PetNest:
         self.pause_context_action = QAction("Ⅱ  暂停动画", self.pet_context_menu)
         self.always_on_top_context_action = QAction("始终置顶", self.pet_context_menu)
         self.always_on_top_context_action.setCheckable(True)
+        self.mouse_follow_context_action = QAction("跟随鼠标", self.pet_context_menu)
+        self.mouse_follow_context_action.setCheckable(True)
         self.pet_context_menu.addAction(self.pause_context_action)
         self.pet_context_menu.addAction(self.always_on_top_context_action)
+        self.pet_context_menu.addAction(self.mouse_follow_context_action)
         self.zoom_in_action.triggered.connect(lambda: self._adjust_context_scale(0.1))
         self.zoom_out_action.triggered.connect(lambda: self._adjust_context_scale(-0.1))
         self.reset_scale_action.triggered.connect(self._reset_context_scale)
         self.pause_context_action.triggered.connect(self._toggle_context_pause)
         self.always_on_top_context_action.triggered.connect(self._toggle_context_always_on_top)
+        self.mouse_follow_context_action.triggered.connect(self._toggle_mouse_follow)
         self.pet_context_menu.aboutToShow.connect(self._sync_pet_context_menu)
         self.window.context_menu_requested.connect(self._show_pet_context_menu)
         self._restore_window_settings()
@@ -104,6 +110,10 @@ class PetNest:
         self.system_idle_timer = QTimer(self.window)
         self.system_idle_timer.setInterval(1_000)
         self.system_idle_timer.timeout.connect(self._check_system_idle)
+        self.mouse_follow_controller = MouseFollowController()
+        self.mouse_follow_timer = QTimer(self.window)
+        self.mouse_follow_timer.setInterval(20)
+        self.mouse_follow_timer.timeout.connect(self._tick_mouse_follow)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -117,6 +127,7 @@ class PetNest:
                 on_refresh_pets=self.refresh_pets,
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
+                on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_quit=self.shutdown,
             )
             if enable_tray
@@ -154,6 +165,7 @@ class PetNest:
             self.tray.show()
         self.window.show()
         self._configure_work_countdown()
+        self._configure_mouse_follow()
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
     def reveal(self) -> None:
@@ -238,6 +250,7 @@ class PetNest:
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
         self._configure_work_countdown()
+        self._configure_mouse_follow()
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
@@ -258,6 +271,7 @@ class PetNest:
         self.reset_scale_action.setEnabled(scale != display.default_scale)
         self.pause_context_action.setText("▶  继续动画" if self.window.player.is_paused else "Ⅱ  暂停动画")
         self.always_on_top_context_action.setChecked(self.settings.always_on_top)
+        self.mouse_follow_context_action.setChecked(self.settings.mouse_follow_enabled)
 
     def _adjust_context_scale(self, delta: float) -> None:
         display = self.package.display
@@ -272,6 +286,9 @@ class PetNest:
 
     def _toggle_context_always_on_top(self, enabled: bool) -> None:
         self.apply_settings(replace(self.settings, always_on_top=enabled))
+
+    def _toggle_mouse_follow(self) -> None:
+        self.apply_settings(replace(self.settings, mouse_follow_enabled=not self.settings.mouse_follow_enabled))
 
     def show_settings_dialog(self) -> None:
         """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
@@ -345,10 +362,11 @@ class PetNest:
             self.external_server.stop()
             self.external_server = None
         self.system_idle_timer.stop()
+        self.mouse_follow_timer.stop()
         self.work_countdown.timer.stop()
-        self.work_countdown.hide()
         self.platform_adapter.stop()
-        self._save_window_position(self.window.pos())
+        if not self.settings.mouse_follow_enabled:
+            self._save_window_position(self.window.pos())
         if self.tray is not None:
             self.tray.hide()
         self.window.hide()
@@ -408,6 +426,35 @@ class PetNest:
             height=self.settings.countdown_height,
             theme=self.settings.countdown_theme,
             always_on_top=self.settings.always_on_top,
+        )
+
+    def _configure_mouse_follow(self) -> None:
+        enabled = self.settings.mouse_follow_enabled
+        self.window.set_follow_mode(enabled, scale_multiplier=self.settings.mouse_follow_scale)
+        self.mouse_follow_controller.reset()
+        if enabled:
+            self.mouse_follow_timer.start()
+        else:
+            self.mouse_follow_timer.stop()
+        if self.tray is not None:
+            self.tray.set_mouse_follow_enabled(enabled)
+
+    def _tick_mouse_follow(self) -> None:
+        self.update_mouse_follow(QCursor.pos(), now_ms=round(monotonic() * 1000))
+
+    def update_mouse_follow(self, cursor: QPoint, *, now_ms: int) -> None:
+        """供定时器和测试输入一帧全局光标位置。"""
+        if not self.settings.mouse_follow_enabled:
+            return
+        moving = self.mouse_follow_controller.sample(cursor, now_ms=now_ms)
+        screen = QGuiApplication.screenAt(cursor) or self.window.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            target = self.mouse_follow_controller.target_position(cursor, self.window.size(), screen.availableGeometry())
+            self.window.move(target)
+        self.window.set_follow_motion(
+            moving,
+            direction=self.mouse_follow_controller.direction,
+            facing_left=self.mouse_follow_controller.facing_left,
         )
 
     def _save_window_position(self, position: QPoint) -> None:

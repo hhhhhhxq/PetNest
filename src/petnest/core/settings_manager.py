@@ -149,6 +149,16 @@ class SettingsManager:
         if version == 11:
             if migrated.get("countdown_width") == 132 and migrated.get("countdown_height") == 30:
                 migrated["countdown_height"] = 37
+            migrated["schema_version"] = 12
+            version = 12
+        if version == 12:
+            migrated.setdefault("mouse_follow_enabled", False)
+            migrated.setdefault("mouse_follow_scale", 0.55)
+            migrated["schema_version"] = 13
+            version = 13
+        if version == 13:
+            if migrated.get("mouse_follow_scale") == 0.55:
+                migrated["mouse_follow_scale"] = 0.45
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
