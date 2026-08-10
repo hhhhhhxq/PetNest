@@ -41,6 +41,21 @@ class _IdleAdapter:
         return False
 
 
+class _CursorController:
+    def __init__(self, *, restore_result: bool = True) -> None:
+        self.applied_paths: list[Path] = []
+        self.restore_calls = 0
+        self.restore_result = restore_result
+
+    def apply(self, path: Path) -> bool:
+        self.applied_paths.append(path)
+        return True
+
+    def restore_normal(self) -> bool:
+        self.restore_calls += 1
+        return self.restore_result
+
+
 def _create_animation_frames(root: Path, action: str, count: int) -> None:
     directory = root / "animations" / action
     directory.mkdir(parents=True)
@@ -107,6 +122,69 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     saved = settings_manager.load()
     assert (saved.window_x, saved.window_y) == (123, 234)
     assert application.external_server is None
+
+
+def test_application_restores_pending_cursor_before_showing_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(cursor_restore_pending=True))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    cursor_controller = _CursorController()
+
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        cursor_controller=cursor_controller,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    assert cursor_controller.restore_calls == 1
+    assert settings_manager.load().cursor_restore_pending is False
+
+
+def test_application_applies_selected_cursor_and_restores_it_on_shutdown(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(cursor_style_enabled=True, cursor_style_id="petnest-paw"))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    cursor_controller = _CursorController()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        cursor_controller=cursor_controller,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+    application.shutdown()
+
+    assert [path.name for path in cursor_controller.applied_paths] == ["arrow.cur"]
+    assert cursor_controller.restore_calls == 1
+    assert settings_manager.load().cursor_restore_pending is False
+
+
+def test_failed_cursor_recovery_keeps_the_pending_marker_for_the_next_start(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(cursor_restore_pending=True))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        cursor_controller=_CursorController(restore_result=False),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    assert application.settings.cursor_restore_pending is True
+    assert settings_manager.load().cursor_restore_pending is True
 
 
 def test_application_reveal_restores_a_hidden_pet_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:

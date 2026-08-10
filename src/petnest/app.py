@@ -13,6 +13,7 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplic
 from PySide6.QtWidgets import QApplication, QMenu, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
+from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.event_bus import EventBus
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
@@ -26,6 +27,7 @@ from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
+from petnest.platforms.windows_cursor import WindowsCursorController
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
@@ -43,6 +45,14 @@ def bundled_pets_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "pets"
 
 
+def bundled_cursor_styles_directory() -> Path:
+    """定位开发环境或 PyInstaller onedir 产物内的只读光标样式。"""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is not None:
+        return Path(frozen_root) / "assets" / "cursors"
+    return Path(__file__).resolve().parents[2] / "assets" / "cursors"
+
+
 class PetNest:
     """第一阶段桌宠运行时，负责有序启动、宠物切换和有序退出。"""
 
@@ -52,12 +62,16 @@ class PetNest:
         pets_root: Path | None = None,
         settings_manager: SettingsManager | None = None,
         platform_adapter: PlatformEventAdapter | None = None,
+        cursor_controller: WindowsCursorController | None = None,
         enable_tray: bool = True,
     ) -> None:
         if QApplication.instance() is None:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
+        self.cursor_catalog = CursorStyleCatalog(bundled_cursor_styles_directory())
+        self.cursor_controller = cursor_controller or WindowsCursorController()
+        self._recover_pending_cursor()
         if pets_root is not None:
             self.pets_root = pets_root
         elif getattr(sys, "frozen", False):
@@ -166,6 +180,8 @@ class PetNest:
         self.window.show()
         self._configure_work_countdown()
         self._configure_mouse_follow()
+        self._configure_cursor_style(previous_pending=self.settings.cursor_restore_pending)
+        self.settings_manager.save(self.settings)
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
     def reveal(self) -> None:
@@ -244,6 +260,7 @@ class PetNest:
             or settings.system_bored_seconds != self.settings.system_bored_seconds
             or settings.system_sleep_seconds != self.settings.system_sleep_seconds
         )
+        previous_cursor_pending = self.settings.cursor_restore_pending
         self.window.set_scale(settings.scale)
         self.window.set_paused(settings.animation_paused)
         self.window.set_always_on_top(settings.always_on_top)
@@ -251,10 +268,11 @@ class PetNest:
         self.settings = settings
         self._configure_work_countdown()
         self._configure_mouse_follow()
+        self._configure_cursor_style(previous_pending=previous_cursor_pending)
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
-        self.settings_manager.save(settings)
+        self.settings_manager.save(self.settings)
 
     def _show_pet_context_menu(self, position: QPoint) -> None:
         """在宠物右键位置弹出跨平台快捷菜单。"""
@@ -365,6 +383,7 @@ class PetNest:
         self.mouse_follow_timer.stop()
         self.work_countdown.timer.stop()
         self.platform_adapter.stop()
+        self._restore_cursor_style()
         if not self.settings.mouse_follow_enabled:
             self._save_window_position(self.window.pos())
         if self.tray is not None:
@@ -438,6 +457,35 @@ class PetNest:
             self.mouse_follow_timer.stop()
         if self.tray is not None:
             self.tray.set_mouse_follow_enabled(enabled)
+
+    def _recover_pending_cursor(self) -> None:
+        """上次进程未完成退出时，优先恢复当时替换的普通箭头。"""
+        if not self.settings.cursor_restore_pending:
+            return
+        if self.cursor_controller.restore_normal():
+            self.settings = replace(self.settings, cursor_restore_pending=False)
+            self.settings_manager.save(self.settings)
+
+    def _configure_cursor_style(self, *, previous_pending: bool) -> None:
+        """根据当前设置应用一个样式，或恢复之前由 PetNest 接管的箭头。"""
+        selected = self.cursor_catalog.get(self.settings.cursor_style_id)
+        if self.settings.cursor_style_enabled and selected is not None:
+            if self.cursor_controller.apply(selected.arrow_path):
+                self.settings = replace(self.settings, cursor_restore_pending=True)
+                return
+        if previous_pending or self.settings.cursor_restore_pending:
+            restored = self.cursor_controller.restore_normal()
+            self.settings = replace(self.settings, cursor_restore_pending=not restored)
+            return
+        self.settings = replace(self.settings, cursor_restore_pending=False)
+
+    def _restore_cursor_style(self) -> None:
+        """正常退出时恢复由本进程替换的普通箭头。"""
+        if not self.settings.cursor_restore_pending:
+            return
+        if self.cursor_controller.restore_normal():
+            self.settings = replace(self.settings, cursor_restore_pending=False)
+            self.settings_manager.save(self.settings)
 
     def _tick_mouse_follow(self) -> None:
         self.update_mouse_follow(QCursor.pos(), now_ms=round(monotonic() * 1000))
