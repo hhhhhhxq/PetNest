@@ -19,7 +19,7 @@ from petnest.core.app_update import (
     build_updater_command,
     parse_update_manifest,
 )
-from petnest.core.windows_updater import parse_updater_args
+from petnest.core.windows_updater import UpdaterArguments, parse_updater_args, run_installer
 
 
 def _manifest(
@@ -256,6 +256,23 @@ def test_updater_args_reject_relative_paths_and_invalid_pid(tmp_path: Path) -> N
         parse_updater_args(["--wait-pid", "0", "--installer", str(tmp_path / "i.exe")])
     with pytest.raises(AppUpdateError):
         parse_updater_args(["--wait-pid", "1", "--installer", "relative.exe"])
+
+
+def test_run_installer_delegates_to_elevated_launcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    installer = tmp_path / "PetNest-Setup.exe"
+    installer.write_bytes(b"installer")
+    launched: list[Path] = []
+    monkeypatch.setattr("petnest.core.windows_updater.wait_for_process_exit", lambda _pid: True)
+    monkeypatch.setattr(
+        "petnest.core.windows_updater._run_elevated_installer",
+        lambda path: launched.append(path) or 0,
+        raising=False,
+    )
+
+    assert run_installer(UpdaterArguments(123, installer)) == 0
+    assert launched == [installer]
 
 
 class _FakeUpdateClient:
