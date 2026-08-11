@@ -93,7 +93,12 @@ def test_ctypes_cursor_api_declares_pointer_sized_handle_parameters(monkeypatch)
         SystemParametersInfoW = _Function()
 
     user32 = _User32()
-    monkeypatch.setattr("petnest.platforms.windows_cursor.ctypes.WinDLL", lambda *_args, **_kwargs: user32)
+    monkeypatch.setattr(
+        "petnest.platforms.windows_cursor.ctypes.WinDLL",
+        lambda *_args, **_kwargs: user32,
+        raising=False,
+    )
+    monkeypatch.setattr("petnest.platforms.windows_cursor.sys.platform", "win32")
 
     api = _CtypesCursorApi()
 

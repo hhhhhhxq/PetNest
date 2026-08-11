@@ -501,7 +501,7 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     assert tray.import_action.text() == "导入精灵图…"
 
 
-def test_cursor_style_action_is_visible_but_disabled_on_macos(
+def test_cursor_style_action_is_enabled_on_macos(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "darwin")
@@ -509,8 +509,8 @@ def test_cursor_style_action_is_visible_but_disabled_on_macos(
     qtbot.addWidget(window)
     tray = PetTrayIcon(window, on_cursor_styles=lambda: None)
 
-    assert tray.cursor_styles_action.text() == "鼠标样式…（暂时仅 Windows 支持）"
-    assert not tray.cursor_styles_action.isEnabled()
+    assert tray.cursor_styles_action.text() == "鼠标样式…"
+    assert tray.cursor_styles_action.isEnabled()
 
 
 def test_application_icon_uses_the_dedicated_app_asset(qtbot: pytest.QtBot) -> None:
