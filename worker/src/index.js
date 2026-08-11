@@ -47,6 +47,7 @@ export default {
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "PetNest-Assets-Worker",
       },
+      redirect: "follow",
     });
     if (!upstream.ok) {
       return new Response("Resource unavailable", {
