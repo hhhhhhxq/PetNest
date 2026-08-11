@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "hero-section-heart",
+  "name": "Hero Section Heart",
+  "source": "source.json",
+  "frames": "frames",
+  "width": 390,
+  "height": 844,
+  "fps": 30.0,
+  "frame_count": 180,
+  "duration_ms": 6000,
+  "loop": true,
+  "layer": "over",
+  "source_sha256": "6b9d51e29d7370994093640c06ac1d7e502851a9c4693fcbbb1d02a89b4e24d7",
+  "renderer": "rlottie-python/1.3.8"
+}

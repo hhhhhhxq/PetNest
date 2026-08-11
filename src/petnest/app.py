@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 from threading import Thread
 from time import monotonic
+import uuid
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QPalette
@@ -30,6 +31,8 @@ from petnest.core.app_update import (
 )
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.event_bus import EventBus
+from petnest.core.lan_service import LanInteractionService
+from petnest.core.lottie_effects import EffectCatalog
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
@@ -43,7 +46,9 @@ from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
+from petnest.core.device_identity import display_name_for
 from petnest.models.event import PetEvent
+from petnest.models.lan_interaction import InteractionKind
 from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
@@ -53,6 +58,7 @@ from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.cursor_style_dialog import CursorStyleDialog
+from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
 from petnest.ui.work_countdown import WorkCountdownWindow
@@ -101,6 +107,31 @@ def bundled_resource_seed_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def effect_directories_for(
+    *,
+    pets_root: Path,
+    resource_directory: Path | None = None,
+    bundled_root: Path | None = None,
+    application_root: Path | None = None,
+) -> tuple[Path, ...]:
+    """返回动效查找目录，优先用户目录，再回退到安装包资源。"""
+    candidates: list[Path] = [pets_root.expanduser().parent / "effects"]
+    if resource_directory is not None:
+        candidates.append(resource_directory / "effects")
+    if application_root is not None:
+        candidates.append(application_root / "effects")
+    if bundled_root is not None:
+        candidates.append(bundled_root / "effects")
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.expanduser().resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            roots.append(resolved)
+    return tuple(roots)
+
+
 def resource_directory_for_cache(cache: RemoteResourceCache, *, verify_files: bool = True) -> Path | None:
     """Return the verified current resource root, or ``None`` for fallback."""
     if verify_files:
@@ -127,6 +158,9 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
+        if not self.settings.device_id:
+            self.settings = replace(self.settings, device_id=uuid.uuid4().hex)
+            self.settings_manager.save(self.settings)
         self.remote_resource_cache = RemoteResourceCache(
             self.settings_manager.path.parent / "remote-resources",
             REMOTE_RESOURCE_BASE_URL,
@@ -183,6 +217,14 @@ class PetNest:
             position_saved=self._save_window_position,
             countdown_root=countdown_root,
         )
+        self.lan_service = LanInteractionService(
+            device_id=self.settings.device_id,
+            display_name=display_name_for(self.settings),
+            pet_name=self.package.name,
+            parent=self.window,
+        )
+        self.lan_service.interaction_received.connect(self._handle_lan_interaction)
+        self.lan_service.error.connect(lambda message: LOGGER.warning("%s", message))
         self.work_countdown = WorkCountdownWindow(self.window)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")
@@ -249,6 +291,7 @@ class PetNest:
                 on_settings=self.show_settings_dialog,
                 on_cursor_styles=self.show_cursor_style_dialog,
                 on_resource_update=self._handle_resource_update_action,
+                on_lan_interactions=self.show_lan_interaction_dialog,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_quit=self.shutdown,
             )
@@ -283,6 +326,7 @@ class PetNest:
         if self.settings.external_event_server_enabled:
             self._start_external_server()
         self._configure_system_idle_timer()
+        self._configure_lan_service()
         if self.tray is not None:
             self.tray.show()
         self.window.show()
@@ -327,6 +371,7 @@ class PetNest:
         self.package = candidate
         self.settings = replace(self.settings, current_pet_id=candidate.identifier, scale=candidate.display.default_scale)
         self.settings_manager.save(self.settings)
+        self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
         return True
 
     def reload_current_pet(self) -> bool:
@@ -383,6 +428,8 @@ class PetNest:
         self.window.set_always_on_top(settings.always_on_top)
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
+        self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
+        self._configure_lan_service()
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
@@ -446,6 +493,56 @@ class PetNest:
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
 
+    def show_lan_interaction_dialog(self) -> None:
+        """打开局域网互动入口；当前无设备时明确展示空状态。"""
+        self._configure_lan_service()
+        self.lan_service.discover()
+        effects = self._discover_effects()
+        dialog = LanInteractionDialog(
+            settings=self.settings,
+            peers=self.lan_service.peers(),
+            effects=effects,
+            on_send=self.lan_service.send_interaction,
+            on_probe=self.lan_service.probe_peer,
+            on_preview=self._preview_lan_effect,
+            on_preview_clear=self.window.clear_effect,
+            parent=self.window,
+        )
+        self.lan_service.peer_changed.connect(dialog.update_peer)
+        self.lan_service.manual_probe_succeeded.connect(dialog.manual_probe_succeeded)
+        self.lan_service.peer_removed.connect(dialog.remove_peer)
+        self.lan_service.error.connect(dialog.set_status_message)
+        dialog.exec()
+        updated = dialog.settings
+        if (
+            updated.nickname != self.settings.nickname
+            or updated.lan_interaction_enabled != self.settings.lan_interaction_enabled
+        ):
+            self.apply_settings(updated)
+
+    def _preview_lan_effect(self, effect: object) -> bool:
+        """在本机宠物上一次性预览局域网动效，不发送网络消息。"""
+        try:
+            return bool(self.window.play_effect(effect, loop=False))
+        except Exception:  # noqa: BLE001 - 预览失败不能影响互动窗口。
+            LOGGER.exception("本机预览局域网动效失败")
+            return False
+
+    def _discover_effects(self) -> list[object]:
+        """合并用户目录、缓存和安装包内的动效，按 ID 去重。"""
+        application_root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else None
+        catalog = EffectCatalog()
+        by_identifier: dict[str, object] = {}
+        for root in effect_directories_for(
+            pets_root=self.pets_root,
+            resource_directory=self.resource_directory,
+            bundled_root=bundled_resource_seed_root(),
+            application_root=application_root,
+        ):
+            for effect in catalog.discover(root):
+                by_identifier.setdefault(effect.identifier, effect)
+        return sorted(by_identifier.values(), key=lambda item: str(getattr(item, "identifier", "")).casefold())
+
     def show_spritesheet_import_dialog(self) -> None:
         """从本机文件导入成功后重新扫描，并立即切换到新宠物包。"""
         dialog = SpriteSheetImportDialog(self.pets_root, self.window)
@@ -508,10 +605,13 @@ class PetNest:
         if self._shutdown:
             return
         self._shutdown = True
+        LOGGER.info("PetNest 开始正常退出：pid=%s", os.getpid())
         # 首先撤掉用户可见的界面。外部服务的停止可能需要等待 socket
         # 超时，不能让“退出”菜单看起来像没有响应。
         if self.tray is not None:
             self._run_shutdown_step("隐藏托盘图标", self.tray.hide)
+        self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
+        self._run_shutdown_step("停止互动动效", self.window.clear_effect)
         self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
         server, self.external_server = self.external_server, None
         if server is not None:
@@ -523,11 +623,13 @@ class PetNest:
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
+        self._run_shutdown_step("停止局域网互动服务", self.lan_service.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
         self._run_shutdown_step("恢复系统鼠标样式", self._restore_cursor_style)
         if not self.settings.mouse_follow_enabled:
             self._run_shutdown_step("保存窗口位置", lambda: self._save_window_position(self.window.pos()))
         self._run_shutdown_step("退出 Qt 事件循环", QApplication.quit)
+        LOGGER.info("PetNest 已请求 Qt 事件循环退出：pid=%s", os.getpid())
 
     @staticmethod
     def _run_shutdown_step(name: str, operation: Callable[[], object]) -> None:
@@ -642,8 +744,10 @@ class PetNest:
             LOGGER.warning("远程资源检查失败：%s", result.error)
             if manual and self.tray is not None:
                 self.tray.showMessage("PetNest", f"资源检查失败：{result.error}")
-        elif result.update_available and result.checked and manual and self.tray is not None:
-            self.tray.showMessage("PetNest", "发现新的远程资源，请点击菜单中的蓝点更新")
+        elif result.update_available and result.checked and manual:
+            if self.tray is not None:
+                self.tray.showMessage("PetNest", "发现新的远程资源，开始下载资源")
+            self._schedule_resource_apply()
         elif manual and result.checked and self.tray is not None:
             self.tray.showMessage("PetNest", "资源已是最新")
 
@@ -849,6 +953,37 @@ class PetNest:
         self.cursor_catalog = CursorStyleCatalog(cursor_root)
         countdown_root = self.resource_directory / "countdown" if self.resource_directory is not None else None
         self.window.reload_countdown_skins(countdown_root)
+
+    def _configure_lan_service(self) -> None:
+        if self.settings.lan_interaction_enabled:
+            if not self.lan_service.start():
+                LOGGER.warning("局域网互动未启用，桌宠仍可正常使用")
+        else:
+            self.lan_service.stop()
+
+    def _handle_lan_interaction(self, received: object) -> None:
+        """把远程安全互动转成宠物旁的提示和本地动效。"""
+        sender = getattr(received, "sender_name", "附近设备")
+        draft = getattr(received, "draft", None)
+        kind = getattr(draft, "kind", None)
+        if kind is InteractionKind.GREETING:
+            message = f"{sender} 向你打招呼 👋"
+        elif kind is InteractionKind.HEART:
+            message = f"{sender} 送了你满天爱心 ❤️"
+        elif kind is InteractionKind.TEXT:
+            message = f"{sender}：{draft.text}"
+        elif kind is InteractionKind.EFFECT:
+            effects = self._discover_effects()
+            effect = next((item for item in effects if item.identifier == draft.effect_id), None)
+            if effect is None:
+                message = f"{sender} 发送了一个本地未安装的动效"
+            else:
+                message = f"{sender} 发送了{effect.name}"
+                self.window.play_effect(effect, loop=False)
+        else:
+            return
+        self.window.show_interaction_bubble(message)
+        LOGGER.info("收到局域网互动：%s", message)
 
     def _configure_system_idle_timer(self) -> None:
         if self.settings.system_idle_enabled:

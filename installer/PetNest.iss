@@ -13,6 +13,7 @@ SetupIconFile=..\assets\icons\petnest-app.ico
 DefaultDirName={autopf}\PetNest
 DefaultGroupName=PetNest
 DisableProgramGroupPage=yes
+PrivilegesRequired=admin
 OutputDir=..\dist\installer
 OutputBaseFilename=PetNest-Setup
 Compression=lzma2
@@ -35,9 +36,16 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}"""; Flags: runhidden waituntilterminated skipifsilent
 Filename: "{app}\PetNest.exe"; Description: "启动 PetNest"; Flags: nowait postinstall skipifsilent
 
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PetNest LAN UDP 18487"""; Flags: runhidden waituntilterminated; RunOnceId: "RemovePetNestLanFirewall"
+
 [Code]
+const
+  FirewallRuleName = 'PetNest LAN UDP 18487';
+
 var
   PetsRootDirectory: TInputDirWizardPage;
+  FirewallPage: TInputOptionWizardPage;
   PetsRootIsAutomatic: Boolean;
   UpdatingPetsRoot: Boolean;
 
@@ -56,6 +64,13 @@ begin
   PetsRootDirectory.Add('');
   PetsRootDirectory.Edits[0].OnChange := @PetsRootChanged;
   PetsRootIsAutomatic := True;
+
+  FirewallPage := CreateInputOptionPage(PetsRootDirectory.ID,
+    '局域网互动防火墙', '允许附近设备发现 PetNest',
+    '安装器会创建一条仅允许 PetNest 使用 UDP 18487 的入站规则。默认只允许专用网络；公用网络通常包括咖啡店、机场等不可信网络，请谨慎开启。',
+    False, False);
+  FirewallPage.Add('允许在公用网络中使用局域网互动（可选）');
+  FirewallPage.Values[0] := False;
 end;
 
 function PathIsInside(const Candidate, Parent: String): Boolean;
@@ -120,6 +135,45 @@ end;
 function GetPetsRoot(Param: String): String;
 begin
   Result := PetsRootDirectory.Values[0];
+end;
+
+function GetFirewallProfiles(Param: String): String;
+begin
+  if FirewallPage.Values[0] then
+    Result := 'private,public'
+  else
+    Result := 'private';
+end;
+
+function ExecNetsh(const Parameters: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure ConfigureFirewallRule;
+var
+  Profiles: String;
+  Parameters: String;
+begin
+  Profiles := GetFirewallProfiles('');
+  ExecNetsh('advfirewall firewall delete rule name="' + FirewallRuleName + '"');
+  Parameters :=
+    'advfirewall firewall add rule name="' + FirewallRuleName +
+    '" dir=in action=allow protocol=UDP localport=18487 program="' +
+    ExpandConstant('{app}\PetNest.exe') + '" profile=' + Profiles + ' enable=yes';
+  if not ExecNetsh(Parameters) then
+    MsgBox('防火墙规则创建失败。PetNest 仍可启动，但局域网设备可能无法发现它。' + #13#10 +
+      '你可以将当前网络改为“专用网络”，或在 Windows 防火墙中允许 UDP 18487。',
+      mbError, MB_OK);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    ConfigureFirewallRule;
 end;
 
 function SamplePetNeedsRepair: Boolean;

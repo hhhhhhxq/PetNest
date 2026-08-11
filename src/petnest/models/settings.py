@@ -19,7 +19,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 15
+    SCHEMA_VERSION = 17
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -32,12 +32,15 @@ class Settings:
     mouse_interaction_enabled: bool = True
     external_event_server_enabled: bool = False
     external_event_port: int = 18486
+    lan_interaction_enabled: bool = True
     system_idle_enabled: bool = True
     system_idle_seconds: int = 300
     system_bored_seconds: int = 20
     system_sleep_seconds: int = 35
     run_at_startup: bool = False
     pets_root: str | None = None
+    nickname: str = ""
+    device_id: str = ""
     work_countdown_enabled: bool = True
     work_start_time: str = "09:00"
     work_end_time: str = "18:00"

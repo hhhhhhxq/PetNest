@@ -9,8 +9,8 @@ import sys
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QFont, QFontMetrics, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QFont, QFontMetrics, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QLabel, QWidget
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.state_machine import PetStateMachine
@@ -18,6 +18,18 @@ from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
 
 PositionSaved = Callable[[QPoint], object]
+
+
+class InteractionBubble(QLabel):
+    """可在透明顶层窗口中稳定绘制背景的互动气泡。"""
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#efcdbd"), 1))
+        painter.setBrush(QColor("#fffaf5"))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 12, 12)
+        super().paintEvent(event)
 
 
 class PetWindow(QWidget):
@@ -90,6 +102,31 @@ class PetWindow(QWidget):
         self._follow_scale_multiplier = 0.45
         self._follow_direction = "right"
         self._follow_facing_left = False
+        self.interaction_bubble = InteractionBubble(None)
+        self.interaction_bubble.setWindowFlags(
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.interaction_bubble.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.interaction_bubble.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.interaction_bubble.setStyleSheet(
+            "QLabel { color: #684d45; padding: 7px 11px; font-size: 12px; }"
+        )
+        self.interaction_bubble.setWordWrap(True)
+        self.interaction_bubble.setMaximumWidth(260)
+        self._interaction_bubble_text: str | None = None
+        self._interaction_bubble_timer = QTimer(self)
+        self._interaction_bubble_timer.setSingleShot(True)
+        self._interaction_bubble_timer.timeout.connect(self.clear_interaction_bubble)
+        self._active_effect_id: str | None = None
+        self._active_effect_layer = "over"
+        self._effect_pixmaps: tuple[QPixmap, ...] = ()
+        self._effect_frame_index = 0
+        self._effect_loop = False
+        self._effect_timer = QTimer(self)
+        self._effect_timer.timeout.connect(self._on_effect_tick)
 
         self.animation_timer = QTimer(self)
         self.animation_timer.timeout.connect(self._on_animation_tick)
@@ -129,6 +166,18 @@ class PetWindow(QWidget):
     def follow_facing_left(self) -> bool:
         """当前应当水平镜像的朝向。"""
         return self._follow_facing_left
+
+    @property
+    def interaction_bubble_text(self) -> str | None:
+        return self._interaction_bubble_text
+
+    @property
+    def active_effect_id(self) -> str | None:
+        return self._active_effect_id
+
+    @property
+    def active_effect_layer(self) -> str | None:
+        return self._active_effect_layer if self._active_effect_id is not None else None
 
     def is_opaque_at(self, x: int, y: int) -> bool:
         """按当前帧的 alpha 通道判断窗口局部坐标是否可交互。
@@ -295,6 +344,69 @@ class PetWindow(QWidget):
             self._pending_countdown_skins = None
         self.update()
 
+    def show_interaction_bubble(self, text: str, *, duration_ms: int = 3_200) -> None:
+        """在宠物旁边显示一条短暂的远程互动提示。"""
+        normalized = " ".join(str(text).split())[:160]
+        if not normalized:
+            return
+        self._interaction_bubble_text = normalized
+        self.interaction_bubble.setText(normalized)
+        self.interaction_bubble.adjustSize()
+        if self.isVisible():
+            anchor = self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3)))
+            self.interaction_bubble.move(anchor)
+        else:
+            self.interaction_bubble.move(0, 0)
+        self.interaction_bubble.show()
+        self.interaction_bubble.raise_()
+        self._interaction_bubble_timer.start(max(500, int(duration_ms)))
+
+    def clear_interaction_bubble(self) -> None:
+        self._interaction_bubble_timer.stop()
+        self._interaction_bubble_text = None
+        self.interaction_bubble.hide()
+
+    def play_effect(self, effect: object, *, loop: bool = False) -> bool:
+        """在宠物画布中播放本地动效；``layer`` 决定绘制顺序。"""
+        frames = tuple(getattr(effect, "frames", ()))
+        pixmaps = tuple(QPixmap(str(path)) for path in frames)
+        pixmaps = tuple(pixmap for pixmap in pixmaps if not pixmap.isNull())
+        if not pixmaps:
+            return False
+        self.clear_effect()
+        layer = str(getattr(effect, "layer", "over"))
+        self._active_effect_id = str(getattr(effect, "identifier", "effect"))
+        self._active_effect_layer = layer if layer in {"under", "over"} else "over"
+        self._effect_pixmaps = pixmaps
+        self._effect_frame_index = 0
+        self._effect_loop = bool(loop)
+        duration_ms = max(1, int(getattr(effect, "duration_ms", 1_000)))
+        interval = max(1, round(duration_ms / len(pixmaps)))
+        self._effect_timer.start(interval)
+        self.update()
+        return True
+
+    def clear_effect(self) -> None:
+        self._effect_timer.stop()
+        self._active_effect_id = None
+        self._active_effect_layer = "over"
+        self._effect_pixmaps = ()
+        self._effect_frame_index = 0
+        self.update()
+
+    def _on_effect_tick(self) -> None:
+        if not self._effect_pixmaps:
+            self.clear_effect()
+            return
+        next_index = self._effect_frame_index + 1
+        if next_index >= len(self._effect_pixmaps):
+            if not self._effect_loop:
+                self.clear_effect()
+                return
+            next_index = 0
+        self._effect_frame_index = next_index
+        self.update()
+
     def handle_pet_event(self, event: PetEvent) -> None:
         """供应用事件总线传入统一事件，不暴露内部播放细节。"""
         transition = self.state_machine.handle(event)
@@ -304,6 +416,8 @@ class PetWindow(QWidget):
     def load_package(self, package: PetPackage) -> None:
         """切换宠物包，并释放旧动画缓存以避免积累图像内存。"""
         self.animation_timer.stop()
+        self.clear_effect()
+        self.clear_interaction_bubble()
         self.player.clear()
         self._pixmap_cache.clear()
         self._countdown_bottom_cache.clear()
@@ -385,6 +499,16 @@ class PetWindow(QWidget):
             return
         event.ignore()
 
+    def moveEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        if self.interaction_bubble.isVisible():
+            self.interaction_bubble.move(self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3))))
+        super().moveEvent(event)  # type: ignore[arg-type]
+
+    def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self.clear_interaction_bubble()
+        self.clear_effect()
+        super().closeEvent(event)  # type: ignore[arg-type]
+
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         if self._current_pixmap.isNull():
             return
@@ -395,6 +519,8 @@ class PetWindow(QWidget):
             | QPainter.RenderHint.SmoothPixmapTransform
         )
         pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
+        if self._active_effect_layer == "under":
+            self._draw_active_effect(painter, pet_rect)
         if self._follow_motion and self._follow_facing_left and self._playing_action in {"walk", "drag"}:
             painter.save()
             painter.translate(pet_rect.left() + pet_rect.width(), 0)
@@ -403,6 +529,8 @@ class PetWindow(QWidget):
             painter.restore()
         else:
             painter.drawPixmap(pet_rect, self._current_pixmap)
+        if self._active_effect_layer == "over":
+            self._draw_active_effect(painter, pet_rect)
         if self.countdown_is_visible:
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             bubble = self._countdown_rect()
@@ -416,6 +544,23 @@ class PetWindow(QWidget):
             left_inset, right_inset = self._countdown_text_insets(bubble.height())
             text_rect = bubble.adjusted(left_inset, 0, -right_inset, 0)
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, self._countdown_text)
+
+    def _draw_active_effect(self, painter: QPainter, pet_rect: QRect) -> None:
+        if not self._effect_pixmaps:
+            return
+        source = self._effect_pixmaps[self._effect_frame_index]
+        scaled = source.scaled(
+            pet_rect.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        target = QRect(
+            pet_rect.center().x() - scaled.width() // 2,
+            pet_rect.center().y() - scaled.height() // 2,
+            scaled.width(),
+            scaled.height(),
+        )
+        painter.drawPixmap(target, scaled)
 
     def _handle_event(self, event_name: str) -> None:
         transition = self.state_machine.handle(PetEvent(event_name, source="mouse"))

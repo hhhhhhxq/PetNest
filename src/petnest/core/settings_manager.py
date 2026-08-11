@@ -165,6 +165,15 @@ class SettingsManager:
             migrated.setdefault("cursor_style_enabled", False)
             migrated.setdefault("cursor_style_id", None)
             migrated.setdefault("cursor_restore_pending", False)
+            migrated["schema_version"] = 15
+            version = 15
+        if version == 15:
+            migrated.setdefault("nickname", "")
+            migrated.setdefault("device_id", "")
+            migrated["schema_version"] = 16
+            version = 16
+        if version == 16:
+            migrated.setdefault("lan_interaction_enabled", True)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

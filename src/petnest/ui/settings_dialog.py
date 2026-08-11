@@ -55,6 +55,8 @@ class SettingsDialog(QDialog):
         self.mouse_follow_scale_input.setValue(settings.mouse_follow_scale)
         self.mouse_follow_input.toggled.connect(self.mouse_follow_scale_input.setEnabled)
         self.mouse_follow_scale_input.setEnabled(self.mouse_follow_input.isChecked())
+        self.lan_interaction_input = QCheckBox(self)
+        self.lan_interaction_input.setChecked(settings.lan_interaction_enabled)
         self.system_idle_input = QCheckBox(self)
         self.system_idle_input.setChecked(settings.system_idle_enabled)
         self.system_bored_input = QSpinBox(self)
@@ -93,6 +95,7 @@ class SettingsDialog(QDialog):
         layout.addRow("启用鼠标交互", self.mouse_interaction_input)
         layout.addRow("跟随鼠标", self.mouse_follow_input)
         layout.addRow("跟随时大小", self.mouse_follow_scale_input)
+        layout.addRow("允许局域网互动", self.lan_interaction_input)
         layout.addRow("启用系统空闲动作", self.system_idle_input)
         layout.addRow("无操作后无聊", self.system_bored_input)
         layout.addRow("无操作后睡觉", self.system_sleep_input)
@@ -143,6 +146,7 @@ class SettingsDialog(QDialog):
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
             mouse_follow_enabled=self.mouse_follow_input.isChecked(),
             mouse_follow_scale=self.mouse_follow_scale_input.value(),
+            lan_interaction_enabled=self.lan_interaction_input.isChecked(),
             system_idle_enabled=self.system_idle_input.isChecked(),
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),

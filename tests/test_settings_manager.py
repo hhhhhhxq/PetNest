@@ -133,3 +133,31 @@ def test_cursor_style_preferences_migrate_from_schema_14(tmp_path) -> None:
     loaded = SettingsManager(path).load()
 
     assert (loaded.cursor_style_enabled, loaded.cursor_style_id, loaded.cursor_restore_pending) == (False, None, False)
+
+
+def test_nickname_and_device_id_are_persisted_and_added_by_schema_migration(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(Settings(nickname="小平安", device_id="abcdef123456"))
+
+    loaded = manager.load()
+    assert (loaded.nickname, loaded.device_id) == ("小平安", "abcdef123456")
+
+    path.write_text(json.dumps({"schema_version": 15}), encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.nickname == ""
+    assert migrated.device_id == ""
+
+
+def test_lan_interaction_preference_round_trips_and_migrates(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(Settings(lan_interaction_enabled=False))
+
+    assert manager.load().lan_interaction_enabled is False
+
+    path.write_text(json.dumps({"schema_version": 16}), encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.lan_interaction_enabled is True

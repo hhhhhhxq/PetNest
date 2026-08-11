@@ -15,10 +15,11 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QPoint
 
-from petnest.app import PetNest, resource_directory_for_cache
+from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.remote_resource_cache import RemoteResourceCache
+from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
 from petnest.models.settings import Settings
@@ -38,6 +39,27 @@ class _IdleAdapter:
 
     def get_idle_seconds(self) -> float:
         return self.idle_seconds
+
+
+def test_effect_directories_include_custom_pets_and_installation_resources(tmp_path: Path) -> None:
+    pets_root = tmp_path / "custom" / "pets"
+    resource_root = tmp_path / "cache" / "resources"
+    bundled_root = tmp_path / "bundle"
+    application_root = tmp_path / "installed"
+
+    roots = effect_directories_for(
+        pets_root=pets_root,
+        resource_directory=resource_root,
+        bundled_root=bundled_root,
+        application_root=application_root,
+    )
+
+    assert roots == (
+        (pets_root.parent / "effects").resolve(),
+        (resource_root / "effects").resolve(),
+        (application_root / "effects").resolve(),
+        (bundled_root / "effects").resolve(),
+    )
 
     def register_startup(self, enabled: bool) -> bool:
         del enabled
@@ -423,6 +445,28 @@ def test_manual_resource_action_bypasses_check_throttle(qtbot: pytest.QtBot, tmp
     application.shutdown()
 
 
+def test_manual_resource_check_starts_download_when_update_is_found(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    applies: list[bool] = []
+    application._schedule_resource_apply = lambda: applies.append(True)  # type: ignore[method-assign]
+
+    application._handle_resource_check_result(
+        RemoteResourceCheckResult(True, False, True, catalog_version="2026.8.13"),
+        manual=True,
+    )
+
+    assert applies == [True]
+    application.shutdown()
+
+
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
     adapter = UnsupportedPlatformAdapter("test")
 
@@ -713,6 +757,54 @@ def test_application_clamps_saved_position_that_is_outside_all_screens(
 
 def test_check_mode_can_load_bundled_sample_package() -> None:
     assert PetNest.check_installation() == 0
+
+
+def test_application_assigns_a_stable_device_id_for_lan_identity(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+
+    first_id = application.settings.device_id
+    assert len(first_id) == 32
+    assert SettingsManager(tmp_path / "settings.json").load().device_id == first_id
+
+    application.shutdown()
+    second = SettingsManager(tmp_path / "settings.json").load()
+    assert second.device_id == first_id
+
+
+def test_lan_service_follows_the_user_presence_toggle(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(lan_interaction_enabled=True))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+    application.start()
+
+    assert application.lan_service.is_running
+    application.apply_settings(replace(application.settings, lan_interaction_enabled=False))
+    assert not application.lan_service.is_running
+
+
+def test_shutdown_clears_remote_interaction_overlay(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False)
+    qtbot.addWidget(application.window)
+    application.window.show_interaction_bubble("测试提示")
+
+    application.shutdown()
+
+    assert application.window.interaction_bubble_text is None
 
 
 def test_frozen_application_bootstraps_the_configured_writable_pets_root(

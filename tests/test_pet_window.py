@@ -5,13 +5,14 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -108,6 +109,56 @@ def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: p
     assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert window.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.size().width() == 15
+
+
+def test_remote_interaction_bubble_can_be_shown_and_cleared(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+
+    window.show_interaction_bubble("邻居送了你爱心")
+
+    assert window.interaction_bubble_text == "邻居送了你爱心"
+    assert window.interaction_bubble.isVisible()
+    window.clear_interaction_bubble()
+    assert window.interaction_bubble_text is None
+    assert not window.interaction_bubble.isVisible()
+
+
+def test_remote_interaction_bubble_paints_a_visible_background(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show_interaction_bubble("测试文字")
+    QApplication.processEvents()
+
+    image = QImage(window.interaction_bubble.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+    window.interaction_bubble.render(image)
+
+    background_pixel = image.pixelColor(image.width() // 2, max(0, image.height() - 3))
+    assert background_pixel.alpha() > 0
+
+
+def test_remote_effect_exposes_its_requested_layer_and_can_be_cleared(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    frame = tmp_path / "effect.png"
+    Image.new("RGBA", (10, 8), (255, 0, 0, 180)).save(frame)
+    effect = SimpleNamespace(
+        identifier="heart-burst",
+        frames=(frame,),
+        duration_ms=300,
+        loop=False,
+        layer="under",
+    )
+
+    window.play_effect(effect, loop=False)
+
+    assert window.active_effect_id == "heart-burst"
+    assert window.active_effect_layer == "under"
+    window.clear_effect()
+    assert window.active_effect_id is None
     assert window.size().height() == 12
 
 
@@ -568,6 +619,17 @@ def test_tray_exposes_pet_folder_and_refresh_actions(qtbot: pytest.QtBot, tmp_pa
     tray.open_pets_folder_action.trigger()
     tray.refresh_pets_action.trigger()
     assert calls == ["open", "refresh"]
+
+
+def test_tray_exposes_lan_interaction_action(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    tray = PetTrayIcon(window, on_lan_interactions=lambda: calls.append("lan"))
+
+    assert tray.lan_interactions_action.text() == "局域网互动…"
+    tray.lan_interactions_action.trigger()
+    assert calls == ["lan"]
 
 
 def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp_path: Path) -> None:

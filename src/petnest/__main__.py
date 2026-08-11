@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import logging
+import os
 from pathlib import Path
 import sys
 
@@ -13,10 +15,13 @@ from PySide6.QtWidgets import QMessageBox
 
 from . import __version__
 from .app import PetNest
-from .logging_config import configure_logging
+from .logging_config import configure_logging, install_diagnostic_hooks
 from .core.settings_manager import SettingsManager
 from .core.single_instance import InstanceClaim, SingleInstanceCoordinator
 from .ui.tray_icon import application_icon
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -34,18 +39,35 @@ def main(arguments: list[str] | None = None) -> int:
         manager.save(replace(manager.load(), pets_root=str(root)))
         return 0
     configure_logging()
+    install_diagnostic_hooks(install_qt=False)
+    LOGGER.info(
+        "PetNest 进程启动：pid=%s executable=%s argv=%r version=%s",
+        os.getpid(),
+        sys.executable,
+        sys.argv,
+        __version__,
+    )
     # macOS 在 QApplication 构造期间创建全局应用菜单，所以名称必须在
     # QApplication 之前设置，否则菜单会沿用 python / __main__.py。
     QCoreApplication.setApplicationName("PetNest")
     QCoreApplication.setApplicationVersion(__version__)
     QCoreApplication.setOrganizationName("PetNest")
     application = QApplication(sys.argv)
+    install_diagnostic_hooks()
+    application.aboutToQuit.connect(lambda: LOGGER.info("Qt aboutToQuit 信号已触发"))
     application.setApplicationDisplayName("PetNest")
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(application_icon())
-    coordinator = SingleInstanceCoordinator("PetNest-single-instance", SettingsManager.default_path().with_name("instance.pid"))
+    pid_path = SettingsManager.default_path().with_name("instance.pid")
+    try:
+        previous_pid = pid_path.read_text(encoding="utf-8").strip() if pid_path.exists() else ""
+    except OSError:
+        previous_pid = "<unreadable>"
+    coordinator = SingleInstanceCoordinator("PetNest-single-instance", pid_path)
     claim = coordinator.claim()
+    LOGGER.info("单实例检查结果：%s（启动前 PID 标记=%s）", claim.value, previous_pid or "none")
     if claim is InstanceClaim.ACTIVATED_EXISTING:
+        LOGGER.info("已有 PetNest 实例已响应，当前进程正常退出")
         return 0
     if claim is InstanceClaim.UNRESPONSIVE:
         choice = QMessageBox.question(
@@ -56,6 +78,7 @@ def main(arguments: list[str] | None = None) -> int:
             QMessageBox.StandardButton.No,
         )
         if choice is not QMessageBox.StandardButton.Yes or not coordinator.force_restart():
+            LOGGER.info("用户未确认强制重启无响应的 PetNest 实例，当前进程退出")
             return 1
         claim = coordinator.claim()
         if claim is not InstanceClaim.PRIMARY:
@@ -65,9 +88,14 @@ def main(arguments: list[str] | None = None) -> int:
         petnest = PetNest()
         coordinator.set_activation_handler(petnest.reveal)
         petnest.start()
-        return application.exec()
+        LOGGER.info("PetNest 进入 Qt 事件循环")
+        exit_code = application.exec()
+        LOGGER.info("Qt 事件循环结束：返回码=%s", exit_code)
+        return exit_code
     finally:
+        LOGGER.info("PetNest 进程清理开始")
         coordinator.release()
+        LOGGER.info("PetNest 进程清理结束")
 
 
 if __name__ == "__main__":
