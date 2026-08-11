@@ -162,6 +162,45 @@ def test_resource_directory_falls_back_when_current_generation_is_missing(tmp_pa
     assert resource_directory_for_cache(cache) is None
 
 
+def test_tray_resource_update_action_shows_and_clears_blue_badge(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=True,
+    )
+    assert application.tray is not None
+    qtbot.addWidget(application.window)
+
+    application.tray.set_resource_update_available(True)
+    assert application.tray.resource_update_action.text().startswith("●")
+    assert not application.tray.resource_update_action.icon().isNull()
+
+    application.tray.set_resource_update_available(False)
+    assert not application.tray.resource_update_action.text().startswith("●")
+    assert application.tray.resource_update_action.icon().isNull()
+    application.shutdown()
+
+
+def test_manual_resource_action_bypasses_check_throttle(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    checks: list[bool] = []
+    application._schedule_resource_check = lambda force: checks.append(force)  # type: ignore[method-assign]
+
+    application._handle_resource_update_action()
+
+    assert checks == [True]
+    application.shutdown()
+
+
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
     adapter = UnsupportedPlatformAdapter("test")
 

@@ -281,6 +281,11 @@ class PetWindow(QWidget):
             self.move(self.clamp_position(self.pos()))
         self.update()
 
+    def reload_countdown_skins(self, directory: Path | None = None) -> None:
+        """从新资源版本重新加载倒计时皮肤，不影响当前倒计时状态。"""
+        self._countdown_skins = self._load_countdown_skins(directory)
+        self.update()
+
     def handle_pet_event(self, event: PetEvent) -> None:
         """供应用事件总线传入统一事件，不暴露内部播放细节。"""
         transition = self.state_machine.handle(event)

@@ -6,7 +6,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import replace
 import logging
 from pathlib import Path
+from queue import Empty, Queue
 import sys
+from threading import Thread
 from time import monotonic
 
 from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
@@ -20,6 +22,11 @@ from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
 from petnest.core.remote_resource_cache import RemoteResourceCache
+from petnest.core.remote_resource_update import (
+    RemoteResourceApplyResult,
+    RemoteResourceCheckResult,
+    RemoteResourceUpdateCoordinator,
+)
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
@@ -39,6 +46,8 @@ from petnest.ui.work_countdown import WorkCountdownWindow
 
 LOGGER = logging.getLogger(__name__)
 REMOTE_RESOURCE_BASE_URL = "https://red-lake-ce5a.bbbbbiubiubiu.workers.dev"
+REMOTE_RESOURCE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS = 200
 _CURSOR_STYLE_ROLES = (
     "arrow",
     "busy",
@@ -95,6 +104,12 @@ class PetNest:
         self.remote_resource_cache = RemoteResourceCache(
             self.settings_manager.path.parent / "remote-resources", REMOTE_RESOURCE_BASE_URL
         )
+        self.remote_resource_update = RemoteResourceUpdateCoordinator(
+            self.remote_resource_cache,
+            self.remote_resource_cache.root / "state.json",
+        )
+        self._resource_results: Queue[tuple[str, bool, object]] = Queue()
+        self._resource_worker: Thread | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
         cursor_root = (
             self.resource_directory / "cursors"
@@ -166,6 +181,12 @@ class PetNest:
         self.mouse_follow_timer = QTimer(self.window)
         self.mouse_follow_timer.setInterval(20)
         self.mouse_follow_timer.timeout.connect(self._tick_mouse_follow)
+        self.resource_update_timer = QTimer(self.window)
+        self.resource_update_timer.setInterval(REMOTE_RESOURCE_CHECK_INTERVAL_MS)
+        self.resource_update_timer.timeout.connect(self._resource_timer_tick)
+        self.resource_result_timer = QTimer(self.window)
+        self.resource_result_timer.setInterval(REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS)
+        self.resource_result_timer.timeout.connect(self._drain_resource_results)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -180,6 +201,7 @@ class PetNest:
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
                 on_cursor_styles=self.show_cursor_style_dialog,
+                on_resource_update=self._handle_resource_update_action,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_quit=self.shutdown,
             )
@@ -221,6 +243,11 @@ class PetNest:
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=self.settings.cursor_restore_pending)
         self.settings_manager.save(self.settings)
+        if self.tray is not None:
+            self.tray.set_resource_update_available(self.remote_resource_update.update_available)
+        self.resource_result_timer.start()
+        self.resource_update_timer.start()
+        self._schedule_resource_check(force=False)
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
     def reveal(self) -> None:
@@ -430,6 +457,8 @@ class PetNest:
             self._run_shutdown_step("停止外部事件服务", server.stop)
         self._run_shutdown_step("停止系统空闲计时器", self.system_idle_timer.stop)
         self._run_shutdown_step("停止鼠标跟随计时器", self.mouse_follow_timer.stop)
+        self._run_shutdown_step("停止远程资源结果计时器", self.resource_result_timer.stop)
+        self._run_shutdown_step("停止远程资源检查计时器", self.resource_update_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
         self._run_shutdown_step("恢复系统鼠标样式", self._restore_cursor_style)
@@ -451,6 +480,106 @@ class PetNest:
             self.external_server = server
         else:
             LOGGER.warning("本地外部事件服务未启用，桌宠仍可正常使用")
+
+    def _schedule_resource_check(self, force: bool = False) -> None:
+        """在后台检查 manifest，避免网络请求阻塞桌宠主线程。"""
+        if self._shutdown or (self._resource_worker is not None and self._resource_worker.is_alive()):
+            return
+        worker = Thread(
+            target=self._resource_check_worker,
+            args=(force,),
+            daemon=True,
+            name="petnest-resource-check",
+        )
+        self._resource_worker = worker
+        worker.start()
+
+    def _resource_check_worker(self, force: bool) -> None:
+        try:
+            result = self.remote_resource_update.check(force=force)
+        except Exception as error:  # noqa: BLE001 - resource checks must not stop the app.
+            LOGGER.exception("远程资源检查线程异常")
+            result = RemoteResourceCheckResult(False, False, self.remote_resource_update.update_available, error=str(error))
+        self._resource_results.put(("check", force, result))
+
+    def _schedule_resource_apply(self) -> None:
+        """在后台下载并校验完整资源版本。"""
+        if self._shutdown or (self._resource_worker is not None and self._resource_worker.is_alive()):
+            return
+        worker = Thread(
+            target=self._resource_apply_worker,
+            daemon=True,
+            name="petnest-resource-apply",
+        )
+        self._resource_worker = worker
+        worker.start()
+
+    def _resource_apply_worker(self) -> None:
+        try:
+            result = self.remote_resource_update.apply()
+        except Exception as error:  # noqa: BLE001 - failed update is reported in the UI.
+            LOGGER.exception("远程资源更新线程异常")
+            result = RemoteResourceApplyResult(False, error=str(error))
+        self._resource_results.put(("apply", False, result))
+
+    def _handle_resource_update_action(self) -> None:
+        """托盘动作：有新版本时应用，否则绕过节流立即检查。"""
+        if self.remote_resource_update.update_available:
+            self._schedule_resource_apply()
+        else:
+            self._schedule_resource_check(force=True)
+
+    def _resource_timer_tick(self) -> None:
+        self._schedule_resource_check(force=False)
+
+    def _drain_resource_results(self) -> None:
+        while True:
+            try:
+                kind, manual, payload = self._resource_results.get_nowait()
+            except Empty:
+                return
+            if kind == "check" and isinstance(payload, RemoteResourceCheckResult):
+                self._handle_resource_check_result(payload, manual=manual)
+            elif kind == "apply" and isinstance(payload, RemoteResourceApplyResult):
+                self._handle_resource_apply_result(payload)
+
+    def _handle_resource_check_result(self, result: RemoteResourceCheckResult, *, manual: bool) -> None:
+        if self.tray is not None:
+            self.tray.set_resource_update_available(result.update_available)
+        if result.error:
+            LOGGER.warning("远程资源检查失败：%s", result.error)
+            if manual and self.tray is not None:
+                self.tray.showMessage("PetNest", f"资源检查失败：{result.error}")
+        elif result.update_available and result.checked and self.tray is not None:
+            self.tray.showMessage("PetNest", "发现新的远程资源，请点击菜单中的蓝点更新")
+        elif manual and result.checked and self.tray is not None:
+            self.tray.showMessage("PetNest", "资源已是最新")
+
+    def _handle_resource_apply_result(self, result: RemoteResourceApplyResult) -> None:
+        if result.applied:
+            self._refresh_resource_directories()
+            if self.tray is not None:
+                self.tray.set_resource_update_available(False)
+                self.tray.showMessage("PetNest", "资源已更新，新的未使用资源已立即可用")
+            return
+        if self.tray is not None:
+            self.tray.set_resource_update_available(self.remote_resource_update.update_available)
+            if result.error:
+                self.tray.showMessage("PetNest", f"资源更新失败：{result.error}")
+        if result.error:
+            LOGGER.warning("远程资源更新失败：%s", result.error)
+
+    def _refresh_resource_directories(self) -> None:
+        """切换到新版本目录；当前已应用到系统的光标不在此处强行替换。"""
+        self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
+        cursor_root = (
+            self.resource_directory / "cursors"
+            if self.resource_directory is not None and (self.resource_directory / "cursors").is_dir()
+            else bundled_cursor_styles_directory()
+        )
+        self.cursor_catalog = CursorStyleCatalog(cursor_root)
+        countdown_root = self.resource_directory / "countdown" if self.resource_directory is not None else None
+        self.window.reload_countdown_skins(countdown_root)
 
     def _configure_system_idle_timer(self) -> None:
         if self.settings.system_idle_enabled:

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 import sys
 
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from .pet_window import PetWindow
@@ -49,6 +49,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
         on_cursor_styles: Callable[[], object] | None = None,
+        on_resource_update: Callable[[], object] | None = None,
         on_toggle_mouse_follow: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
@@ -63,6 +64,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_edit_animations = on_edit_animations
         self._on_settings = on_settings
         self._on_cursor_styles = on_cursor_styles
+        self._on_resource_update = on_resource_update
         self._on_toggle_mouse_follow = on_toggle_mouse_follow
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
@@ -80,6 +82,7 @@ class PetTrayIcon(QSystemTrayIcon):
         cursor_styles_label = "鼠标样式…" if cursor_styles_supported else "鼠标样式…（暂时仅 Windows 支持）"
         self.cursor_styles_action = QAction(cursor_styles_label, self.menu)
         self.cursor_styles_action.setEnabled(cursor_styles_supported)
+        self.resource_update_action = QAction("立即检查资源更新", self.menu)
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.toggle_mouse_follow_action.triggered.connect(self._toggle_mouse_follow)
@@ -91,6 +94,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.edit_animations_action.triggered.connect(self._edit_animations)
         self.settings_action.triggered.connect(self._settings)
         self.cursor_styles_action.triggered.connect(self._cursor_styles)
+        self.resource_update_action.triggered.connect(self._resource_update)
         self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_mouse_follow_action))
         self.pet_menu = self.menu.addMenu("切换宠物")
         self.set_pet_names(pet_names or {})
@@ -101,6 +105,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.menu.addAction(self.reload_action)
         self.menu.addAction(self.settings_action)
         self.menu.addAction(self.cursor_styles_action)
+        self.menu.addAction(self.resource_update_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.setContextMenu(self.menu)
@@ -113,6 +118,11 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def set_mouse_follow_enabled(self, enabled: bool) -> None:
         self.toggle_mouse_follow_action.setChecked(enabled)
+
+    def set_resource_update_available(self, available: bool) -> None:
+        """在资源动作旁显示或清除蓝色更新提示点。"""
+        self.resource_update_action.setText("● 立即检查资源更新" if available else "立即检查资源更新")
+        self.resource_update_action.setIcon(_blue_dot_icon() if available else QIcon())
 
     def _toggle_visibility(self) -> None:
         if self.window.isVisible():
@@ -168,3 +178,19 @@ class PetTrayIcon(QSystemTrayIcon):
     def _cursor_styles(self) -> None:
         if self._on_cursor_styles is not None:
             self._on_cursor_styles()
+
+    def _resource_update(self) -> None:
+        if self._on_resource_update is not None:
+            self._on_resource_update()
+
+
+def _blue_dot_icon() -> QIcon:
+    pixmap = QPixmap(10, 10)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor("#1677ff"))
+    painter.setBrush(QColor("#1677ff"))
+    painter.drawEllipse(1, 1, 8, 8)
+    painter.end()
+    return QIcon(pixmap)
