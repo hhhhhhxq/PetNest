@@ -5,9 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 import logging
+import os
 from pathlib import Path
 from queue import Empty, Queue
+import re
 import sys
+import subprocess
+import tempfile
 from threading import Thread
 from time import monotonic
 
@@ -16,6 +20,14 @@ from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplic
 from PySide6.QtWidgets import QApplication, QMenu, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
+from petnest import __version__
+from petnest.core.app_update import (
+    AppUpdateCheckResult,
+    AppUpdateClient,
+    AppUpdateCoordinator,
+    AppUpdateError,
+    AppUpdateInfo,
+)
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.event_bus import EventBus
 from petnest.core.mouse_follow import MouseFollowController
@@ -35,6 +47,7 @@ from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
+from petnest.ui.app_update_dialog import AppUpdateDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
@@ -48,6 +61,10 @@ LOGGER = logging.getLogger(__name__)
 REMOTE_RESOURCE_BASE_URL = "https://red-lake-ce5a.bbbbbiubiubiu.workers.dev"
 REMOTE_RESOURCE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS = 200
+APP_UPDATE_RESULT_POLL_INTERVAL_MS = 200
+APP_UPDATE_STARTUP_DELAY_MS = 2_500
+APP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+APP_UPDATE_MANIFEST_URL = "https://github.com/qinxiaohui-qq/PetNest/releases/latest/download/app-update.json"
 _CURSOR_STYLE_ROLES = (
     "arrow",
     "busy",
@@ -121,6 +138,19 @@ class PetNest:
         )
         self._resource_results: Queue[tuple[str, bool, object]] = Queue()
         self._resource_worker: Thread | None = None
+        self.app_update_client = AppUpdateClient(
+            manifest_url=APP_UPDATE_MANIFEST_URL,
+            current_version=__version__,
+            platform_name=sys.platform,
+        )
+        self.app_update_coordinator = AppUpdateCoordinator(
+            self.app_update_client,
+            self.settings_manager.path.parent / "app-update-state.json",
+        )
+        self._app_update_results: Queue[tuple[str, object]] = Queue()
+        self._app_update_worker: Thread | None = None
+        self._app_update_dialog: AppUpdateDialog | None = None
+        self._pending_app_update: AppUpdateInfo | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
         cursor_root = (
             self.resource_directory / "cursors"
@@ -198,6 +228,12 @@ class PetNest:
         self.resource_result_timer = QTimer(self.window)
         self.resource_result_timer.setInterval(REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS)
         self.resource_result_timer.timeout.connect(self._drain_resource_results)
+        self.app_update_result_timer = QTimer(self.window)
+        self.app_update_result_timer.setInterval(APP_UPDATE_RESULT_POLL_INTERVAL_MS)
+        self.app_update_result_timer.timeout.connect(self._drain_app_update_results)
+        self.app_update_check_timer = QTimer(self.window)
+        self.app_update_check_timer.setInterval(APP_UPDATE_CHECK_INTERVAL_MS)
+        self.app_update_check_timer.timeout.connect(self._schedule_app_update_check)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -258,6 +294,10 @@ class PetNest:
             self.tray.set_resource_update_available(self.remote_resource_update.update_available)
         self.resource_result_timer.start()
         self.resource_update_timer.start()
+        if sys.platform == "win32":
+            self.app_update_result_timer.start()
+            self.app_update_check_timer.start()
+            QTimer.singleShot(APP_UPDATE_STARTUP_DELAY_MS, self._schedule_app_update_check)
         self._schedule_resource_check(force=False)
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
@@ -387,7 +427,11 @@ class PetNest:
 
     def show_settings_dialog(self) -> None:
         """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
-        dialog = SettingsDialog(self.settings, self.window)
+        dialog = SettingsDialog(
+            self.settings,
+            self.window,
+            on_check_app_update=self._show_app_update_dialog if sys.platform == "win32" else None,
+        )
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
 
@@ -476,6 +520,8 @@ class PetNest:
         self._run_shutdown_step("停止鼠标跟随计时器", self.mouse_follow_timer.stop)
         self._run_shutdown_step("停止远程资源结果计时器", self.resource_result_timer.stop)
         self._run_shutdown_step("停止远程资源检查计时器", self.resource_update_timer.stop)
+        self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
+        self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
         self._run_shutdown_step("恢复系统鼠标样式", self._restore_cursor_style)
@@ -633,6 +679,161 @@ class PetNest:
                 self.tray.showMessage("PetNest", f"资源更新失败：{result.error}")
         if result.error:
             LOGGER.warning("远程资源更新失败：%s", result.error)
+
+    def _show_app_update_dialog(self) -> None:
+        """从设置页打开应用更新入口；托盘菜单不暴露此动作。"""
+        if sys.platform != "win32" or self._shutdown:
+            return
+        if self._app_update_dialog is None:
+            dialog = AppUpdateDialog(
+                __version__,
+                on_check=lambda: self._schedule_app_update_check(force=True),
+                on_download=self._schedule_app_update_download,
+                parent=self.window,
+            )
+            dialog.finished.connect(lambda _code: self._clear_app_update_dialog(dialog))
+            self._app_update_dialog = dialog
+        else:
+            dialog = self._app_update_dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._schedule_app_update_check(force=True)
+
+    def _clear_app_update_dialog(self, dialog: AppUpdateDialog) -> None:
+        if self._app_update_dialog is dialog:
+            self._app_update_dialog = None
+
+    def _schedule_app_update_check(self, force: bool = False) -> None:
+        """后台检查应用安装包；手动入口传 ``force=True`` 绕过 24 小时节流。"""
+        if sys.platform != "win32" or self._shutdown:
+            return
+        if self._app_update_worker is not None and self._app_update_worker.is_alive():
+            return
+        if self._app_update_dialog is not None:
+            self._app_update_dialog.set_checking()
+        worker = Thread(
+            target=self._app_update_check_worker,
+            args=(force,),
+            daemon=True,
+            name="petnest-app-update-check",
+        )
+        self._app_update_worker = worker
+        worker.start()
+
+    def _app_update_check_worker(self, force: bool) -> None:
+        try:
+            result = self.app_update_coordinator.check(force=force)
+        except Exception as error:  # noqa: BLE001 - update checks must not stop the app.
+            LOGGER.exception("程序更新检查线程异常")
+            result = AppUpdateCheckResult(False, False, error=str(error) or error.__class__.__name__)
+        self._app_update_results.put(("check", result))
+
+    def _schedule_app_update_download(self, info: AppUpdateInfo) -> None:
+        if sys.platform != "win32" or self._shutdown:
+            return
+        if self._app_update_worker is not None and self._app_update_worker.is_alive():
+            return
+        destination = self._app_update_download_path(info)
+        if self._app_update_dialog is not None:
+            self._app_update_dialog.set_downloading(0)
+        worker = Thread(
+            target=self._app_update_download_worker,
+            args=(info, destination),
+            daemon=True,
+            name="petnest-app-update-download",
+        )
+        self._app_update_worker = worker
+        worker.start()
+
+    def _app_update_download_worker(self, info: AppUpdateInfo, destination: Path) -> None:
+        try:
+            self._cleanup_old_app_update_downloads(destination)
+            self.app_update_client.download(
+                info,
+                destination,
+                progress=lambda value: self._app_update_results.put(("progress", value)),
+                cancel=lambda: self._shutdown,
+            )
+        except Exception as error:  # noqa: BLE001 - failed update remains safely installed.
+            LOGGER.exception("程序更新下载安装包失败")
+            self._app_update_results.put(("download-error", str(error) or error.__class__.__name__))
+            return
+        self._app_update_results.put(("downloaded", (info, destination)))
+
+    @staticmethod
+    def _app_update_download_path(info: AppUpdateInfo) -> Path:
+        safe_version = re.sub(r"[^0-9A-Za-z._-]+", "_", info.version)
+        return Path(tempfile.gettempdir()) / "PetNest" / f"PetNest-Setup-{safe_version}.exe"
+
+    @staticmethod
+    def _cleanup_old_app_update_downloads(destination: Path) -> None:
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            for candidate in destination.parent.glob("PetNest-Setup-*.exe"):
+                if candidate != destination:
+                    candidate.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning("无法清理旧的程序更新安装包", exc_info=True)
+
+    def _launch_windows_installer(self, installer: Path) -> None:
+        if sys.platform != "win32":
+            raise AppUpdateError("当前平台不支持 Windows 安装器")
+        if not getattr(sys, "frozen", False):
+            raise AppUpdateError("开发模式未打包 PetNestUpdater.exe，无法自动安装")
+        updater = Path(sys.executable).with_name("PetNestUpdater.exe")
+        if not updater.is_file():
+            raise AppUpdateError("安装包缺少 PetNestUpdater.exe")
+        from petnest.core.app_update import build_updater_command
+
+        command = build_updater_command(
+            updater,
+            installer,
+            os.getpid(),
+            restart_path=Path(sys.executable),
+        )
+        subprocess.Popen(command, cwd=str(updater.parent), close_fds=True)
+
+    def _drain_app_update_results(self) -> None:
+        while True:
+            try:
+                kind, payload = self._app_update_results.get_nowait()
+            except Empty:
+                return
+            if kind == "check" and isinstance(payload, AppUpdateCheckResult):
+                self._app_update_worker = None
+                if payload.error:
+                    LOGGER.warning("程序更新检查失败：%s", payload.error)
+                    if self._app_update_dialog is not None:
+                        self._app_update_dialog.set_error(payload.error)
+                elif payload.update is None:
+                    if self._app_update_dialog is not None:
+                        self._app_update_dialog.set_no_update()
+                else:
+                    self._pending_app_update = payload.update
+                    LOGGER.info("发现 PetNest 新版本：%s", payload.update.version)
+                    if self._app_update_dialog is not None:
+                        self._app_update_dialog.set_available(payload.update)
+            elif kind == "progress" and isinstance(payload, int):
+                if self._app_update_dialog is not None:
+                    self._app_update_dialog.set_downloading(payload)
+            elif kind == "download-error":
+                self._app_update_worker = None
+                if self._app_update_dialog is not None:
+                    self._app_update_dialog.set_error(str(payload))
+            elif kind == "downloaded" and isinstance(payload, tuple) and len(payload) == 2:
+                self._app_update_worker = None
+                _info, installer = payload
+                try:
+                    self._launch_windows_installer(Path(installer))
+                except Exception as error:  # noqa: BLE001 - current install remains untouched.
+                    LOGGER.exception("无法启动 PetNest 更新安装器")
+                    if self._app_update_dialog is not None:
+                        self._app_update_dialog.set_error(str(error) or error.__class__.__name__)
+                    continue
+                if self._app_update_dialog is not None:
+                    self._app_update_dialog.set_finished()
+                self.shutdown()
 
     def _refresh_resource_directories(self, *, verify_files: bool = True) -> None:
         """切换到新版本目录；当前已应用到系统的光标不在此处强行替换。"""

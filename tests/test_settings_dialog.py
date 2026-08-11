@@ -20,3 +20,20 @@ def test_regular_settings_dialog_has_no_cursor_controls(qtbot, tmp_path: Path) -
     qtbot.addWidget(dialog)
 
     assert not hasattr(dialog, "cursor_style_enabled_input")
+
+
+def test_application_update_entry_is_opt_in_for_platform_owner(qtbot) -> None:
+    called: list[bool] = []
+    dialog = SettingsDialog(Settings(), on_check_app_update=lambda: called.append(True))
+    qtbot.addWidget(dialog)
+
+    assert dialog.app_update_button.text() == "检查程序更新…"
+    qtbot.mouseClick(dialog.app_update_button, __import__("PySide6").QtCore.Qt.MouseButton.LeftButton)
+    assert called == [True]
+
+
+def test_application_update_entry_is_absent_without_platform_support(qtbot) -> None:
+    dialog = SettingsDialog(Settings())
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "app_update_button")

@@ -1,9 +1,13 @@
 ; PetNest Windows 安装包。先由根目录 build_windows.bat 生成 dist\PetNest。
 
+#ifndef AppVersion
+#define AppVersion "0.1.0"
+#endif
+
 [Setup]
 AppId={{A6247183-E067-48E4-A2B4-19A46F8B4DD5}
 AppName=PetNest
-AppVersion=0.1.0
+AppVersion={#AppVersion}
 AppPublisher=PetNest
 SetupIconFile=..\assets\icons\petnest-app.ico
 DefaultDirName={autopf}\PetNest
@@ -17,6 +21,7 @@ WizardStyle=modern
 
 [Files]
 Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "pets\*"
+Source: "..\dist\PetNestUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\pets\sample_pet\*"; DestDir: "{code:GetPetsRoot}\sample_pet"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: SamplePetNeedsRepair
 
 [Icons]
@@ -27,7 +32,7 @@ Name: "{autodesktop}\PetNest"; Filename: "{app}\PetNest.exe"; Tasks: desktopicon
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "其他选项："; Flags: unchecked
 
 [Run]
-Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}"""; Flags: runhidden waituntilterminated
+Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}"""; Flags: runhidden waituntilterminated skipifsilent
 Filename: "{app}\PetNest.exe"; Description: "启动 PetNest"; Flags: nowait postinstall skipifsilent
 
 [Code]
