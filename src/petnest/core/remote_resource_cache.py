@@ -61,6 +61,7 @@ class RemoteResourceCache:
         opener: Callable[..., Any] | None = None,
         retry_attempts: int = 3,
         retry_delay: float = 0.5,
+        seed_root: Path | None = None,
     ) -> None:
         normalized = base_url.strip().rstrip("/")
         if not normalized:
@@ -75,6 +76,7 @@ class RemoteResourceCache:
             raise ValueError("retry_delay 不能为负数")
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
+        self.seed_root = Path(seed_root) if seed_root is not None else None
 
     @property
     def manifest_path(self) -> Path:
@@ -139,6 +141,8 @@ class RemoteResourceCache:
                     staging,
                     progress_reporter,
                 )
+            if self.seed_root is not None and pending_files:
+                pending_files = self._reuse_seed_files(pending_files, staging, progress_reporter)
             if pending_files:
                 if len(pending_files) == len(manifest.files):
                     try:
@@ -411,6 +415,24 @@ class RemoteResourceCache:
                 pending.append(remote_file)
         return pending
 
+    def _reuse_seed_files(
+        self,
+        remote_files: list[RemoteFile],
+        staging: Path,
+        progress: "_ProgressReporter",
+    ) -> list[RemoteFile]:
+        pending: list[RemoteFile] = []
+        for remote_file in remote_files:
+            source = _bundled_resource_path(self.seed_root, remote_file)
+            if source is not None and _file_matches(source, remote_file):
+                target = _join_relative(staging, remote_file.path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                progress.file_completed(remote_file.size)
+            else:
+                pending.append(remote_file)
+        return pending
+
     def _write_pointer(self, payload: dict[str, object]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.root / f".current-{uuid.uuid4().hex}.tmp"
@@ -499,3 +521,17 @@ def _file_matches(path: Path, remote_file: RemoteFile) -> bool:
         return digest.hexdigest() == remote_file.sha256
     except OSError:
         return False
+
+
+def _bundled_resource_path(seed_root: Path | None, remote_file: RemoteFile) -> Path | None:
+    if seed_root is None:
+        return None
+    parts = remote_file.path.split("/")
+    if len(parts) < 3 or parts[0] != "resources":
+        return None
+    category_root = {
+        "cursors": seed_root / "assets" / "cursors",
+        "countdown": seed_root / "assets" / "countdown",
+        "effects": seed_root / "effects",
+    }.get(parts[1])
+    return category_root.joinpath(*parts[2:]) if category_root is not None else None

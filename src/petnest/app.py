@@ -76,6 +76,14 @@ def bundled_cursor_styles_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "assets" / "cursors"
 
 
+def bundled_resource_seed_root() -> Path:
+    """定位安装包内可直接复用的默认资源根目录。"""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is not None:
+        return Path(frozen_root)
+    return Path(__file__).resolve().parents[2]
+
+
 def resource_directory_for_cache(cache: RemoteResourceCache) -> Path | None:
     """Return the verified current resource root, or ``None`` for fallback."""
     current = cache.current_root
@@ -102,7 +110,9 @@ class PetNest:
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
         self.remote_resource_cache = RemoteResourceCache(
-            self.settings_manager.path.parent / "remote-resources", REMOTE_RESOURCE_BASE_URL
+            self.settings_manager.path.parent / "remote-resources",
+            REMOTE_RESOURCE_BASE_URL,
+            seed_root=bundled_resource_seed_root(),
         )
         self.remote_resource_update = RemoteResourceUpdateCoordinator(
             self.remote_resource_cache,

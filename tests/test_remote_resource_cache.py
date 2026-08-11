@@ -322,6 +322,29 @@ def test_sync_reuses_unchanged_files_from_current_generation(tmp_path: Path) -> 
     assert (updated_cache.current_root / changed_path).read_bytes() == new_changed
 
 
+def test_sync_seeds_matching_bundled_resources_without_network_download(tmp_path: Path) -> None:
+    content = b"bundled countdown skin"
+    relative = "resources/countdown/cream.png"
+    manifest_bytes = _manifest([_payload(relative, content)])
+    seed_root = tmp_path / "bundle"
+    bundled = seed_root / "assets" / "countdown" / "cream.png"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(content)
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        raise AssertionError(f"bundled file should be reused: {request.full_url}")
+
+    cache = RemoteResourceCache(tmp_path / "cache", "https://resources.example", opener=opener, seed_root=seed_root)
+
+    cache.sync()
+
+    assert cache.current_root is not None
+    assert (cache.current_root / relative).read_bytes() == content
+
+
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:
     cache = RemoteResourceCache(tmp_path, "https://resources.example")
 
