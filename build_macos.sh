@@ -5,4 +5,8 @@ if [ ! -x ".venv/bin/python" ]; then
   exit 1
 fi
 . .venv/bin/activate
-pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src --add-data "pets:pets" --add-data "assets:assets" -m petnest
+RESOURCE_DATA="--add-data pets:pets --add-data assets:assets"
+if [ -d "effects" ]; then
+  RESOURCE_DATA="$RESOURCE_DATA --add-data effects:effects"
+fi
+pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --paths src $RESOURCE_DATA -m petnest
