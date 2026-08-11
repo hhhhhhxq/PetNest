@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import logging
@@ -14,16 +15,26 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 import uuid
+from zipfile import BadZipFile, ZipFile, ZipInfo
 
 from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, ResourceManifest
 
 
 LOGGER = logging.getLogger(__name__)
 _CHUNK_SIZE = 1024 * 1024
+_DOWNLOAD_WORKERS = 8
 
 
 class RemoteResourceError(RuntimeError):
     """Raised when the remote catalog or a downloaded file cannot be trusted."""
+
+
+class RemoteResourceHTTPError(RemoteResourceError):
+    """A remote endpoint returned an HTTP error, retaining its status code."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class RemoteResourceCache:
@@ -101,9 +112,16 @@ class RemoteResourceCache:
         version_root = self.versions_path / version_id
         try:
             staging.mkdir(parents=True, exist_ok=False)
-            for remote_file in manifest.files:
-                staged_path = _join_relative(staging, remote_file.path)
-                self._download_verified(remote_file, staged_path)
+            try:
+                self._download_archive(staging, manifest)
+            except RemoteResourceHTTPError as error:
+                if error.status != 404:
+                    raise
+                # Older Worker deployments expose one file per request. Keep
+                # this fallback so clients can update before the archive route
+                # is deployed, while the archive route avoids hundreds of API
+                # round trips for new installations.
+                self._download_manifest_files(manifest, staging)
 
             staging_manifest = staging / "manifest.json"
             staging_manifest.write_bytes(manifest_payload)
@@ -167,13 +185,16 @@ class RemoteResourceCache:
     def _file_url(self, path: str) -> str:
         return f"{self.base_url}/v1/files/{quote(path, safe='/')}"
 
+    def _archive_url(self) -> str:
+        return f"{self.base_url}/v1/archive.zip"
+
     def _fetch_bytes(self, url: str) -> bytes:
         request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "PetNest/0.1"})
         try:
             with self._opener(request, timeout=self.timeout) as response:
                 status = getattr(response, "status", 200)
                 if status is not None and status >= 400:
-                    raise RemoteResourceError(f"远程服务器返回 HTTP {status}")
+                    raise RemoteResourceHTTPError(status, f"远程服务器返回 HTTP {status}")
                 return response.read()
         except RemoteResourceError:
             raise
@@ -192,7 +213,7 @@ class RemoteResourceCache:
             with self._opener(request, timeout=self.timeout) as response, target.open("wb") as stream:
                 status = getattr(response, "status", 200)
                 if status is not None and status >= 400:
-                    raise RemoteResourceError(f"下载 {remote_file.path} 失败：HTTP {status}")
+                    raise RemoteResourceHTTPError(status, f"下载 {remote_file.path} 失败：HTTP {status}")
                 while True:
                     chunk = response.read(_CHUNK_SIZE)
                     if not chunk:
@@ -217,6 +238,81 @@ class RemoteResourceCache:
             target.unlink(missing_ok=True)
             raise RemoteResourceError(f"sha256 校验失败: {remote_file.path}")
 
+    def _download_archive(self, staging: Path, manifest: ResourceManifest) -> None:
+        """下载 Worker 提供的 GitHub zipball，并按 manifest 解包校验。"""
+        archive_path = staging.parent / f"{staging.name}.zip"
+        request = Request(
+            self._archive_url(),
+            headers={"Accept": "application/zip", "User-Agent": "PetNest/0.1"},
+        )
+        try:
+            with self._opener(request, timeout=self.timeout) as response, archive_path.open("wb") as stream:
+                status = getattr(response, "status", 200)
+                if status is not None and status >= 400:
+                    raise RemoteResourceHTTPError(status, f"下载资源归档失败：HTTP {status}")
+                while True:
+                    chunk = response.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    stream.write(chunk)
+        except RemoteResourceError:
+            archive_path.unlink(missing_ok=True)
+            raise
+        except (OSError, HTTPError, URLError) as error:
+            archive_path.unlink(missing_ok=True)
+            raise RemoteResourceError(f"下载资源归档失败: {error}") from error
+
+        try:
+            self._extract_archive(archive_path, staging, manifest)
+        except (BadZipFile, OSError, KeyError) as error:
+            raise RemoteResourceError(f"资源归档无效: {error}") from error
+        finally:
+            archive_path.unlink(missing_ok=True)
+
+    def _extract_archive(self, archive_path: Path, staging: Path, manifest: ResourceManifest) -> None:
+        with ZipFile(archive_path) as archive:
+            entries: dict[str, ZipInfo] = {}
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                relative = _archive_relative_path(info.filename)
+                if relative is not None:
+                    if relative in entries:
+                        raise RemoteResourceError(f"资源归档包含重复路径: {relative}")
+                    entries[relative] = info
+            for remote_file in manifest.files:
+                info = entries.get(remote_file.path)
+                if info is None:
+                    raise RemoteResourceError(f"资源归档缺少文件: {remote_file.path}")
+                target = _join_relative(staging, remote_file.path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                digest = hashlib.sha256()
+                total = 0
+                with archive.open(info) as source, target.open("wb") as stream:
+                    while True:
+                        chunk = source.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        stream.write(chunk)
+                        digest.update(chunk)
+                        total += len(chunk)
+                if total != remote_file.size or digest.hexdigest() != remote_file.sha256:
+                    target.unlink(missing_ok=True)
+                    raise RemoteResourceError(f"归档中的文件校验失败: {remote_file.path}")
+
+    def _download_manifest_files(self, manifest: ResourceManifest, staging: Path) -> None:
+        """并行下载互不相交的文件，仍在全部完成后才提交版本指针。"""
+        if not manifest.files:
+            return
+        workers = min(_DOWNLOAD_WORKERS, len(manifest.files))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="petnest-resource") as executor:
+            futures = [
+                executor.submit(self._download_verified, remote_file, _join_relative(staging, remote_file.path))
+                for remote_file in manifest.files
+            ]
+            for future in futures:
+                future.result()
+
     def _write_pointer(self, payload: dict[str, object]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.root / f".current-{uuid.uuid4().hex}.tmp"
@@ -235,6 +331,20 @@ def _is_manifest_path(path: str) -> bool:
         all(part not in {"", ".", ".."} for part in parts)
         and Path(*parts).as_posix() == path
     )
+
+
+def _archive_relative_path(name: str) -> str | None:
+    """Map a GitHub zipball entry to its safe ``resources/...`` path."""
+    parts = name.split("/")
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        return None
+    if parts[0] == "resources":
+        candidate = "/".join(parts)
+    elif len(parts) >= 2:
+        candidate = "/".join(parts[1:])
+    else:
+        return None
+    return candidate if _is_manifest_path(candidate) else None
 
 
 _VERSION_ID = re.compile(r"^\d+\.\d+\.\d+-[0-9a-f]{12}$")

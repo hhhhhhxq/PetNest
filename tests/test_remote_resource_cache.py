@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 from urllib.request import Request
+from zipfile import ZipFile
 
 import pytest
 
@@ -36,8 +38,9 @@ def _manifest(files: list[dict[str, object]], *, version: str = "2026.8.11") -> 
 
 
 class _Response:
-    def __init__(self, content: bytes) -> None:
+    def __init__(self, content: bytes, *, status: int = 200) -> None:
         self.content = content
+        self.status = status
         self._consumed = False
 
     def __enter__(self) -> _Response:
@@ -62,6 +65,8 @@ def test_sync_downloads_manifest_and_verifies_files(tmp_path: Path) -> None:
         del timeout
         if request.full_url.endswith("/v1/manifest.json"):
             return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
         assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
         return _Response(content)
 
@@ -88,7 +93,11 @@ def test_sync_keeps_previous_cache_when_a_new_file_fails(tmp_path: Path) -> None
 
     def old_opener(request: Request, timeout: float = 0) -> _Response:
         del timeout
-        return _Response(old_manifest if request.full_url.endswith("manifest.json") else old_content)
+        if request.full_url.endswith("manifest.json"):
+            return _Response(old_manifest)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(old_content)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener)
     cache.sync()
@@ -101,6 +110,8 @@ def test_sync_keeps_previous_cache_when_a_new_file_fails(tmp_path: Path) -> None
         del timeout
         if request.full_url.endswith("/v1/manifest.json"):
             return _Response(new_manifest)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
         return _Response(b"wrong data")
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
@@ -120,7 +131,11 @@ def test_sync_or_cached_returns_last_good_manifest_when_network_is_down(tmp_path
 
     def seed_opener(request: Request, timeout: float = 0) -> _Response:
         del timeout
-        return _Response(manifest_bytes if request.full_url.endswith("manifest.json") else content)
+        if request.full_url.endswith("manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(content)
 
     RemoteResourceCache(tmp_path, "https://resources.example", opener=seed_opener).sync()
 
@@ -143,7 +158,11 @@ def test_corrupt_download_is_not_committed(tmp_path: Path) -> None:
 
     def opener(request: Request, timeout: float = 0) -> _Response:
         del timeout
-        return _Response(manifest_bytes if request.full_url.endswith("manifest.json") else b"wrong")
+        if request.full_url.endswith("manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(b"wrong")
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
 
@@ -151,6 +170,30 @@ def test_corrupt_download_is_not_committed(tmp_path: Path) -> None:
         cache.sync()
     assert not (tmp_path / "current.json").exists()
     assert not list((tmp_path / "versions").glob("*")) if (tmp_path / "versions").exists() else True
+
+
+def test_sync_uses_verified_github_archive_when_worker_exposes_it(tmp_path: Path) -> None:
+    content = b"archive cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    manifest_bytes = _manifest([_payload(relative, content)])
+    archive_buffer = BytesIO()
+    with ZipFile(archive_buffer, "w") as archive:
+        archive.writestr("hhhhhhxq-petnest-resources-abcdef/resources/cursors/demo/arrow.cur", content)
+    archive_bytes = archive_buffer.getvalue()
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        assert request.full_url.endswith("/v1/archive.zip")
+        return _Response(archive_bytes)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+
+    cache.sync()
+
+    assert cache.current_root is not None
+    assert (cache.current_root / relative).read_bytes() == content
 
 
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:
