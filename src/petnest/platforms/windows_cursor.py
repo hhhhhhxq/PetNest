@@ -35,7 +35,9 @@ class _CursorApi(Protocol):
 
 
 class WindowsCursorController:
-    """只替换 Windows 的普通箭头，绝不重设其它系统角色。"""
+    """替换 Windows 主题包含的系统光标角色，并支持整体恢复。"""
+
+    supported_roles = frozenset(_ROLE_CODES)
 
     def __init__(self, *, api: _CursorApi | None = None, platform: str | None = None) -> None:
         self._platform = platform or sys.platform

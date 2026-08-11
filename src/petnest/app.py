@@ -36,7 +36,7 @@ from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
-from petnest.platforms.windows_cursor import WindowsCursorController
+from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.cursor_style_dialog import CursorStyleDialog
@@ -103,7 +103,7 @@ class PetNest:
         pets_root: Path | None = None,
         settings_manager: SettingsManager | None = None,
         platform_adapter: PlatformEventAdapter | None = None,
-        cursor_controller: WindowsCursorController | None = None,
+        cursor_controller: CursorController | None = None,
         enable_tray: bool = True,
     ) -> None:
         if QApplication.instance() is None:
@@ -128,7 +128,7 @@ class PetNest:
             else bundled_cursor_styles_directory()
         )
         self.cursor_catalog = CursorStyleCatalog(cursor_root)
-        self.cursor_controller = cursor_controller or WindowsCursorController()
+        self.cursor_controller = cursor_controller or create_cursor_controller()
         self._active_cursor_roles: set[str] = set()
         self._recover_pending_cursor()
         if pets_root is not None:
@@ -392,7 +392,13 @@ class PetNest:
             self.apply_settings(dialog.updated_settings())
 
     def show_cursor_style_dialog(self) -> None:
-        dialog = CursorStyleDialog(self.settings, self.cursor_catalog.discover(), self.window)
+        supported_roles = getattr(self.cursor_controller, "supported_roles", frozenset(_CURSOR_STYLE_ROLES))
+        dialog = CursorStyleDialog(
+            self.settings,
+            self.cursor_catalog.discover(),
+            self.window,
+            supported_roles=supported_roles,
+        )
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
 
@@ -712,7 +718,7 @@ class PetNest:
             self.settings_manager.save(self.settings)
 
     def _restore_cursor_roles(self, roles: Iterable[str]) -> bool:
-        """让 Windows 从用户保存的方案一次性恢复全部系统光标。"""
+        """让当前平台恢复由 PetNest 接管的系统光标。"""
         if not tuple(roles):
             return True
         return self.cursor_controller.restore_system_defaults()
