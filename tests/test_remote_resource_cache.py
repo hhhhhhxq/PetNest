@@ -273,6 +273,55 @@ def test_sync_retries_transient_file_gateway_errors(tmp_path: Path) -> None:
     assert cache.current_root is not None
 
 
+def test_sync_reuses_unchanged_files_from_current_generation(tmp_path: Path) -> None:
+    unchanged = b"unchanged cursor bytes"
+    old_changed = b"old busy cursor"
+    new_changed = b"new busy cursor"
+    unchanged_path = "resources/cursors/demo/arrow.cur"
+    changed_path = "resources/cursors/demo/busy.cur"
+    old_manifest = _manifest(
+        [_payload(unchanged_path, unchanged), _payload(changed_path, old_changed)],
+        version="2026.8.12",
+    )
+
+    def old_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(old_manifest)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(unchanged if request.full_url.endswith("/arrow.cur") else old_changed)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, retry_delay=0)
+    cache.sync()
+    old_root = cache.current_root
+    assert old_root is not None
+
+    new_manifest = _manifest(
+        [_payload(unchanged_path, unchanged), _payload(changed_path, new_changed)],
+        version="2026.8.12",
+    )
+    requested: list[str] = []
+
+    def new_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(new_manifest)
+        assert "/v1/files/" in request.full_url
+        requested.append(request.full_url)
+        return _Response(new_changed)
+
+    updated_cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=new_opener, retry_delay=0)
+    updated = updated_cache.sync()
+
+    assert updated.catalog_version == "2026.8.12"
+    assert requested == ["https://resources.example/v1/files/resources/cursors/demo/busy.cur"]
+    assert updated_cache.current_root is not None
+    assert updated_cache.current_root != old_root
+    assert (updated_cache.current_root / unchanged_path).read_bytes() == unchanged
+    assert (updated_cache.current_root / changed_path).read_bytes() == new_changed
+
+
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:
     cache = RemoteResourceCache(tmp_path, "https://resources.example")
 

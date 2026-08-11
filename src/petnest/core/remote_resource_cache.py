@@ -124,20 +124,36 @@ class RemoteResourceCache:
         version_digest = hashlib.sha256(manifest_payload).hexdigest()
         version_id = f"{manifest.catalog_version}-{version_digest[:12]}"
         progress_reporter = _ProgressReporter(sum(file.size for file in manifest.files), progress)
+        current_root = self.current_root
+        current_manifest = self.load_current_manifest() if current_root is not None else None
         staging = self.root / "staging" / uuid.uuid4().hex
         version_root = self.versions_path / version_id
         try:
             staging.mkdir(parents=True, exist_ok=False)
-            try:
-                self._download_archive(staging, manifest, progress_reporter)
-            except RemoteResourceHTTPError as error:
-                if error.status != 404:
-                    raise
-                # Older Worker deployments expose one file per request. Keep
-                # this fallback so clients can update before the archive route
-                # is deployed, while the archive route avoids hundreds of API
-                # round trips for new installations.
-                self._download_manifest_files(manifest, staging, progress_reporter)
+            pending_files = list(manifest.files)
+            if current_root is not None and current_manifest is not None:
+                pending_files = self._reuse_unchanged_files(
+                    current_root,
+                    current_manifest,
+                    pending_files,
+                    staging,
+                    progress_reporter,
+                )
+            if pending_files:
+                if len(pending_files) == len(manifest.files):
+                    try:
+                        self._download_archive(staging, manifest, progress_reporter)
+                    except RemoteResourceHTTPError as error:
+                        if error.status != 404:
+                            raise
+                        # Older Worker deployments expose one file per request.
+                        # Keep this fallback until the archive route is deployed.
+                        self._download_manifest_files(pending_files, staging, progress_reporter)
+                else:
+                    # A current generation exists, so only new or changed
+                    # files need a network request; unchanged files were copied
+                    # into staging above.
+                    self._download_manifest_files(pending_files, staging, progress_reporter)
             progress_reporter.complete()
 
             staging_manifest = staging / "manifest.json"
@@ -351,22 +367,49 @@ class RemoteResourceCache:
 
     def _download_manifest_files(
         self,
-        manifest: ResourceManifest,
+        remote_files: list[RemoteFile],
         staging: Path,
         progress: "_ProgressReporter",
     ) -> None:
         """并行下载互不相交的文件，仍在全部完成后才提交版本指针。"""
-        if not manifest.files:
+        if not remote_files:
             return
-        workers = min(_DOWNLOAD_WORKERS, len(manifest.files))
+        workers = min(_DOWNLOAD_WORKERS, len(remote_files))
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="petnest-resource") as executor:
             futures = [
                 executor.submit(self._download_verified, remote_file, _join_relative(staging, remote_file.path))
-                for remote_file in manifest.files
+                for remote_file in remote_files
             ]
-            for remote_file, future in zip(manifest.files, futures, strict=True):
+            for remote_file, future in zip(remote_files, futures, strict=True):
                 future.result()
                 progress.file_completed(remote_file.size)
+
+    def _reuse_unchanged_files(
+        self,
+        current_root: Path,
+        current_manifest: ResourceManifest,
+        remote_files: list[RemoteFile],
+        staging: Path,
+        progress: "_ProgressReporter",
+    ) -> list[RemoteFile]:
+        previous = {file.path: file for file in current_manifest.files}
+        pending: list[RemoteFile] = []
+        for remote_file in remote_files:
+            previous_file = previous.get(remote_file.path)
+            source = _join_relative(current_root, remote_file.path)
+            if (
+                previous_file is not None
+                and previous_file.size == remote_file.size
+                and previous_file.sha256 == remote_file.sha256
+                and _file_matches(source, remote_file)
+            ):
+                target = _join_relative(staging, remote_file.path)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+                progress.file_completed(remote_file.size)
+            else:
+                pending.append(remote_file)
+        return pending
 
     def _write_pointer(self, payload: dict[str, object]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -440,3 +483,19 @@ def _join_relative(root: Path, path: str) -> Path:
     if not _is_manifest_path(path):
         raise RemoteResourceError(f"资源文件路径不安全: {path}")
     return root.joinpath(*path.split("/"))
+
+
+def _file_matches(path: Path, remote_file: RemoteFile) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size != remote_file.size:
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest() == remote_file.sha256
+    except OSError:
+        return False
