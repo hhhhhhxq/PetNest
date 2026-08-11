@@ -140,7 +140,7 @@ class RemoteResourceCache:
             return manifest
         except RemoteResourceError:
             raise
-        except (OSError, HTTPError, URLError) as error:
+        except (OSError, URLError) as error:
             raise RemoteResourceError(f"无法提交远程资源缓存: {error}") from error
         finally:
             shutil.rmtree(staging, ignore_errors=True)
@@ -198,7 +198,9 @@ class RemoteResourceCache:
                 return response.read()
         except RemoteResourceError:
             raise
-        except (OSError, HTTPError, URLError) as error:
+        except HTTPError as error:
+            raise RemoteResourceHTTPError(error.code, f"请求资源失败：HTTP {error.code}") from error
+        except (OSError, URLError) as error:
             raise RemoteResourceError(f"请求资源失败: {error}") from error
 
     def _download_verified(self, remote_file: RemoteFile, target: Path) -> None:
@@ -224,7 +226,10 @@ class RemoteResourceCache:
         except RemoteResourceError:
             target.unlink(missing_ok=True)
             raise
-        except (OSError, HTTPError, URLError) as error:
+        except HTTPError as error:
+            target.unlink(missing_ok=True)
+            raise RemoteResourceHTTPError(error.code, f"下载 {remote_file.path} 失败：HTTP {error.code}") from error
+        except (OSError, URLError) as error:
             target.unlink(missing_ok=True)
             raise RemoteResourceError(f"下载 {remote_file.path} 失败: {error}") from error
 
@@ -258,6 +263,9 @@ class RemoteResourceCache:
         except RemoteResourceError:
             archive_path.unlink(missing_ok=True)
             raise
+        except HTTPError as error:
+            archive_path.unlink(missing_ok=True)
+            raise RemoteResourceHTTPError(error.code, f"下载资源归档失败：HTTP {error.code}") from error
         except (OSError, HTTPError, URLError) as error:
             archive_path.unlink(missing_ok=True)
             raise RemoteResourceError(f"下载资源归档失败: {error}") from error

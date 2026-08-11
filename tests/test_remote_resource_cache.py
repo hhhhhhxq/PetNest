@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request
 from zipfile import ZipFile
 
@@ -187,6 +188,28 @@ def test_sync_uses_verified_github_archive_when_worker_exposes_it(tmp_path: Path
             return _Response(manifest_bytes)
         assert request.full_url.endswith("/v1/archive.zip")
         return _Response(archive_bytes)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+
+    cache.sync()
+
+    assert cache.current_root is not None
+    assert (cache.current_root / relative).read_bytes() == content
+
+
+def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: Path) -> None:
+    content = b"legacy worker cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    manifest_bytes = _manifest([_payload(relative, content)])
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            raise HTTPError(request.full_url, 404, "Not Found", {}, BytesIO())
+        assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
+        return _Response(content)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
 
