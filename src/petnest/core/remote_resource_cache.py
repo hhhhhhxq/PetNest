@@ -127,6 +127,15 @@ class RemoteResourceCache:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
+    def fetch_manifest(self) -> ResourceManifest:
+        """Fetch and validate only the catalog, without downloading its files."""
+        try:
+            return ResourceManifest.from_bytes(self._fetch_bytes(self._manifest_url()))
+        except RemoteResourceError:
+            raise
+        except (ManifestError, OSError, UnicodeError) as error:
+            raise RemoteResourceError(f"无法读取远程资源 manifest: {error}") from error
+
     def sync_or_cached(self) -> ResourceManifest | None:
         """Prefer fresh resources, falling back to the last valid cache offline."""
         try:
