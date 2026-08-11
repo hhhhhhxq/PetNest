@@ -70,8 +70,14 @@ def test_sync_downloads_manifest_and_verifies_files(tmp_path: Path) -> None:
     manifest = cache.sync()
 
     assert manifest.catalog_version == "2026.8.11"
-    assert (tmp_path / relative).read_bytes() == content
-    assert (tmp_path / "manifest.json").is_file()
+    assert cache.current_root is not None
+    assert (cache.current_root / relative).read_bytes() == content
+    assert cache.path_for(relative) == cache.current_root / relative
+    assert cache.load_current_manifest().catalog_version == "2026.8.11"  # type: ignore[union-attr]
+    pointer = json.loads(cache.current_pointer_path.read_text(encoding="utf-8"))
+    assert pointer["catalog_version"] == "2026.8.11"
+    assert pointer["version_id"] == cache.current_root.name
+    assert not (tmp_path / relative).exists()
 
 
 def test_sync_keeps_previous_cache_when_a_new_file_fails(tmp_path: Path) -> None:
@@ -79,9 +85,16 @@ def test_sync_keeps_previous_cache_when_a_new_file_fails(tmp_path: Path) -> None
     new_content = b"new cursor"
     relative = "resources/cursors/demo/arrow.cur"
     old_manifest = _manifest([_payload(relative, old_content)], version="2026.8.10")
-    (tmp_path / relative).parent.mkdir(parents=True)
-    (tmp_path / relative).write_bytes(old_content)
-    (tmp_path / "manifest.json").write_bytes(old_manifest)
+
+    def old_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        return _Response(old_manifest if request.full_url.endswith("manifest.json") else old_content)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener)
+    cache.sync()
+    old_root = cache.current_root
+    assert old_root is not None
+    old_pointer = (tmp_path / "current.json").read_bytes()
     new_manifest = _manifest([_payload(relative, new_content)], version="2026.8.11")
 
     def opener(request: Request, timeout: float = 0) -> _Response:
@@ -95,16 +108,21 @@ def test_sync_keeps_previous_cache_when_a_new_file_fails(tmp_path: Path) -> None
     with pytest.raises(RemoteResourceError, match="sha256"):
         cache.sync()
 
-    assert (tmp_path / relative).read_bytes() == old_content
-    assert json.loads((tmp_path / "manifest.json").read_text())['catalog_version'] == "2026.8.10"
+    assert cache.current_root == old_root
+    assert (old_root / relative).read_bytes() == old_content
+    assert (tmp_path / "current.json").read_bytes() == old_pointer
 
 
 def test_sync_or_cached_returns_last_good_manifest_when_network_is_down(tmp_path: Path) -> None:
     content = b"cached cursor"
     relative = "resources/cursors/demo/arrow.cur"
-    (tmp_path / relative).parent.mkdir(parents=True)
-    (tmp_path / relative).write_bytes(content)
-    (tmp_path / "manifest.json").write_bytes(_manifest([_payload(relative, content)]))
+    manifest_bytes = _manifest([_payload(relative, content)])
+
+    def seed_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        return _Response(manifest_bytes if request.full_url.endswith("manifest.json") else content)
+
+    RemoteResourceCache(tmp_path, "https://resources.example", opener=seed_opener).sync()
 
     def opener(request: Request, timeout: float = 0) -> _Response:
         del request, timeout
@@ -116,6 +134,7 @@ def test_sync_or_cached_returns_last_good_manifest_when_network_is_down(tmp_path
 
     assert manifest is not None
     assert manifest.resource("demo") is not None
+    assert cache.current_root is not None
 
 
 def test_corrupt_download_is_not_committed(tmp_path: Path) -> None:
@@ -130,7 +149,8 @@ def test_corrupt_download_is_not_committed(tmp_path: Path) -> None:
 
     with pytest.raises(RemoteResourceError):
         cache.sync()
-    assert not (tmp_path / "manifest.json").exists()
+    assert not (tmp_path / "current.json").exists()
+    assert not list((tmp_path / "versions").glob("*")) if (tmp_path / "versions").exists() else True
 
 
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:

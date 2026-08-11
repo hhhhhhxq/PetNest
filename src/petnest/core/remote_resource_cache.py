@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import hashlib
+import json
 import logging
 from pathlib import Path
+import re
 import shutil
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -50,7 +52,38 @@ class RemoteResourceCache:
 
     @property
     def manifest_path(self) -> Path:
+        """Legacy root manifest path retained for older cache layouts."""
         return self.root / "manifest.json"
+
+    @property
+    def current_pointer_path(self) -> Path:
+        return self.root / "current.json"
+
+    @property
+    def versions_path(self) -> Path:
+        return self.root / "versions"
+
+    @property
+    def current_root(self) -> Path | None:
+        """Return the validated immutable directory selected by current.json."""
+        try:
+            pointer = json.loads(self.current_pointer_path.read_text(encoding="utf-8"))
+            version_id = pointer.get("version_id")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(version_id, str) or not _VERSION_ID.fullmatch(version_id):
+            return None
+        candidate = self.versions_path / version_id
+        return candidate if candidate.is_dir() else None
+
+    def load_current_manifest(self) -> ResourceManifest | None:
+        current = self.current_root
+        if current is None:
+            return None
+        try:
+            return ResourceManifest.from_bytes((current / "manifest.json").read_bytes())
+        except (OSError, ManifestError):
+            return None
 
     def sync(self) -> ResourceManifest:
         """Fetch and verify a complete catalog before committing it locally."""
@@ -62,20 +95,30 @@ class RemoteResourceCache:
         except (ManifestError, OSError, UnicodeError) as error:
             raise RemoteResourceError(f"无法读取远程资源 manifest: {error}") from error
 
-        staging = self.root / f".staging-{uuid.uuid4().hex}"
+        version_digest = hashlib.sha256(manifest_payload).hexdigest()
+        version_id = f"{manifest.catalog_version}-{version_digest[:12]}"
+        staging = self.root / "staging" / uuid.uuid4().hex
+        version_root = self.versions_path / version_id
         try:
             staging.mkdir(parents=True, exist_ok=False)
             for remote_file in manifest.files:
                 staged_path = _join_relative(staging, remote_file.path)
                 self._download_verified(remote_file, staged_path)
 
-            self.root.mkdir(parents=True, exist_ok=True)
-            for remote_file in manifest.files:
-                staged_path = _join_relative(staging, remote_file.path)
-                target_path = _join_relative(self.root, remote_file.path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                staged_path.replace(target_path)
-            self._write_manifest(manifest_payload)
+            staging_manifest = staging / "manifest.json"
+            staging_manifest.write_bytes(manifest_payload)
+            self.versions_path.mkdir(parents=True, exist_ok=True)
+            if version_root.exists():
+                shutil.rmtree(version_root)
+            staging.replace(version_root)
+            self._write_pointer(
+                {
+                    "schema_version": 1,
+                    "catalog_version": manifest.catalog_version,
+                    "version_id": version_id,
+                    "manifest_sha256": version_digest,
+                }
+            )
             return manifest
         except RemoteResourceError:
             raise
@@ -94,6 +137,9 @@ class RemoteResourceCache:
 
     def load_cached(self) -> ResourceManifest | None:
         """Load the last manifest, returning ``None`` if it is absent/corrupt."""
+        current = self.load_current_manifest()
+        if current is not None:
+            return current
         try:
             return ResourceManifest.from_bytes(self.manifest_path.read_bytes())
         except (OSError, ManifestError):
@@ -104,7 +150,7 @@ class RemoteResourceCache:
         relative = file.path if isinstance(file, RemoteFile) else file
         if not _is_manifest_path(relative):
             raise ValueError("资源文件路径不安全")
-        return _join_relative(self.root, relative)
+        return _join_relative(self.current_root or self.root, relative)
 
     def _manifest_url(self) -> str:
         return f"{self.base_url}/v1/manifest.json"
@@ -162,11 +208,12 @@ class RemoteResourceCache:
             target.unlink(missing_ok=True)
             raise RemoteResourceError(f"sha256 校验失败: {remote_file.path}")
 
-    def _write_manifest(self, payload: bytes) -> None:
-        temporary = self.root / f".manifest-{uuid.uuid4().hex}.tmp"
+    def _write_pointer(self, payload: dict[str, object]) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self.root / f".current-{uuid.uuid4().hex}.tmp"
         try:
-            temporary.write_bytes(payload)
-            temporary.replace(self.manifest_path)
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(self.current_pointer_path)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -179,6 +226,9 @@ def _is_manifest_path(path: str) -> bool:
         all(part not in {"", ".", ".."} for part in parts)
         and Path(*parts).as_posix() == path
     )
+
+
+_VERSION_ID = re.compile(r"^\d+\.\d+\.\d+-[0-9a-f]{12}$")
 
 
 def _join_relative(root: Path, path: str) -> Path:
