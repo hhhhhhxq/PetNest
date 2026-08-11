@@ -132,7 +132,7 @@ class PetTrayIcon(QSystemTrayIcon):
         if self._resource_update_loading:
             return
         self.resource_update_action.setEnabled(True)
-        self.resource_update_action.setText("● 立即检查资源更新" if available else "立即检查资源更新")
+        self.resource_update_action.setText("立即检查资源更新")
         self.resource_update_action.setIcon(_blue_dot_icon() if available else QIcon())
 
     def set_resource_update_loading(self, loading: bool, *, message: str = "正在下载资源…") -> None:

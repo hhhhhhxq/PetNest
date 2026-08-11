@@ -175,7 +175,8 @@ def test_tray_resource_update_action_shows_and_clears_blue_badge(
     qtbot.addWidget(application.window)
 
     application.tray.set_resource_update_available(True)
-    assert application.tray.resource_update_action.text().startswith("●")
+    assert not application.tray.resource_update_action.text().startswith("●")
+    assert application.tray.resource_update_action.text() == "立即检查资源更新"
     assert not application.tray.resource_update_action.icon().isNull()
 
     application.tray.set_resource_update_available(False)
