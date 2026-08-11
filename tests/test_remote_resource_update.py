@@ -161,5 +161,31 @@ def test_partial_apply_keeps_badge_and_reports_resource_level_result(tmp_path: P
     assert result.partial is True
     assert result.updated_resource_ids == ("demo",)
     assert result.failed_resource_ids == ("spark",)
+    assert result.resource_view_changed is False
     assert coordinator.update_available is True
     assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["last_error"] == "spark: HTTP 502"
+
+
+def test_partial_apply_reports_a_changed_view_even_without_applied_resources(tmp_path: Path) -> None:
+    now, _advance = _clock(datetime(2026, 8, 11, 9, tzinfo=UTC))
+    old = _manifest(b"old")
+    remote = _manifest(b"new")
+    cache = _PartialFakeCache(
+        remote=remote,
+        current=old,
+        result=ResourceSyncResult(
+            manifest=remote,
+            view_changed=True,
+            failures=(ResourceSyncFailure("spark", "HTTP 502"),),
+        ),
+    )
+    coordinator = RemoteResourceUpdateCoordinator(cache, tmp_path / "state.json", now=now)
+    coordinator.check()
+
+    result = coordinator.apply()
+
+    assert result.applied is False
+    assert result.partial is True
+    assert result.updated_resource_ids == ()
+    assert result.resource_view_changed is True
+    assert coordinator.update_available is True

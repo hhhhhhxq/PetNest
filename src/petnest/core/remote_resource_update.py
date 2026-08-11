@@ -19,9 +19,19 @@ class _ResourceCache(Protocol):
 
     def load_current_manifest(self) -> ResourceManifest | None: ...
 
-    def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest: ...
+    def sync(
+        self,
+        *,
+        progress: Callable[[int], object] | None = None,
+        on_resource_applied: Callable[[str], object] | None = None,
+    ) -> ResourceManifest: ...
 
-    def sync_partial(self, *, progress: Callable[[int], object] | None = None) -> ResourceSyncResult: ...
+    def sync_partial(
+        self,
+        *,
+        progress: Callable[[int], object] | None = None,
+        on_resource_applied: Callable[[str], object] | None = None,
+    ) -> ResourceSyncResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +80,7 @@ class RemoteResourceApplyResult:
     partial: bool = False
     updated_resource_ids: tuple[str, ...] = ()
     failed_resource_ids: tuple[str, ...] = ()
+    resource_view_changed: bool = False
 
 
 class RemoteResourceUpdateCoordinator:
@@ -123,15 +134,30 @@ class RemoteResourceUpdateCoordinator:
         self._save_state()
         return RemoteResourceCheckResult(True, False, self.update_available, remote.catalog_version)
 
-    def apply(self, *, progress: Callable[[int], object] | None = None) -> RemoteResourceApplyResult:
+    def apply(
+        self,
+        *,
+        progress: Callable[[int], object] | None = None,
+        on_resource_applied: Callable[[str], object] | None = None,
+    ) -> RemoteResourceApplyResult:
         if not self.update_available:
             return RemoteResourceApplyResult(False, self.state.remote_catalog_version)
         try:
             sync_partial = getattr(self.cache, "sync_partial", None)
             if callable(sync_partial):
-                result = sync_partial(progress=progress) if progress is not None else sync_partial()
+                kwargs: dict[str, object] = {}
+                if progress is not None:
+                    kwargs["progress"] = progress
+                if on_resource_applied is not None:
+                    kwargs["on_resource_applied"] = on_resource_applied
+                result = sync_partial(**kwargs)
                 return self._apply_partial_result(result)
-            manifest = self.cache.sync(progress=progress) if progress is not None else self.cache.sync()
+            kwargs = {}
+            if progress is not None:
+                kwargs["progress"] = progress
+            if on_resource_applied is not None:
+                kwargs["on_resource_applied"] = on_resource_applied
+            manifest = self.cache.sync(**kwargs)
         except Exception as error:  # noqa: BLE001 - retain the badge for a retry.
             message = str(error) or error.__class__.__name__
             self.state = self._replace(last_error=message, update_available=True)
@@ -166,9 +192,13 @@ class RemoteResourceUpdateCoordinator:
             applied=not remaining,
             catalog_version=result.manifest.catalog_version,
             error=error,
-            partial=bool((result.applied_resource_ids or result.removed_resource_ids) and result.failures),
+            partial=bool(
+                result.failures
+                and (result.applied_resource_ids or result.removed_resource_ids or result.view_changed)
+            ),
             updated_resource_ids=result.applied_resource_ids + result.removed_resource_ids,
             failed_resource_ids=tuple(failure.identifier for failure in result.failures),
+            resource_view_changed=result.view_changed,
         )
 
     def _replace(self, **changes: Any) -> RemoteResourceUpdateState:

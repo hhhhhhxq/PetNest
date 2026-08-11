@@ -25,6 +25,16 @@ _RESOURCE_TYPES = frozenset({"cursor_theme", "interaction_effect", "countdown_ba
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+# Runtime resources are small image/cursor assets. Keep malformed catalogs
+# from becoming unbounded memory or disk sinks while leaving room for effects.
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_RESOURCE_COUNT = 1024
+MAX_FILE_COUNT = 20_000
+MAX_FILE_SIZE = 64 * 1024 * 1024
+MAX_CATALOG_SIZE = 512 * 1024 * 1024
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,17 +72,21 @@ class ResourceManifest:
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> "ResourceManifest":
+        if len(payload) > MAX_MANIFEST_BYTES:
+            raise ManifestError("manifest 超过允许大小")
         try:
             raw = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
             raise ManifestError(f"manifest JSON 无效: {error}") from error
         return cls.from_dict(raw)
 
     @classmethod
     def from_text(cls, payload: str) -> "ResourceManifest":
+        if len(payload.encode("utf-8")) > MAX_MANIFEST_BYTES:
+            raise ManifestError("manifest 超过允许大小")
         try:
             raw = json.loads(payload)
-        except json.JSONDecodeError as error:
+        except (json.JSONDecodeError, RecursionError) as error:
             raise ManifestError(f"manifest JSON 无效: {error}") from error
         return cls.from_dict(raw)
 
@@ -96,10 +110,22 @@ class ResourceManifest:
         resources: list[RemoteResource] = []
         identifiers: set[str] = set()
         file_paths: set[str] = set()
+        total_file_count = 0
+        total_catalog_size = 0
         for index, raw_resource in enumerate(raw_resources):
+            if index >= MAX_RESOURCE_COUNT:
+                raise ManifestError("资源数量超过允许上限")
             resource = _parse_resource(raw_resource, index, file_paths)
             if resource.identifier in identifiers:
                 raise ManifestError(f"duplicate resource id: {resource.identifier}")
+            total_file_count += len(resource.files)
+            total_catalog_size += sum(remote_file.size for remote_file in resource.files)
+            if total_file_count > MAX_FILE_COUNT:
+                raise ManifestError("资源文件数量超过允许上限")
+            if any(remote_file.size > MAX_FILE_SIZE for remote_file in resource.files):
+                raise ManifestError("单个资源文件超过允许大小")
+            if total_catalog_size > MAX_CATALOG_SIZE:
+                raise ManifestError("资源总大小超过允许上限")
             identifiers.add(resource.identifier)
             resources.append(resource)
 
@@ -109,6 +135,20 @@ class ResourceManifest:
                 parent = "/".join(parts[:index])
                 if parent in file_paths:
                     raise ManifestError(f"资源路径冲突: {parent} 是 {path} 的父路径")
+
+        normalized_paths: dict[str, str] = {}
+        for path in file_paths:
+            normalized = _windows_normalized_path(path)
+            previous = normalized_paths.get(normalized)
+            if previous is not None:
+                raise ManifestError(f"资源路径在 Windows 下冲突: {previous} 与 {path}")
+            normalized_paths[normalized] = path
+        for normalized, path in normalized_paths.items():
+            parts = normalized.split("/")
+            for index in range(1, len(parts)):
+                parent = "/".join(parts[:index])
+                if parent in normalized_paths:
+                    raise ManifestError(f"资源路径在 Windows 下冲突: {path} 的父路径")
 
         return cls(schema_version, catalog_version, tuple(resources))
 
@@ -191,16 +231,26 @@ def _parse_file(raw: object, identifier: str, known_paths: set[str]) -> RemoteFi
 
 
 def _is_safe_path(path: str) -> bool:
-    if not path or "\\" in path or "\x00" in path:
+    if not path or "\\" in path or "\x00" in path or ":" in path:
         return False
     if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
         return False
     parts = path.split("/")
     if not parts or parts[0] != "resources":
         return False
-    if any(part in {"", ".", ".."} for part in parts):
+    if any(
+        part in {"", ".", ".."}
+        or part.rstrip(" .") != part
+        or part.casefold().split(".", 1)[0] in _WINDOWS_RESERVED_NAMES
+        for part in parts
+    ):
         return False
     return PurePosixPath(path).as_posix() == path
+
+
+def _windows_normalized_path(path: str) -> str:
+    """Return the case/trim normalization used by Windows file lookup."""
+    return "/".join(part.rstrip(" .").casefold() for part in path.split("/"))
 
 
 def sha256_bytes(payload: bytes) -> str:

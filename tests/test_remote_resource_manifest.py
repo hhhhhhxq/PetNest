@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from petnest.core.remote_resource_manifest import ManifestError, ResourceManifest
+from petnest.core.remote_resource_manifest import MAX_FILE_SIZE, MAX_MANIFEST_BYTES, ManifestError, ResourceManifest
 
 
 def _file(path: str = "resources/cursors/demo/arrow.cur", content: bytes = b"cursor") -> dict[str, object]:
@@ -94,6 +94,32 @@ def test_rejects_file_path_prefix_conflicts() -> None:
     )
     with pytest.raises(ManifestError, match="父路径"):
         ResourceManifest.from_dict(nested)
+
+
+@pytest.mark.parametrize("path", ["resources/cursors/demo/file. ", "resources/cursors/demo/file:name"])
+def test_rejects_windows_path_collisions_and_special_names(path: str) -> None:
+    with pytest.raises(ManifestError, match="path|Windows"):
+        ResourceManifest.from_dict(_manifest(_resource(files=[_file(path)])))
+
+
+def test_rejects_windows_case_colliding_paths() -> None:
+    raw = _manifest(
+        _resource(files=[_file("resources/cursors/demo/arrow.cur")]),
+        _resource("other", "interaction_effect", files=[_file("resources/cursors/demo/Arrow.cur")]),
+    )
+
+    with pytest.raises(ManifestError, match="Windows"):
+        ResourceManifest.from_dict(raw)
+
+
+def test_rejects_manifest_and_catalog_size_limits() -> None:
+    too_large_file = _file()
+    too_large_file["size"] = MAX_FILE_SIZE + 1
+    with pytest.raises(ManifestError, match="单个资源文件"):
+        ResourceManifest.from_dict(_manifest(_resource(files=[too_large_file])))
+
+    with pytest.raises(ManifestError, match="manifest"):
+        ResourceManifest.from_bytes(b" " * (MAX_MANIFEST_BYTES + 1))
 
 
 def test_json_round_trip_preserves_catalog() -> None:

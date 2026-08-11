@@ -148,8 +148,20 @@ def test_resource_directory_uses_verified_current_generation(tmp_path: Path) -> 
     version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
     resources = version_root / "resources"
     (resources / "cursors").mkdir(parents=True)
+    manifest_payload = json.dumps(
+        {"schema_version": 1, "catalog_version": "2026.8.12", "resources": []}
+    ).encode("utf-8")
+    (version_root / "manifest.json").write_bytes(manifest_payload)
     cache_root.joinpath("current.json").write_text(
-        json.dumps({"schema_version": 1, "version_id": version_root.name}), encoding="utf-8"
+        json.dumps(
+            {
+                "schema_version": 2,
+                "version_id": version_root.name,
+                "catalog_version": "2026.8.12",
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
     )
 
     cache = RemoteResourceCache(cache_root, "https://resources.example")
@@ -157,10 +169,184 @@ def test_resource_directory_uses_verified_current_generation(tmp_path: Path) -> 
     assert resource_directory_for_cache(cache) == cache_root / "versions" / version_root.name / "resources"
 
 
+def test_resource_directory_rejects_linked_current_resource_tree(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    version_root.mkdir(parents=True)
+    external = tmp_path / "external-resources"
+    external.mkdir()
+    try:
+        os.symlink(external, version_root / "resources", target_is_directory=True)
+    except (OSError, NotImplementedError) as error:
+        pytest.skip(f"当前平台不允许创建目录符号链接: {error}")
+    manifest_payload = json.dumps(
+        {"schema_version": 1, "catalog_version": "2026.8.12", "resources": []}
+    ).encode("utf-8")
+    (version_root / "manifest.json").write_bytes(manifest_payload)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "version_id": version_root.name,
+                "catalog_version": "2026.8.12",
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert resource_directory_for_cache(RemoteResourceCache(cache_root, "https://resources.example")) is None
+
+
 def test_resource_directory_falls_back_when_current_generation_is_missing(tmp_path: Path) -> None:
     cache = RemoteResourceCache(tmp_path / "remote-resources", "https://resources.example")
 
     assert resource_directory_for_cache(cache) is None
+
+
+def test_resource_directory_falls_back_when_current_manifest_is_missing(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    (version_root / "resources" / "cursors").mkdir(parents=True)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps({"schema_version": 1, "version_id": version_root.name}), encoding="utf-8"
+    )
+
+    cache = RemoteResourceCache(cache_root, "https://resources.example")
+
+    assert resource_directory_for_cache(cache) is None
+
+
+def test_resource_directory_falls_back_when_current_file_hash_is_invalid(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    relative = "resources/countdown/cream.png"
+    (version_root / relative).parent.mkdir(parents=True)
+    (version_root / relative).write_bytes(b"corrupt")
+    manifest_payload = json.dumps(
+        {
+            "schema_version": 1,
+            "catalog_version": "2026.8.12",
+            "resources": [
+                {
+                    "id": "cream",
+                    "type": "countdown_background",
+                    "version": "1.0.0",
+                    "files": [
+                        {
+                            "path": relative,
+                            "size": 7,
+                            "sha256": hashlib.sha256(b"expected").hexdigest(),
+                        }
+                    ],
+                    "metadata": {},
+                }
+            ],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    (version_root / "manifest.json").write_bytes(manifest_payload)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "catalog_version": "2026.8.12",
+                "version_id": version_root.name,
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = RemoteResourceCache(cache_root, "https://resources.example")
+
+    assert resource_directory_for_cache(cache) is None
+
+
+def test_resource_directory_materializes_bundled_fallbacks_for_old_current_views(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    relative = "resources/cursors/demo/arrow.cur"
+    (version_root / relative).parent.mkdir(parents=True)
+    cursor = b"cached cursor"
+    (version_root / relative).write_bytes(cursor)
+    manifest_payload = json.dumps(
+        {
+            "schema_version": 1,
+            "catalog_version": "2026.8.12",
+            "resources": [
+                {
+                    "id": "demo",
+                    "type": "cursor_theme",
+                    "version": "1.0.0",
+                    "files": [
+                        {"path": relative, "size": len(cursor), "sha256": hashlib.sha256(cursor).hexdigest()}
+                    ],
+                    "metadata": {},
+                }
+            ],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    (version_root / "manifest.json").write_bytes(manifest_payload)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "catalog_version": "2026.8.12",
+                "version_id": version_root.name,
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed_root = tmp_path / "bundle"
+    seed_skin = seed_root / "assets" / "countdown" / "night.png"
+    seed_skin.parent.mkdir(parents=True)
+    seed_skin.write_bytes(b"bundled night")
+
+    cache = RemoteResourceCache(cache_root, "https://resources.example", seed_root=seed_root)
+    directory = resource_directory_for_cache(cache)
+
+    assert directory is not None
+    assert (directory / "countdown" / "night.png").read_bytes() == b"bundled night"
+    assert cache.current_root is not None and cache.current_root != version_root
+
+
+def test_resource_directory_repairs_stale_unlisted_files_from_old_views(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    stale_relative = "resources/countdown/night.png"
+    extra_relative = "resources/countdown/removed.png"
+    (version_root / stale_relative).parent.mkdir(parents=True)
+    (version_root / stale_relative).write_bytes(b"stale remote bytes")
+    (version_root / extra_relative).write_bytes(b"removed extra")
+    manifest_payload = json.dumps(
+        {"schema_version": 1, "catalog_version": "2026.8.12", "resources": []}
+    ).encode("utf-8")
+    (version_root / "manifest.json").write_bytes(manifest_payload)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "version_id": version_root.name,
+                "catalog_version": "2026.8.12",
+                "manifest_sha256": hashlib.sha256(manifest_payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed_root = tmp_path / "bundle"
+    seed_file = seed_root / "assets" / "countdown" / "night.png"
+    seed_file.parent.mkdir(parents=True)
+    seed_file.write_bytes(b"bundled night")
+
+    cache = RemoteResourceCache(cache_root, "https://resources.example", seed_root=seed_root)
+    directory = resource_directory_for_cache(cache)
+
+    assert directory is not None
+    assert (directory / "countdown" / "night.png").read_bytes() == b"bundled night"
+    assert not (directory / "countdown" / "removed.png").exists()
 
 
 def test_resource_directory_uses_verified_legacy_cache(tmp_path: Path) -> None:

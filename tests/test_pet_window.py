@@ -125,6 +125,32 @@ def test_countdown_skins_can_be_loaded_from_a_verified_resource_directory(
     assert all(not skins[theme].isNull() for theme in ("cream", "night", "yarn"))
 
 
+def test_countdown_skin_update_waits_until_current_countdown_finishes(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window_root = tmp_path / "window"
+    window_root.mkdir()
+    window = _window(window_root)
+    qtbot.addWidget(window)
+    old_root = tmp_path / "old" / "countdown"
+    new_root = tmp_path / "new" / "countdown"
+    old_root.mkdir(parents=True)
+    new_root.mkdir(parents=True)
+    for theme in ("cream", "night", "yarn"):
+        Image.new("RGBA", (4, 4), (255, 0, 0, 255)).save(old_root / f"{theme}.png")
+        Image.new("RGBA", (4, 4), (0, 255, 0, 255)).save(new_root / f"{theme}.png")
+    window.reload_countdown_skins(old_root)
+    window.set_countdown_text("00:01:00")
+    old_key = window._countdown_skins["cream"].cacheKey()
+
+    window.reload_countdown_skins(new_root)
+
+    assert window._countdown_skins["cream"].cacheKey() == old_key
+    assert window._pending_countdown_skins is not None
+    window.set_countdown_text(None)
+    assert window._countdown_skins["cream"].cacheKey() != old_key
+
+
 def test_macos_tool_window_remains_visible_when_application_is_inactive(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

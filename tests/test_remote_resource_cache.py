@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -10,7 +11,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from petnest.core.remote_resource_cache import RemoteResourceCache, RemoteResourceError
+from petnest.core.remote_resource_cache import RemoteResourceCache, RemoteResourceError, _prune_empty_parents
 
 
 def _payload(path: str, content: bytes) -> dict[str, object]:
@@ -75,7 +76,7 @@ def test_sync_downloads_manifest_and_verifies_files(tmp_path: Path) -> None:
             return _Response(manifest_bytes)
         if request.full_url.endswith("/v1/archive.zip"):
             return _Response(b"", status=404)
-        assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
+        assert request.full_url.split("?", 1)[0].endswith("/v1/files/resources/cursors/demo/arrow.cur")
         return _Response(content)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
@@ -180,6 +181,26 @@ def test_corrupt_download_is_not_committed(tmp_path: Path) -> None:
     assert not list((tmp_path / "versions").glob("*")) if (tmp_path / "versions").exists() else True
 
 
+def test_oversized_download_is_rejected_before_writing_extra_bytes(tmp_path: Path) -> None:
+    relative = "resources/cursors/demo/arrow.cur"
+    expected = b"expected"
+    manifest_bytes = _manifest([_payload(relative, expected)])
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(expected + b"unexpected trailing bytes")
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", retry_delay=0)
+    cache._opener = opener
+
+    with pytest.raises(RemoteResourceError, match="超过 manifest 声明大小"):
+        cache.sync()
+
+
 def test_sync_uses_verified_github_archive_when_worker_exposes_it(tmp_path: Path) -> None:
     content = b"archive cursor bytes"
     relative = "resources/cursors/demo/arrow.cur"
@@ -204,6 +225,29 @@ def test_sync_uses_verified_github_archive_when_worker_exposes_it(tmp_path: Path
     assert (cache.current_root / relative).read_bytes() == content
 
 
+def test_archive_extraction_stops_before_writing_oversized_entry(tmp_path: Path) -> None:
+    relative = "resources/cursors/demo/arrow.cur"
+    expected = b"x"
+    manifest_bytes = _manifest([_payload(relative, expected)])
+    archive_buffer = BytesIO()
+    with ZipFile(archive_buffer, "w") as archive:
+        archive.writestr("prefix/resources/cursors/demo/arrow.cur", b"xx")
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        assert request.full_url.endswith("/v1/archive.zip")
+        return _Response(archive_buffer.getvalue())
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+
+    with pytest.raises(RemoteResourceError, match="超过 manifest 声明大小"):
+        cache.sync()
+
+    assert cache.current_root is None
+
+
 def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: Path) -> None:
     content = b"legacy worker cursor bytes"
     relative = "resources/cursors/demo/arrow.cur"
@@ -215,7 +259,7 @@ def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: 
             return _Response(manifest_bytes)
         if request.full_url.endswith("/v1/archive.zip"):
             raise HTTPError(request.full_url, 404, "Not Found", {}, BytesIO())
-        assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
+        assert request.full_url.split("?", 1)[0].endswith("/v1/files/resources/cursors/demo/arrow.cur")
         return _Response(content)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
@@ -226,7 +270,7 @@ def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: 
     assert (cache.current_root / relative).read_bytes() == content
 
 
-def test_sync_falls_back_to_files_when_archive_gateway_fails(tmp_path: Path) -> None:
+def test_sync_does_not_amplify_archive_gateway_failures_into_file_requests(tmp_path: Path) -> None:
     content = b"gateway fallback cursor bytes"
     relative = "resources/cursors/demo/arrow.cur"
     manifest_bytes = _manifest([_payload(relative, content)])
@@ -237,15 +281,15 @@ def test_sync_falls_back_to_files_when_archive_gateway_fails(tmp_path: Path) -> 
             return _Response(manifest_bytes)
         if request.full_url.endswith("/v1/archive.zip"):
             raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
-        assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
-        return _Response(content)
+        raise AssertionError(f"unexpected per-file request: {request.full_url}")
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, retry_delay=0)
 
-    cache.sync()
+    result = cache.sync_partial()
 
-    assert cache.current_root is not None
-    assert (cache.current_root / relative).read_bytes() == content
+    assert result.complete is False
+    assert [failure.identifier for failure in result.failures] == ["demo"]
+    assert cache.current_root is None
 
 
 def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
@@ -262,9 +306,9 @@ def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
             return _Response(manifest_bytes)
         if request.full_url.endswith("/v1/archive.zip"):
             return _Response(b"", status=404)
-        if request.full_url.endswith("/arrow.cur"):
+        if request.full_url.split("?", 1)[0].endswith("/arrow.cur"):
             return _Response(first)
-        assert request.full_url.endswith("/busy.cur")
+        assert request.full_url.split("?", 1)[0].endswith("/busy.cur")
         return _Response(second)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
@@ -274,6 +318,38 @@ def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
     assert progress
     assert progress[-1] == 100
     assert progress == sorted(progress)
+
+
+def test_manifest_fetch_retries_transient_gateway_errors(tmp_path: Path) -> None:
+    manifest_bytes = _manifest_resources([], version="2026.8.11")
+    attempts = 0
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        nonlocal attempts
+        del timeout
+        assert request.full_url.endswith("/v1/manifest.json")
+        attempts += 1
+        if attempts == 1:
+            raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+        return _Response(manifest_bytes)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, retry_delay=0)
+
+    assert cache.fetch_manifest().catalog_version == "2026.8.11"
+    assert attempts == 2
+
+
+def test_prune_empty_parents_resolves_relative_paths_inside_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    staging = tmp_path / "cache" / "staging"
+    nested = staging / "run" / "resources"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    relative_nested = Path(os.path.relpath(nested, Path.cwd()))
+    relative_staging = Path(os.path.relpath(staging, Path.cwd()))
+
+    _prune_empty_parents(relative_nested, relative_staging)
+
+    assert staging.is_dir()
 
 
 def test_sync_retries_transient_file_gateway_errors(tmp_path: Path) -> None:
@@ -319,7 +395,7 @@ def test_sync_reuses_unchanged_files_from_current_generation(tmp_path: Path) -> 
             return _Response(old_manifest)
         if request.full_url.endswith("/v1/archive.zip"):
             return _Response(b"", status=404)
-        return _Response(unchanged if request.full_url.endswith("/arrow.cur") else old_changed)
+        return _Response(unchanged if request.full_url.split("?", 1)[0].endswith("/arrow.cur") else old_changed)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, retry_delay=0)
     cache.sync()
@@ -344,7 +420,10 @@ def test_sync_reuses_unchanged_files_from_current_generation(tmp_path: Path) -> 
     updated = updated_cache.sync()
 
     assert updated.catalog_version == "2026.8.12"
-    assert requested == ["https://resources.example/v1/files/resources/cursors/demo/busy.cur"]
+    assert requested == [
+        "https://resources.example/v1/files/resources/cursors/demo/busy.cur?sha256="
+        + hashlib.sha256(new_changed).hexdigest()
+    ]
     assert updated_cache.current_root is not None
     assert updated_cache.current_root != old_root
     assert (updated_cache.current_root / unchanged_path).read_bytes() == unchanged
@@ -384,7 +463,7 @@ def test_sync_partial_activates_successful_resource_and_keeps_failed_resource(
             return _Response(old_manifest)
         if request.full_url.endswith("archive.zip"):
             return _Response(b"", status=404)
-        return _Response(old_cursor if request.full_url.endswith("arrow.cur") else old_effect)
+        return _Response(old_cursor if request.full_url.split("?", 1)[0].endswith("arrow.cur") else old_effect)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, retry_delay=0)
     cache.sync()
@@ -418,7 +497,7 @@ def test_sync_partial_activates_successful_resource_and_keeps_failed_resource(
         if request.full_url.endswith("manifest.json"):
             return _Response(new_manifest)
         assert "/v1/files/" in request.full_url
-        if request.full_url.endswith("arrow.cur"):
+        if request.full_url.split("?", 1)[0].endswith("arrow.cur"):
             return _Response(new_cursor)
         raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
 
@@ -476,7 +555,7 @@ def test_sync_partial_removes_resource_missing_from_remote_catalog(tmp_path: Pat
             return _Response(old_manifest)
         if request.full_url.endswith("archive.zip"):
             return _Response(b"", status=404)
-        return _Response(cursor if request.full_url.endswith("arrow.cur") else effect)
+        return _Response(cursor if request.full_url.split("?", 1)[0].endswith("arrow.cur") else effect)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, seed_root=seed_root)
     cache.sync()
@@ -546,15 +625,22 @@ def test_sync_partial_keeps_bundled_fallbacks_for_failed_new_resources(tmp_path:
             return _Response(manifest_bytes)
         if request.full_url.endswith("archive.zip"):
             return _Response(b"", status=404)
-        if request.full_url.endswith("arrow.cur"):
+        if request.full_url.split("?", 1)[0].endswith("arrow.cur"):
             return _Response(cursor)
         raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
 
     cache = RemoteResourceCache(tmp_path / "cache", "https://resources.example", opener=opener, seed_root=seed_root, retry_delay=0)
-    result = cache.sync_partial()
+    applied_events: list[tuple[str, tuple[str, ...]]] = []
+
+    def on_resource_applied(identifier: str) -> None:
+        active = cache.load_current_manifest()
+        applied_events.append((identifier, tuple(item.identifier for item in active.resources) if active else ()))
+
+    result = cache.sync_partial(on_resource_applied=on_resource_applied)
 
     assert result.applied_resource_ids == ("demo",)
     assert [failure.identifier for failure in result.failures] == ["spark"]
+    assert applied_events == [("demo", ("demo",))]
     assert cache.current_root is not None
     assert (cache.current_root / cursor_path).read_bytes() == cursor
     assert (cache.current_root / effect_path).read_bytes() == effect_default
@@ -607,6 +693,134 @@ def test_sync_migrates_verified_legacy_cache_without_redownloading(tmp_path: Pat
     assert cache.current_root != tmp_path
     assert (cache.current_root / relative).read_bytes() == content
     assert (tmp_path / "current.json").is_file()
+
+
+def test_partial_failure_migrates_legacy_view_and_keeps_seed_fallback(tmp_path: Path) -> None:
+    cursor_path = "resources/cursors/demo/arrow.cur"
+    effect_path = "resources/effects/spark/frames/0001.png"
+    cursor = b"legacy cursor"
+    bundled_effect = b"bundled effect"
+    remote_effect = b"remote effect"
+    legacy_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, cursor)],
+                "metadata": {},
+            }
+        ],
+        version="2026.8.10",
+    )
+    (tmp_path / cursor_path).parent.mkdir(parents=True)
+    (tmp_path / cursor_path).write_bytes(cursor)
+    (tmp_path / "manifest.json").write_bytes(legacy_manifest)
+    seed_root = tmp_path / "bundle"
+    seed_file = seed_root / "effects" / "spark" / "frames" / "0001.png"
+    seed_file.parent.mkdir(parents=True)
+    seed_file.write_bytes(bundled_effect)
+    remote_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, cursor)],
+                "metadata": {},
+            },
+            {
+                "id": "spark",
+                "type": "interaction_effect",
+                "version": "1.0.0",
+                "files": [_payload(effect_path, remote_effect)],
+                "metadata": {},
+            },
+        ],
+        version="2026.8.11",
+    )
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(remote_manifest)
+        raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, seed_root=seed_root, retry_delay=0)
+    result = cache.sync_partial()
+
+    assert result.view_changed is True
+    assert result.applied_resource_ids == ()
+    assert [failure.identifier for failure in result.failures] == ["spark"]
+    assert cache.current_root is not None and cache.current_root != tmp_path
+    assert (cache.current_root / effect_path).read_bytes() == bundled_effect
+
+
+def test_load_cached_does_not_resurrect_legacy_after_versioned_cache_exists(tmp_path: Path) -> None:
+    content = b"legacy cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    legacy_file = tmp_path / relative
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_bytes(content)
+    (tmp_path / "manifest.json").write_bytes(_manifest([_payload(relative, content)], version="2026.8.10"))
+    (tmp_path / "versions" / "2026.8.11-0123456789ab").mkdir(parents=True)
+    (tmp_path / "current.json").write_text("{broken", encoding="utf-8")
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example")
+
+    assert cache.load_cached() is None
+
+
+def test_current_root_rejects_a_manifest_digest_mismatch(tmp_path: Path) -> None:
+    relative = "resources/cursors/demo/arrow.cur"
+    content = b"cached cursor bytes"
+    version_root = tmp_path / "versions" / "2026.8.11-0123456789ab"
+    (version_root / "resources" / "cursors" / "demo").mkdir(parents=True)
+    (version_root / relative).write_bytes(content)
+    manifest_bytes = _manifest([_payload(relative, content)])
+    (version_root / "manifest.json").write_bytes(manifest_bytes)
+    (tmp_path / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "catalog_version": "2026.8.11",
+                "version_id": version_root.name,
+                "manifest_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example")
+
+    assert cache.current_root is None
+
+
+def test_current_root_rejects_schema_two_pointer_without_digest(tmp_path: Path) -> None:
+    version_root = tmp_path / "versions" / "2026.8.11-0123456789ab"
+    (version_root / "resources").mkdir(parents=True)
+    manifest_bytes = _manifest_resources([], version="2026.8.11")
+    (version_root / "manifest.json").write_bytes(manifest_bytes)
+    (tmp_path / "current.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "catalog_version": "2026.8.11",
+                "version_id": version_root.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert RemoteResourceCache(tmp_path, "https://resources.example").current_root is None
+
+
+def test_current_root_handles_a_non_object_pointer(tmp_path: Path) -> None:
+    (tmp_path / "current.json").write_text("[]", encoding="utf-8")
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example")
+
+    assert cache.current_root is None
 
 
 def test_sync_applies_empty_catalog_to_clear_update_state(tmp_path: Path) -> None:

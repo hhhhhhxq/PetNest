@@ -82,6 +82,7 @@ class PetWindow(QWidget):
         self._countdown_card_height = 37
         self._countdown_theme = "cream"
         self._countdown_skins = self._load_countdown_skins(countdown_root)
+        self._pending_countdown_skins: dict[str, QPixmap] | None = None
         self._follow_mode_enabled = False
         self._follow_motion = False
         self._normal_scale: float | None = None
@@ -263,6 +264,9 @@ class PetWindow(QWidget):
     def set_countdown_text(self, text: str | None) -> None:
         """在宠物下方显示倒计时；空值会移除预留区域。"""
         normalized = text or None
+        if normalized is None and self._pending_countdown_skins is not None:
+            self._countdown_skins = self._pending_countdown_skins
+            self._pending_countdown_skins = None
         self._countdown_text = normalized
         target_size = self._scaled_canvas_size()
         if self.size() != target_size:
@@ -282,8 +286,13 @@ class PetWindow(QWidget):
         self.update()
 
     def reload_countdown_skins(self, directory: Path | None = None) -> None:
-        """从新资源版本重新加载倒计时皮肤，不影响当前倒计时状态。"""
-        self._countdown_skins = self._load_countdown_skins(directory)
+        """加载新皮肤；当前倒计时显示期间延迟到下一次显示再切换。"""
+        skins = self._load_countdown_skins(directory)
+        if self.countdown_is_visible:
+            self._pending_countdown_skins = skins
+        else:
+            self._countdown_skins = skins
+            self._pending_countdown_skins = None
         self.update()
 
     def handle_pet_event(self, event: PetEvent) -> None:

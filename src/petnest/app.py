@@ -84,13 +84,14 @@ def bundled_resource_seed_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def resource_directory_for_cache(cache: RemoteResourceCache) -> Path | None:
+def resource_directory_for_cache(cache: RemoteResourceCache, *, verify_files: bool = True) -> Path | None:
     """Return the verified current resource root, or ``None`` for fallback."""
-    current = cache.current_root
-    if current is None:
-        return None
-    directory = current / "resources"
-    return directory if directory.is_dir() else None
+    if verify_files:
+        try:
+            cache.ensure_bundled_fallbacks()
+        except (OSError, RuntimeError) as error:
+            LOGGER.warning("无法补齐资源缓存内置回退：%s", error)
+    return cache.verified_resource_directory(verify_files=verify_files)
 
 
 class PetNest:
@@ -532,8 +533,17 @@ class PetNest:
         def report_progress(progress: int) -> None:
             self._resource_results.put(("progress", False, progress))
 
+        def report_resource_applied(_identifier: str) -> None:
+            # The cache switches each verified resource atomically. Queue the
+            # refresh so Qt-owned catalogs and windows are touched on the GUI
+            # thread while the remaining resources continue downloading.
+            self._resource_results.put(("view", False, None))
+
         try:
-            result = self.remote_resource_update.apply(progress=report_progress)
+            result = self.remote_resource_update.apply(
+                progress=report_progress,
+                on_resource_applied=report_resource_applied,
+            )
         except Exception as error:  # noqa: BLE001 - failed update is reported in the UI.
             LOGGER.exception("远程资源更新线程异常")
             result = RemoteResourceApplyResult(False, error=str(error))
@@ -550,6 +560,7 @@ class PetNest:
         self._schedule_resource_check(force=False)
 
     def _drain_resource_results(self) -> None:
+        view_refreshed = False
         while True:
             try:
                 kind, manual, payload = self._resource_results.get_nowait()
@@ -558,9 +569,13 @@ class PetNest:
             if kind == "check" and isinstance(payload, RemoteResourceCheckResult):
                 self._handle_resource_check_result(payload, manual=manual)
             elif kind == "apply" and isinstance(payload, RemoteResourceApplyResult):
-                self._handle_resource_apply_result(payload)
+                self._handle_resource_apply_result(payload, view_already_refreshed=view_refreshed)
+                view_refreshed = False
             elif kind == "progress" and isinstance(payload, int):
                 self._handle_resource_progress(payload)
+            elif kind == "view":
+                self._refresh_resource_directories(verify_files=False)
+                view_refreshed = True
 
     def _handle_resource_progress(self, progress: int) -> None:
         if self.tray is not None:
@@ -575,15 +590,20 @@ class PetNest:
             LOGGER.warning("远程资源检查失败：%s", result.error)
             if manual and self.tray is not None:
                 self.tray.showMessage("PetNest", f"资源检查失败：{result.error}")
-        elif result.update_available and result.checked and self.tray is not None:
+        elif result.update_available and result.checked and manual and self.tray is not None:
             self.tray.showMessage("PetNest", "发现新的远程资源，请点击菜单中的蓝点更新")
         elif manual and result.checked and self.tray is not None:
             self.tray.showMessage("PetNest", "资源已是最新")
 
-    def _handle_resource_apply_result(self, result: RemoteResourceApplyResult) -> None:
+    def _handle_resource_apply_result(
+        self,
+        result: RemoteResourceApplyResult,
+        *,
+        view_already_refreshed: bool = False,
+    ) -> None:
         if self.tray is not None:
             self.tray.set_resource_update_loading(False)
-        if result.updated_resource_ids:
+        if (result.updated_resource_ids or result.resource_view_changed) and not view_already_refreshed:
             self._refresh_resource_directories()
         if result.applied:
             if self.tray is not None:
@@ -595,7 +615,11 @@ class PetNest:
                 self.tray.set_resource_update_available(True)
                 updated = "、".join(result.updated_resource_ids)
                 failed = "、".join(result.failed_resource_ids)
-                self.tray.showMessage("PetNest", f"已更新 {updated}；{failed} 更新失败，可稍后重试")
+                if updated:
+                    message = f"已更新 {updated}；{failed} 更新失败，可稍后重试"
+                else:
+                    message = f"部分资源更新失败：{failed}，可稍后重试"
+                self.tray.showMessage("PetNest", message)
             return
         if self.tray is not None:
             self.tray.set_resource_update_available(self.remote_resource_update.update_available)
@@ -604,9 +628,12 @@ class PetNest:
         if result.error:
             LOGGER.warning("远程资源更新失败：%s", result.error)
 
-    def _refresh_resource_directories(self) -> None:
+    def _refresh_resource_directories(self, *, verify_files: bool = True) -> None:
         """切换到新版本目录；当前已应用到系统的光标不在此处强行替换。"""
-        self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
+        self.resource_directory = resource_directory_for_cache(
+            self.remote_resource_cache,
+            verify_files=verify_files,
+        )
         cursor_root = (
             self.resource_directory / "cursors"
             if self.resource_directory is not None and (self.resource_directory / "cursors").is_dir()

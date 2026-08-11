@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 
 
+_MAX_STYLE_JSON_BYTES = 1 * 1024 * 1024
+
+
 @dataclass(frozen=True, slots=True)
 class CursorStyle:
     """一个可用于 Windows 普通箭头的完整样式。"""
@@ -40,8 +43,11 @@ class CursorStyleCatalog:
     @staticmethod
     def _read_style(root: Path) -> CursorStyle | None:
         try:
-            raw = json.loads((root / "style.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
+            style_path = root / "style.json"
+            if style_path.stat().st_size > _MAX_STYLE_JSON_BYTES:
+                return None
+            raw = json.loads(style_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError, RecursionError):
             return None
         if not isinstance(raw, dict):
             return None

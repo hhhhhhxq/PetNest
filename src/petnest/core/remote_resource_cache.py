@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import filecmp
 import hashlib
 import json
 import logging
@@ -19,16 +20,27 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 import uuid
+import zlib
 from zipfile import BadZipFile, ZipFile, ZipInfo
 
-from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, RemoteResource, ResourceManifest
+from petnest.core.remote_resource_manifest import (
+    MAX_FILE_COUNT,
+    MAX_MANIFEST_BYTES,
+    ManifestError,
+    RemoteFile,
+    RemoteResource,
+    ResourceManifest,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 _CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_WORKERS = 8
 _VERSION_RETENTION = 2
+_ARCHIVE_OVERHEAD_LIMIT = 64 * 1024 * 1024
+_STAGING_RETENTION_SECONDS = 24 * 60 * 60
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+_SHA256_DIGEST = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 class RemoteResourceError(RuntimeError):
@@ -68,6 +80,7 @@ class ResourceSyncResult:
     applied_resource_ids: tuple[str, ...] = ()
     removed_resource_ids: tuple[str, ...] = ()
     failures: tuple[ResourceSyncFailure, ...] = ()
+    view_changed: bool = False
 
     @property
     def complete(self) -> bool:
@@ -127,56 +140,201 @@ class RemoteResourceCache:
         """Return the validated immutable directory selected by current.json."""
         try:
             pointer = json.loads(self.current_pointer_path.read_text(encoding="utf-8"))
+            if not isinstance(pointer, dict):
+                return self._legacy_root()
             version_id = pointer.get("version_id")
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return self._legacy_root()
+        schema_version = pointer.get("schema_version")
+        if schema_version is not None and (type(schema_version) is not int or schema_version not in {1, 2}):
+            return self._legacy_root()
         if not isinstance(version_id, str) or not _VERSION_ID.fullmatch(version_id):
             return self._legacy_root()
-        candidate = self.versions_path / version_id
-        return candidate if candidate.is_dir() else self._legacy_root()
+        versions_root = self.versions_path
+        try:
+            versions_resolved = versions_root.resolve()
+            candidate = versions_root / version_id
+            if (
+                _is_link_like(versions_root)
+                or not versions_root.is_dir()
+                or versions_resolved.parent != self.root.resolve()
+                or _is_link_like(candidate)
+                or not candidate.is_dir()
+                or candidate.resolve().parent != versions_resolved
+                or _tree_contains_link(candidate)
+            ):
+                return self._legacy_root()
+            manifest_payload = (candidate / "manifest.json").read_bytes()
+            candidate_manifest = ResourceManifest.from_bytes(manifest_payload)
+            expected_digest = pointer.get("manifest_sha256")
+            if schema_version == 2 and expected_digest is None:
+                return self._legacy_root()
+            if expected_digest is not None:
+                if not isinstance(expected_digest, str) or not _SHA256_DIGEST.fullmatch(expected_digest):
+                    return self._legacy_root()
+                if hashlib.sha256(manifest_payload).hexdigest() != expected_digest.lower():
+                    return self._legacy_root()
+            pointer_catalog = pointer.get("catalog_version")
+            if pointer_catalog is not None and pointer_catalog != candidate_manifest.catalog_version:
+                return self._legacy_root()
+            return candidate
+        except (OSError, ManifestError, RuntimeError):
+            return self._legacy_root()
 
     def _legacy_root(self) -> Path | None:
         """Return a verified pre-versioned cache root for one-time migration."""
-        if self.versions_path.is_dir() and any(
-            item.is_dir() and _VERSION_ID.fullmatch(item.name) for item in self.versions_path.iterdir()
-        ):
-            # A versioned view has already been materialized. Never resurrect
-            # the stale legacy tree when its pointer is damaged.
+        try:
+            if _is_link_like(self.versions_path):
+                return None
+            if self.versions_path.is_dir() and any(
+                not _is_link_like(item) and item.is_dir() and _VERSION_ID.fullmatch(item.name)
+                for item in self.versions_path.iterdir()
+            ):
+                # A versioned view has already been materialized. Never resurrect
+                # the stale legacy tree when its pointer is damaged.
+                return None
+        except OSError:
             return None
         resources_root = self.root / "resources"
-        if not resources_root.is_dir():
+        try:
+            if (
+                _is_link_like(resources_root)
+                or not resources_root.is_dir()
+                or resources_root.resolve().parent != self.root.resolve()
+                or _tree_contains_link(resources_root)
+            ):
+                return None
+        except (OSError, RuntimeError):
             return None
         try:
             manifest = ResourceManifest.from_bytes(self.manifest_path.read_bytes())
         except (OSError, ManifestError):
             return None
-        if not all(_file_matches(_join_relative(self.root, remote_file.path), remote_file) for remote_file in manifest.files):
+        if not all(
+            _cached_file_is_contained(self.root, _join_relative(self.root, remote_file.path))
+            and _file_matches(_join_relative(self.root, remote_file.path), remote_file)
+            for remote_file in manifest.files
+        ):
             return None
         return self.root
 
     def load_current_manifest(self) -> ResourceManifest | None:
         current = self.current_root
+        return self._load_manifest_from_root(current)
+
+    def _load_manifest_from_root(self, current: Path | None) -> ResourceManifest | None:
         if current is None:
             return None
         try:
-            return ResourceManifest.from_bytes((current / "manifest.json").read_bytes())
+            manifest = ResourceManifest.from_bytes((current / "manifest.json").read_bytes())
         except (OSError, ManifestError):
             return None
+        if not all(self._resource_files_valid(current, resource) for resource in manifest.resources):
+            return None
+        return manifest
 
-    def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest:
+    def verified_resource_directory(self, *, verify_files: bool = True) -> Path | None:
+        """Return the active resource tree only when its directory is contained and link-free."""
+        current = self.current_root
+        if current is None:
+            return None
+        try:
+            manifest_payload = (current / "manifest.json").read_bytes()
+            manifest = ResourceManifest.from_bytes(manifest_payload)
+        except (OSError, ManifestError):
+            return None
+        if verify_files and not all(self._resource_files_valid(current, resource) for resource in manifest.resources):
+            return None
+        directory = current / "resources"
+        try:
+            if (
+                _is_link_like(directory)
+                or not directory.is_dir()
+                or directory.resolve().parent != current.resolve()
+                or _tree_contains_link(directory)
+            ):
+                return None
+        except (OSError, RuntimeError):
+            return None
+        return directory
+
+    def ensure_bundled_fallbacks(self) -> None:
+        """Materialize missing bundled defaults into an older verified view."""
+        if self.seed_root is None:
+            return
+        current = self.current_root
+        manifest = self.load_current_manifest()
+        if current is None or manifest is None:
+            return
+        missing = False
+        remote_paths = {_resource_path_key(remote_file.path) for remote_file in manifest.files}
+        bundled_paths: set[str] = set()
+        for source_root, category in _bundled_seed_mappings(self.seed_root):
+            if not source_root.is_dir():
+                continue
+            for source in source_root.rglob("*"):
+                if not source.is_file():
+                    continue
+                relative = f"resources/{category}/{source.relative_to(source_root).as_posix()}"
+                bundled_paths.add(_resource_path_key(relative))
+                destination = _join_relative(current, relative)
+                if not destination.is_file() or (
+                    _resource_path_key(relative) not in remote_paths and not _files_equal(source, destination)
+                ):
+                    missing = True
+                    break
+            if missing:
+                break
+        if not missing:
+            resources_root = current / "resources"
+            if resources_root.is_dir():
+                for candidate in resources_root.rglob("*"):
+                    if not candidate.is_file():
+                        continue
+                    relative = candidate.relative_to(current).as_posix()
+                    relative_key = _resource_path_key(relative)
+                    if relative_key not in remote_paths and relative_key not in bundled_paths:
+                        missing = True
+                        break
+        if not missing:
+            return
+        staging = self.root / "staging" / uuid.uuid4().hex
+        with self._sync_lock:
+            current = self.current_root
+            manifest = self.load_current_manifest()
+            if current is None or manifest is None:
+                return
+            self._prepare_staging_root(staging)
+            try:
+                staging.mkdir(parents=True, exist_ok=False)
+                self._commit_view(current, manifest, staging)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def sync(
+        self,
+        *,
+        progress: Callable[[int], object] | None = None,
+        on_resource_applied: Callable[[str], object] | None = None,
+    ) -> ResourceManifest:
         """Fetch and verify a catalog, requiring every resource to succeed.
 
         The legacy API remains strict for callers that expect an exception on
         failure.  The update coordinator uses :meth:`sync_partial` so
         independent resources can be activated one by one.
         """
-        result = self.sync_partial(progress=progress)
+        result = self.sync_partial(progress=progress, on_resource_applied=on_resource_applied)
         if result.failures:
             details = "；".join(f"{failure.identifier}: {failure.error}" for failure in result.failures)
             raise RemoteResourceError(f"部分资源更新失败：{details}")
         return result.manifest
 
-    def sync_partial(self, *, progress: Callable[[int], object] | None = None) -> ResourceSyncResult:
+    def sync_partial(
+        self,
+        *,
+        progress: Callable[[int], object] | None = None,
+        on_resource_applied: Callable[[str], object] | None = None,
+    ) -> ResourceSyncResult:
         """Synchronize resources independently and activate each successful one."""
         try:
             manifest_payload = self._fetch_bytes(self._manifest_url())
@@ -189,22 +347,30 @@ class RemoteResourceCache:
         progress_reporter = _ProgressReporter(sum(file.size for file in manifest.files), progress)
         staging = self.root / "staging" / uuid.uuid4().hex
         with self._sync_lock:
-            return self._sync_partial_locked(manifest, staging, progress_reporter)
+            return self._sync_partial_locked(manifest, staging, progress_reporter, on_resource_applied)
 
     def _sync_partial_locked(
         self,
         manifest: ResourceManifest,
         staging: Path,
         progress: "_ProgressReporter",
+        on_resource_applied: Callable[[str], object] | None,
     ) -> ResourceSyncResult:
         current_root = self.current_root
         active_manifest = self.load_current_manifest() if current_root is not None else None
         applied_resource_ids: list[str] = []
         removed_resource_ids: list[str] = []
+        view_changed = current_root is not None and active_manifest is None
+        if view_changed:
+            # A pointer can still name a valid manifest whose files were
+            # modified after the last sync. Do not clone the corrupt view;
+            # rebuild from trusted bundled files and the remote catalog.
+            current_root = None
         failures: list[ResourceSyncFailure] = []
         prepared: dict[str, tuple[RemoteFile, ...]] = {}
         old_resources: dict[str, RemoteResource | None] = {}
         try:
+            self._prepare_staging_root(staging)
             staging.mkdir(parents=True, exist_ok=False)
 
             # Removed resources are independent too.  If materializing the
@@ -223,6 +389,8 @@ class RemoteResourceCache:
                         )
                         active_manifest = next_manifest
                         removed_resource_ids.append(old_resource.identifier)
+                        view_changed = True
+                        self._notify_resource_applied(on_resource_applied, old_resource.identifier)
                     except (OSError, RemoteResourceError, URLError) as error:
                         failures.append(ResourceSyncFailure(old_resource.identifier, str(error) or error.__class__.__name__))
 
@@ -265,13 +433,27 @@ class RemoteResourceCache:
                     # per-resource requests preserve independent failures.
                     self._download_archive(staging, manifest, progress)
                     prepared = {identifier: () for identifier in prepared}
-                except RemoteResourceError as error:
-                    # The archive is an optional transport optimization.  Any
-                    # gateway error or corrupt archive falls back to the
-                    # resource-scoped file requests so one bad transport does
-                    # not block unrelated resources.
-                    LOGGER.warning("资源归档不可用，回退逐资源下载：%s", error)
+                except RemoteResourceHTTPError as error:
                     _remove_staged_files(staging, manifest.files)
+                    if error.status == 404:
+                        # A 404 means this is an older Worker without the
+                        # optional archive route.  Keep compatibility with it
+                        # by using the resource-scoped endpoint.
+                        LOGGER.warning("资源归档接口不存在，回退逐资源下载：%s", error)
+                    else:
+                        # Do not turn a gateway outage into hundreds of GitHub
+                        # Contents API requests per client.  The next check
+                        # can retry the archive once the gateway recovers.
+                        LOGGER.warning("资源归档请求失败，不回退逐文件下载：%s", error)
+                        for resource in manifest.resources:
+                            failures.append(ResourceSyncFailure(resource.identifier, str(error)))
+                        prepared = {}
+                except RemoteResourceError as error:
+                    _remove_staged_files(staging, manifest.files)
+                    LOGGER.warning("资源归档校验失败，不回退逐文件下载：%s", error)
+                    for resource in manifest.resources:
+                        failures.append(ResourceSyncFailure(resource.identifier, str(error)))
+                    prepared = {}
 
             for resource in manifest.resources:
                 if resource.identifier not in prepared:
@@ -300,6 +482,8 @@ class RemoteResourceCache:
                     )
                     active_manifest = next_manifest
                     applied_resource_ids.append(resource.identifier)
+                    view_changed = True
+                    self._notify_resource_applied(on_resource_applied, resource.identifier)
                 except (OSError, RemoteResourceError, URLError) as error:
                     self._remove_staged_resource(staging, resource)
                     failures.append(ResourceSyncFailure(resource.identifier, str(error) or error.__class__.__name__))
@@ -310,29 +494,40 @@ class RemoteResourceCache:
             if active_manifest is None and not manifest.resources and not failures:
                 current_root = self._commit_view(None, manifest, staging)
                 active_manifest = manifest
-            elif active_manifest is not None and (not failures or applied_resource_ids or removed_resource_ids):
-                normalized = _ordered_active_manifest(active_manifest, manifest)
-                legacy_view = current_root is not None and current_root.resolve() == self.root.resolve()
-                if normalized != active_manifest or legacy_view:
-                    try:
-                        current_root = self._commit_view(
-                            current_root,
-                            normalized,
-                            staging,
-                        )
-                        active_manifest = normalized
-                    except (OSError, RemoteResourceError, URLError) as error:
-                        # Earlier resource switches are already valid. Keep
-                        # them active and leave the badge for this metadata
-                        # view retry instead of hiding the partial success.
-                        failures.append(ResourceSyncFailure("catalog", str(error) or error.__class__.__name__))
-            if not failures:
+                view_changed = True
+                self._notify_resource_applied(on_resource_applied, "catalog")
+            elif active_manifest is not None:
+                try:
+                    legacy_view = current_root is not None and current_root.resolve() == self.root.resolve()
+                except OSError:
+                    legacy_view = False
+                should_commit_catalog = legacy_view or not failures or bool(applied_resource_ids or removed_resource_ids)
+                if should_commit_catalog:
+                    normalized = _ordered_active_manifest(active_manifest, manifest)
+                    if normalized != active_manifest or legacy_view:
+                        try:
+                            current_root = self._commit_view(
+                                current_root,
+                                normalized,
+                                staging,
+                            )
+                            active_manifest = normalized
+                            view_changed = True
+                            self._notify_resource_applied(on_resource_applied, "catalog")
+                        except (OSError, RemoteResourceError, URLError) as error:
+                            # Earlier resource switches are already valid. Keep
+                            # them active and leave the badge for this metadata
+                            # view retry instead of hiding the partial success.
+                            failures.append(ResourceSyncFailure("catalog", str(error) or error.__class__.__name__))
+            if current_root is not None:
                 self._prune_old_versions(current_root)
+            if not failures:
                 progress.complete()
             return ResourceSyncResult(
                 manifest=manifest,
                 applied_resource_ids=tuple(applied_resource_ids),
                 removed_resource_ids=tuple(removed_resource_ids),
+                view_changed=view_changed,
                 failures=tuple(failures),
             )
         except RemoteResourceError:
@@ -341,6 +536,65 @@ class RemoteResourceCache:
             raise RemoteResourceError(f"无法提交远程资源缓存: {error}") from error
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+    @staticmethod
+    def _notify_resource_applied(
+        callback: Callable[[str], object] | None,
+        identifier: str,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(identifier)
+        except Exception:  # noqa: BLE001 - UI notification must not fail the sync.
+            LOGGER.exception("远程资源 %s 已提交，但无法通知应用刷新", identifier)
+
+    def _prepare_staging_root(self, staging: Path) -> None:
+        """Validate the staging directory and remove only stale run artifacts."""
+        self._cleanup_pointer_temps()
+        staging_root = self.root / "staging"
+        try:
+            if _is_link_like(staging_root):
+                raise RemoteResourceError("资源缓存 staging 目录不能是符号链接")
+            if staging_root.exists() and staging_root.resolve().parent != self.root.resolve():
+                raise RemoteResourceError("资源缓存 staging 目录路径无效")
+            staging_root.mkdir(parents=True, exist_ok=True)
+            now = time.time()
+            for candidate in staging_root.iterdir():
+                if candidate == staging or not re.fullmatch(r"[0-9a-f]{32}(?:\.zip)?", candidate.name):
+                    continue
+                try:
+                    if now - candidate.stat().st_mtime < _STAGING_RETENTION_SECONDS:
+                        continue
+                    if _is_link_like(candidate) or (candidate.is_dir() and _tree_contains_link(candidate)):
+                        continue
+                    resolved = candidate.resolve()
+                    if resolved.parent != staging_root.resolve():
+                        continue
+                    if candidate.is_dir():
+                        shutil.rmtree(candidate)
+                    else:
+                        candidate.unlink(missing_ok=True)
+                except (OSError, RuntimeError) as error:
+                    LOGGER.warning("无法清理旧资源 staging %s：%s", candidate, error)
+        except (OSError, RuntimeError) as error:
+            if isinstance(error, RemoteResourceError):
+                raise
+            raise RemoteResourceError(f"资源缓存 staging 路径无效: {error}") from error
+
+    def _cleanup_pointer_temps(self) -> None:
+        try:
+            if not self.root.is_dir() or _is_link_like(self.root):
+                return
+            now = time.time()
+            for candidate in self.root.glob(".current-*.tmp"):
+                if not re.fullmatch(r"\.current-[0-9a-f]{32}\.tmp", candidate.name):
+                    continue
+                if now - candidate.stat().st_mtime < _STAGING_RETENTION_SECONDS or _is_link_like(candidate):
+                    continue
+                candidate.unlink(missing_ok=True)
+        except (OSError, RuntimeError) as error:
+            LOGGER.warning("无法清理旧资源指针临时文件：%s", error)
 
     def fetch_manifest(self) -> ResourceManifest:
         """Fetch and validate only the catalog, without downloading its files."""
@@ -364,8 +618,11 @@ class RemoteResourceCache:
         current = self.load_current_manifest()
         if current is not None:
             return current
+        legacy_root = self._legacy_root()
+        if legacy_root is None:
+            return None
         try:
-            return ResourceManifest.from_bytes(self.manifest_path.read_bytes())
+            return ResourceManifest.from_bytes((legacy_root / "manifest.json").read_bytes())
         except (OSError, ManifestError):
             return None
 
@@ -374,31 +631,58 @@ class RemoteResourceCache:
         relative = file.path if isinstance(file, RemoteFile) else file
         if not _is_manifest_path(relative):
             raise ValueError("资源文件路径不安全")
-        return _join_relative(self.current_root or self.root, relative)
+        current = self.current_root
+        if current is None:
+            raise RemoteResourceError("没有可用的已验证资源缓存")
+        return _join_relative(current, relative)
 
     def _manifest_url(self) -> str:
         return f"{self.base_url}/v1/manifest.json"
 
-    def _file_url(self, path: str) -> str:
-        return f"{self.base_url}/v1/files/{quote(path, safe='/')}"
+    def _file_url(self, path: str, sha256: str | None = None) -> str:
+        url = f"{self.base_url}/v1/files/{quote(path, safe='/')}"
+        if sha256 is not None:
+            url += f"?sha256={quote(sha256, safe='')}"
+        return url
 
     def _archive_url(self) -> str:
         return f"{self.base_url}/v1/archive.zip"
 
     def _fetch_bytes(self, url: str) -> bytes:
-        request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "PetNest/0.1"})
-        try:
-            with self._opener(request, timeout=self.timeout) as response:
-                status = getattr(response, "status", 200)
-                if status is not None and status >= 400:
-                    raise RemoteResourceHTTPError(status, f"远程服务器返回 HTTP {status}")
-                return response.read()
-        except RemoteResourceError:
-            raise
-        except HTTPError as error:
-            raise RemoteResourceHTTPError(error.code, f"请求资源失败：HTTP {error.code}") from error
-        except (OSError, URLError) as error:
-            raise RemoteResourceError(f"请求资源失败: {error}") from error
+        last_error: RemoteResourceError | None = None
+        for attempt in range(self.retry_attempts):
+            request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "PetNest/0.1"})
+            try:
+                with self._opener(request, timeout=self.timeout) as response:
+                    status = getattr(response, "status", 200)
+                    if status is not None and status >= 400:
+                        raise RemoteResourceHTTPError(status, f"远程服务器返回 HTTP {status}")
+                    chunks: list[bytes] = []
+                    total = 0
+                    while True:
+                        chunk = response.read(min(_CHUNK_SIZE, MAX_MANIFEST_BYTES - total + 1))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_MANIFEST_BYTES:
+                            raise RemoteResourceError("manifest 响应超过允许大小")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+            except RemoteResourceHTTPError as error:
+                if error.status not in _RETRYABLE_HTTP_STATUSES:
+                    raise
+                last_error = error
+            except HTTPError as error:
+                wrapped = RemoteResourceHTTPError(error.code, f"请求资源失败：HTTP {error.code}")
+                if error.code not in _RETRYABLE_HTTP_STATUSES:
+                    raise wrapped from error
+                last_error = wrapped
+            except (OSError, URLError) as error:
+                last_error = RemoteResourceTransientError(f"请求资源失败: {error}")
+            if attempt + 1 < self.retry_attempts:
+                time.sleep(self.retry_delay * (2**attempt))
+        assert last_error is not None
+        raise last_error
 
     def _download_verified(self, remote_file: RemoteFile, target: Path) -> None:
         last_error: RemoteResourceError | None = None
@@ -419,7 +703,7 @@ class RemoteResourceCache:
 
     def _download_verified_once(self, remote_file: RemoteFile, target: Path) -> None:
         request = Request(
-            self._file_url(remote_file.path),
+            self._file_url(remote_file.path, remote_file.sha256),
             headers={"Accept": "application/octet-stream", "User-Agent": "PetNest/0.1"},
         )
         digest = hashlib.sha256()
@@ -434,6 +718,8 @@ class RemoteResourceCache:
                     chunk = response.read(_CHUNK_SIZE)
                     if not chunk:
                         break
+                    if total + len(chunk) > remote_file.size:
+                        raise RemoteResourceError(f"下载内容超过 manifest 声明大小: {remote_file.path}")
                     stream.write(chunk)
                     digest.update(chunk)
                     total += len(chunk)
@@ -464,6 +750,8 @@ class RemoteResourceCache:
             self._archive_url(),
             headers={"Accept": "application/zip", "User-Agent": "PetNest/0.1"},
         )
+        archive_limit = sum(remote_file.size for remote_file in manifest.files) + _ARCHIVE_OVERHEAD_LIMIT
+        archive_size = 0
         try:
             with self._opener(request, timeout=self.timeout) as response, archive_path.open("wb") as stream:
                 status = getattr(response, "status", 200)
@@ -473,6 +761,9 @@ class RemoteResourceCache:
                     chunk = response.read(_CHUNK_SIZE)
                     if not chunk:
                         break
+                    archive_size += len(chunk)
+                    if archive_size > archive_limit:
+                        raise RemoteResourceError("资源归档超过允许大小")
                     stream.write(chunk)
         except RemoteResourceError:
             archive_path.unlink(missing_ok=True)
@@ -488,7 +779,7 @@ class RemoteResourceCache:
             self._extract_archive(archive_path, staging, manifest)
             for remote_file in manifest.files:
                 progress.file_completed(remote_file.size)
-        except (BadZipFile, OSError, KeyError) as error:
+        except (BadZipFile, OSError, KeyError, RuntimeError, EOFError, ValueError, zlib.error) as error:
             raise RemoteResourceError(f"资源归档无效: {error}") from error
         finally:
             archive_path.unlink(missing_ok=True)
@@ -500,8 +791,11 @@ class RemoteResourceCache:
         manifest: ResourceManifest,
     ) -> None:
         with ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            if len(infos) > MAX_FILE_COUNT + 1024:
+                raise RemoteResourceError("资源归档条目数量超过允许上限")
             entries: dict[str, ZipInfo] = {}
-            for info in archive.infolist():
+            for info in infos:
                 if info.is_dir():
                     continue
                 relative = _archive_relative_path(info.filename)
@@ -513,18 +807,28 @@ class RemoteResourceCache:
                 info = entries.get(remote_file.path)
                 if info is None:
                     raise RemoteResourceError(f"资源归档缺少文件: {remote_file.path}")
+                if info.file_size > remote_file.size:
+                    raise RemoteResourceError(f"归档文件超过 manifest 声明大小: {remote_file.path}")
                 target = _join_relative(staging, remote_file.path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 digest = hashlib.sha256()
                 total = 0
-                with archive.open(info) as source, target.open("wb") as stream:
-                    while True:
-                        chunk = source.read(_CHUNK_SIZE)
-                        if not chunk:
-                            break
-                        stream.write(chunk)
-                        digest.update(chunk)
-                        total += len(chunk)
+                try:
+                    with archive.open(info) as source, target.open("wb") as stream:
+                        while True:
+                            chunk = source.read(_CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            if total + len(chunk) > remote_file.size:
+                                raise RemoteResourceError(
+                                    f"归档文件超过 manifest 声明大小: {remote_file.path}"
+                                )
+                            stream.write(chunk)
+                            digest.update(chunk)
+                            total += len(chunk)
+                except (OSError, RemoteResourceError):
+                    target.unlink(missing_ok=True)
+                    raise
                 if total != remote_file.size or digest.hexdigest() != remote_file.sha256:
                     target.unlink(missing_ok=True)
                     raise RemoteResourceError(f"归档中的文件校验失败: {remote_file.path}")
@@ -563,7 +867,7 @@ class RemoteResourceCache:
             source_is_seed = False
             if previous is not None and current_root is not None:
                 candidate = _join_relative(current_root, remote_file.path)
-                if _file_matches(candidate, remote_file):
+                if _cached_file_is_contained(current_root, candidate) and _file_matches(candidate, remote_file):
                     source = candidate
             if source is None:
                 candidate = _bundled_resource_path(self.seed_root, remote_file)
@@ -584,7 +888,11 @@ class RemoteResourceCache:
 
     @staticmethod
     def _resource_files_valid(root: Path | None, resource: RemoteResource) -> bool:
-        return root is not None and all(_file_matches(_join_relative(root, file.path), file) for file in resource.files)
+        return root is not None and all(
+            _cached_file_is_contained(root, _join_relative(root, file.path))
+            and _file_matches(_join_relative(root, file.path), file)
+            for file in resource.files
+        )
 
     @staticmethod
     def _remove_staged_resource(staging: Path, resource: RemoteResource) -> None:
@@ -611,7 +919,8 @@ class RemoteResourceCache:
                 view_staging.mkdir(parents=True, exist_ok=False)
             if old_resource is not None:
                 _remove_resource_from_tree(view_staging, old_resource)
-            _overlay_bundled_fallbacks(self.seed_root, view_staging)
+            _overlay_bundled_fallbacks(self.seed_root, view_staging, new_manifest)
+            _prune_unlisted_resource_files(view_staging, new_manifest, self.seed_root)
             if new_resource is not None:
                 for remote_file in new_resource.files:
                     source = _join_relative(staging, remote_file.path)
@@ -626,14 +935,19 @@ class RemoteResourceCache:
             manifest_path.unlink(missing_ok=True)
             manifest_path.write_bytes(manifest_payload)
             digest = hashlib.sha256(manifest_payload).hexdigest()
+            versions_root = self.versions_path
+            if _is_link_like(versions_root):
+                raise RemoteResourceError("资源缓存 versions 目录不能是符号链接")
+            versions_root.mkdir(parents=True, exist_ok=True)
+            if versions_root.resolve().parent != self.root.resolve():
+                raise RemoteResourceError("资源缓存 versions 目录路径无效")
             version_id = f"{new_manifest.catalog_version}-{digest[:12]}"
-            version_root = self.versions_path / version_id
+            version_root = versions_root / version_id
             if version_root.exists():
                 # Never delete an immutable view (it may still be selected by
                 # another process after a crash); use a fresh id instead.
                 version_id = f"{new_manifest.catalog_version}-{hashlib.sha256(manifest_payload + uuid.uuid4().bytes).hexdigest()[:12]}"
-                version_root = self.versions_path / version_id
-            self.versions_path.mkdir(parents=True, exist_ok=True)
+                version_root = versions_root / version_id
             view_staging.replace(version_root)
             self._write_pointer(
                 {
@@ -668,17 +982,26 @@ class RemoteResourceCache:
             return
         versions_root = self.versions_path
         try:
+            root_resolved = self.root.resolve()
             versions_resolved = versions_root.resolve()
             active_resolved = active_root.resolve()
             if (
-                active_root.is_symlink()
+                _is_link_like(versions_root)
+                or not versions_root.is_dir()
+                or versions_resolved.parent != root_resolved
+                or _is_link_like(active_root)
                 or not active_root.is_dir()
                 or active_resolved.parent != versions_resolved
             ):
                 return
             candidates: list[tuple[int, Path]] = []
             for candidate in versions_root.iterdir():
-                if candidate.is_symlink() or not candidate.is_dir() or not _VERSION_ID.fullmatch(candidate.name):
+                if (
+                    _is_link_like(candidate)
+                    or not candidate.is_dir()
+                    or not _VERSION_ID.fullmatch(candidate.name)
+                    or _tree_contains_link(candidate)
+                ):
                     continue
                 try:
                     candidates.append((candidate.stat().st_mtime_ns, candidate))
@@ -694,7 +1017,7 @@ class RemoteResourceCache:
                 if candidate.name in keep:
                     continue
                 try:
-                    if candidate.resolve().parent != versions_resolved:
+                    if _is_link_like(candidate) or candidate.resolve().parent != versions_resolved:
                         continue
                     shutil.rmtree(candidate)
                 except (OSError, RuntimeError) as error:
@@ -722,28 +1045,72 @@ def _clone_active_view(source: Path, cache_root: Path, target: Path) -> None:
         _copy_file(source_manifest, target / "manifest.json")
 
 
-def _overlay_bundled_fallbacks(seed_root: Path | None, target: Path) -> None:
+def _overlay_bundled_fallbacks(
+    seed_root: Path | None,
+    target: Path,
+    manifest: ResourceManifest,
+) -> None:
     """Keep trusted bundled defaults visible for resources not yet applied."""
     if seed_root is None:
         return
-    mappings = (
-        (seed_root / "assets" / "cursors", target / "resources" / "cursors"),
-        (seed_root / "assets" / "countdown", target / "resources" / "countdown"),
-        (seed_root / "effects", target / "resources" / "effects"),
-    )
-    for source_root, target_root in mappings:
+    remote_paths = {_resource_path_key(remote_file.path) for remote_file in manifest.files}
+    for source_root, category in _bundled_seed_mappings(seed_root):
+        target_root = target / "resources" / category
         if not source_root.is_dir():
             continue
         for source in source_root.rglob("*"):
             if not source.is_file():
                 continue
             destination = target_root / source.relative_to(source_root)
-            if destination.exists():
+            relative = destination.relative_to(target).as_posix()
+            if destination.exists() and _resource_path_key(relative) in remote_paths:
                 continue
             try:
                 _copy_file_contents(source, destination)
             except OSError:
                 LOGGER.warning("无法写入默认资源回退文件：%s", destination, exc_info=True)
+
+
+def _prune_unlisted_resource_files(target: Path, manifest: ResourceManifest, seed_root: Path | None) -> None:
+    """Remove stale cache files while retaining manifest and bundled fallback files."""
+    resources_root = target / "resources"
+    if not resources_root.is_dir():
+        return
+    allowed = {_resource_path_key(file.path) for file in manifest.files}
+    if seed_root is not None:
+        for source_root, category in _bundled_seed_mappings(seed_root):
+            if not source_root.is_dir():
+                continue
+            allowed.update(
+                _resource_path_key(f"resources/{category}/{source.relative_to(source_root).as_posix()}")
+                for source in source_root.rglob("*")
+                if source.is_file()
+            )
+    try:
+        for candidate in sorted(resources_root.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if not candidate.is_file():
+                continue
+            if _resource_path_key(candidate.relative_to(target).as_posix()) not in allowed:
+                candidate.unlink(missing_ok=True)
+        for directory in sorted(
+            (path for path in resources_root.rglob("*") if path.is_dir()),
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RemoteResourceError(f"无法清理旧资源文件: {error}") from error
+
+
+def _bundled_seed_mappings(seed_root: Path) -> tuple[tuple[Path, str], ...]:
+    return (
+        (seed_root / "assets" / "cursors", "cursors"),
+        (seed_root / "assets" / "countdown", "countdown"),
+        (seed_root / "effects", "effects"),
+    )
 
 
 def _link_or_copy(source: str, target: str) -> None:
@@ -769,6 +1136,24 @@ def _copy_file_contents(source: Path, target: Path) -> None:
     shutil.copyfile(source, target)
 
 
+def _files_equal(left: Path, right: Path) -> bool:
+    try:
+        return left.is_file() and right.is_file() and filecmp.cmp(left, right, shallow=False)
+    except OSError:
+        return False
+
+
+def _is_link_like(path: Path) -> bool:
+    """Reject symlinks and Windows junctions before destructive operations."""
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction is not None and is_junction())
+    except OSError:
+        return True
+
+
 def _remove_resource_from_tree(root: Path, resource: RemoteResource) -> None:
     for remote_file in resource.files:
         target = _join_relative(root, remote_file.path)
@@ -784,8 +1169,12 @@ def _remove_staged_files(staging: Path, remote_files: tuple[RemoteFile, ...]) ->
 
 
 def _prune_empty_parents(directory: Path, stop: Path) -> None:
-    current = directory
-    stop = stop.resolve()
+    try:
+        stop = stop.resolve()
+        current = directory.resolve()
+        current.relative_to(stop)
+    except (OSError, RuntimeError, ValueError):
+        return
     while current != stop and current != current.parent:
         try:
             current.rmdir()
@@ -839,6 +1228,13 @@ def _is_manifest_path(path: str) -> bool:
         all(part not in {"", ".", ".."} for part in parts)
         and Path(*parts).as_posix() == path
     )
+
+
+def _resource_path_key(path: str) -> str:
+    """Normalize paths for overlay/prune comparisons on Windows."""
+    if os.name != "nt":
+        return path
+    return "/".join(part.rstrip(" .").casefold() for part in path.split("/"))
 
 
 def _archive_relative_path(name: str) -> str | None:
@@ -897,7 +1293,7 @@ def _join_relative(root: Path, path: str) -> Path:
 
 def _file_matches(path: Path, remote_file: RemoteFile) -> bool:
     try:
-        if not path.is_file() or path.stat().st_size != remote_file.size:
+        if _is_link_like(path) or not path.is_file() or path.stat().st_size != remote_file.size:
             return False
         digest = hashlib.sha256()
         with path.open("rb") as stream:
@@ -909,6 +1305,28 @@ def _file_matches(path: Path, remote_file: RemoteFile) -> bool:
         return digest.hexdigest() == remote_file.sha256
     except OSError:
         return False
+
+
+def _cached_file_is_contained(root: Path, path: Path) -> bool:
+    """Ensure a cached file and every parent stay inside the selected view."""
+    try:
+        root_resolved = root.resolve()
+        path.resolve().relative_to(root_resolved)
+        current = path
+        while current != root:
+            if _is_link_like(current):
+                return False
+            current = current.parent
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _tree_contains_link(root: Path) -> bool:
+    try:
+        return any(_is_link_like(item) for item in root.rglob("*"))
+    except (OSError, RuntimeError):
+        return True
 
 
 def _bundled_resource_path(seed_root: Path | None, remote_file: RemoteFile) -> Path | None:
