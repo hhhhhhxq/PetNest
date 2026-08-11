@@ -185,6 +185,8 @@ def test_tray_resource_update_action_shows_and_clears_blue_badge(
     application.tray.set_resource_update_loading(True)
     assert not application.tray.resource_update_action.isEnabled()
     assert "正在下载" in application.tray.resource_update_action.text()
+    application.tray.set_resource_update_progress(43)
+    assert "43%" in application.tray.resource_update_action.text()
     application.tray.set_resource_update_loading(False)
     assert application.tray.resource_update_action.isEnabled()
     application.shutdown()

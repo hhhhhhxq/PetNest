@@ -148,6 +148,13 @@ class PetTrayIcon(QSystemTrayIcon):
         self.resource_update_action.setIcon(_loading_icon(self._resource_loading_phase))
         self._resource_loading_timer.start()
 
+    def set_resource_update_progress(self, progress: int) -> None:
+        """更新下载百分比；只有 loading 状态才改变动作文案。"""
+        if not self._resource_update_loading:
+            return
+        percentage = max(0, min(100, int(progress)))
+        self.resource_update_action.setText(f"正在下载资源（{percentage}%）…")
+
     def _toggle_visibility(self) -> None:
         if self.window.isVisible():
             self.window.hide()

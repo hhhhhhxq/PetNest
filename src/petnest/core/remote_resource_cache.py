@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 import re
 import shutil
+from threading import Lock
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -23,6 +25,7 @@ from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, Res
 LOGGER = logging.getLogger(__name__)
 _CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_WORKERS = 8
+_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 class RemoteResourceError(RuntimeError):
@@ -35,6 +38,10 @@ class RemoteResourceHTTPError(RemoteResourceError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+class RemoteResourceTransientError(RemoteResourceError):
+    """A network error that is safe to retry for one resource file."""
 
 
 class RemoteResourceCache:
@@ -52,6 +59,8 @@ class RemoteResourceCache:
         *,
         timeout: float = 20.0,
         opener: Callable[..., Any] | None = None,
+        retry_attempts: int = 3,
+        retry_delay: float = 0.5,
     ) -> None:
         normalized = base_url.strip().rstrip("/")
         if not normalized:
@@ -60,6 +69,12 @@ class RemoteResourceCache:
         self.base_url = normalized
         self.timeout = timeout
         self._opener = opener or urlopen
+        if retry_attempts < 1:
+            raise ValueError("retry_attempts 必须至少为 1")
+        if retry_delay < 0:
+            raise ValueError("retry_delay 不能为负数")
+        self.retry_attempts = retry_attempts
+        self.retry_delay = retry_delay
 
     @property
     def manifest_path(self) -> Path:
@@ -96,7 +111,7 @@ class RemoteResourceCache:
         except (OSError, ManifestError):
             return None
 
-    def sync(self) -> ResourceManifest:
+    def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest:
         """Fetch and verify a complete catalog before committing it locally."""
         try:
             manifest_payload = self._fetch_bytes(self._manifest_url())
@@ -108,12 +123,13 @@ class RemoteResourceCache:
 
         version_digest = hashlib.sha256(manifest_payload).hexdigest()
         version_id = f"{manifest.catalog_version}-{version_digest[:12]}"
+        progress_reporter = _ProgressReporter(sum(file.size for file in manifest.files), progress)
         staging = self.root / "staging" / uuid.uuid4().hex
         version_root = self.versions_path / version_id
         try:
             staging.mkdir(parents=True, exist_ok=False)
             try:
-                self._download_archive(staging, manifest)
+                self._download_archive(staging, manifest, progress_reporter)
             except RemoteResourceHTTPError as error:
                 if error.status != 404:
                     raise
@@ -121,7 +137,8 @@ class RemoteResourceCache:
                 # this fallback so clients can update before the archive route
                 # is deployed, while the archive route avoids hundreds of API
                 # round trips for new installations.
-                self._download_manifest_files(manifest, staging)
+                self._download_manifest_files(manifest, staging, progress_reporter)
+            progress_reporter.complete()
 
             staging_manifest = staging / "manifest.json"
             staging_manifest.write_bytes(manifest_payload)
@@ -204,6 +221,23 @@ class RemoteResourceCache:
             raise RemoteResourceError(f"请求资源失败: {error}") from error
 
     def _download_verified(self, remote_file: RemoteFile, target: Path) -> None:
+        last_error: RemoteResourceError | None = None
+        for attempt in range(self.retry_attempts):
+            try:
+                self._download_verified_once(remote_file, target)
+                return
+            except RemoteResourceHTTPError as error:
+                if error.status not in _RETRYABLE_HTTP_STATUSES:
+                    raise
+                last_error = error
+            except RemoteResourceTransientError as error:
+                last_error = error
+            if attempt + 1 < self.retry_attempts:
+                time.sleep(self.retry_delay * (2**attempt))
+        assert last_error is not None
+        raise last_error
+
+    def _download_verified_once(self, remote_file: RemoteFile, target: Path) -> None:
         request = Request(
             self._file_url(remote_file.path),
             headers={"Accept": "application/octet-stream", "User-Agent": "PetNest/0.1"},
@@ -231,7 +265,7 @@ class RemoteResourceCache:
             raise RemoteResourceHTTPError(error.code, f"下载 {remote_file.path} 失败：HTTP {error.code}") from error
         except (OSError, URLError) as error:
             target.unlink(missing_ok=True)
-            raise RemoteResourceError(f"下载 {remote_file.path} 失败: {error}") from error
+            raise RemoteResourceTransientError(f"下载 {remote_file.path} 失败: {error}") from error
 
         actual_digest = digest.hexdigest()
         if total != remote_file.size:
@@ -243,7 +277,7 @@ class RemoteResourceCache:
             target.unlink(missing_ok=True)
             raise RemoteResourceError(f"sha256 校验失败: {remote_file.path}")
 
-    def _download_archive(self, staging: Path, manifest: ResourceManifest) -> None:
+    def _download_archive(self, staging: Path, manifest: ResourceManifest, progress: "_ProgressReporter") -> None:
         """下载 Worker 提供的 GitHub zipball，并按 manifest 解包校验。"""
         archive_path = staging.parent / f"{staging.name}.zip"
         request = Request(
@@ -271,13 +305,19 @@ class RemoteResourceCache:
             raise RemoteResourceError(f"下载资源归档失败: {error}") from error
 
         try:
-            self._extract_archive(archive_path, staging, manifest)
+            self._extract_archive(archive_path, staging, manifest, progress)
         except (BadZipFile, OSError, KeyError) as error:
             raise RemoteResourceError(f"资源归档无效: {error}") from error
         finally:
             archive_path.unlink(missing_ok=True)
 
-    def _extract_archive(self, archive_path: Path, staging: Path, manifest: ResourceManifest) -> None:
+    def _extract_archive(
+        self,
+        archive_path: Path,
+        staging: Path,
+        manifest: ResourceManifest,
+        progress: "_ProgressReporter",
+    ) -> None:
         with ZipFile(archive_path) as archive:
             entries: dict[str, ZipInfo] = {}
             for info in archive.infolist():
@@ -307,8 +347,14 @@ class RemoteResourceCache:
                 if total != remote_file.size or digest.hexdigest() != remote_file.sha256:
                     target.unlink(missing_ok=True)
                     raise RemoteResourceError(f"归档中的文件校验失败: {remote_file.path}")
+                progress.file_completed(remote_file.size)
 
-    def _download_manifest_files(self, manifest: ResourceManifest, staging: Path) -> None:
+    def _download_manifest_files(
+        self,
+        manifest: ResourceManifest,
+        staging: Path,
+        progress: "_ProgressReporter",
+    ) -> None:
         """并行下载互不相交的文件，仍在全部完成后才提交版本指针。"""
         if not manifest.files:
             return
@@ -318,8 +364,9 @@ class RemoteResourceCache:
                 executor.submit(self._download_verified, remote_file, _join_relative(staging, remote_file.path))
                 for remote_file in manifest.files
             ]
-            for future in futures:
+            for remote_file, future in zip(manifest.files, futures, strict=True):
                 future.result()
+                progress.file_completed(remote_file.size)
 
     def _write_pointer(self, payload: dict[str, object]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -353,6 +400,37 @@ def _archive_relative_path(name: str) -> str | None:
     else:
         return None
     return candidate if _is_manifest_path(candidate) else None
+
+
+class _ProgressReporter:
+    """将已校验文件字节数转换为最多 101 次的单调百分比通知。"""
+
+    def __init__(self, total: int, callback: Callable[[int], object] | None) -> None:
+        self._total = max(0, total)
+        self._callback = callback
+        self._completed = 0
+        self._last = -1
+        self._lock = Lock()
+
+    def file_completed(self, size: int) -> None:
+        if self._callback is None:
+            return
+        with self._lock:
+            self._completed += max(0, size)
+            percentage = 100 if self._total == 0 else min(100, self._completed * 100 // self._total)
+            if percentage == self._last:
+                return
+            self._last = percentage
+        self._callback(percentage)
+
+    def complete(self) -> None:
+        if self._callback is None:
+            return
+        with self._lock:
+            if self._last == 100:
+                return
+            self._last = 100
+        self._callback(100)
 
 
 _VERSION_ID = re.compile(r"^\d+\.\d+\.\d+-[0-9a-f]{12}$")

@@ -219,6 +219,60 @@ def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: 
     assert (cache.current_root / relative).read_bytes() == content
 
 
+def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
+    first = b"first cursor bytes"
+    second = b"second cursor bytes, a little longer"
+    first_path = "resources/cursors/demo/arrow.cur"
+    second_path = "resources/cursors/demo/busy.cur"
+    manifest_bytes = _manifest([_payload(first_path, first), _payload(second_path, second)])
+    progress: list[int] = []
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        if request.full_url.endswith("/arrow.cur"):
+            return _Response(first)
+        assert request.full_url.endswith("/busy.cur")
+        return _Response(second)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+
+    cache.sync(progress=progress.append)
+
+    assert progress
+    assert progress[-1] == 100
+    assert progress == sorted(progress)
+
+
+def test_sync_retries_transient_file_gateway_errors(tmp_path: Path) -> None:
+    content = b"retryable cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    manifest_bytes = _manifest([_payload(relative, content)])
+    attempts = 0
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        nonlocal attempts
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            return _Response(b"", status=404)
+        attempts += 1
+        if attempts == 1:
+            raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+        return _Response(content)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, retry_delay=0)
+
+    cache.sync()
+
+    assert attempts == 2
+    assert cache.current_root is not None
+
+
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:
     cache = RemoteResourceCache(tmp_path, "https://resources.example")
 

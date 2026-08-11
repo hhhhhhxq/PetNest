@@ -18,7 +18,7 @@ class _ResourceCache(Protocol):
 
     def load_current_manifest(self) -> ResourceManifest | None: ...
 
-    def sync(self) -> ResourceManifest: ...
+    def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +117,11 @@ class RemoteResourceUpdateCoordinator:
         self._save_state()
         return RemoteResourceCheckResult(True, False, self.update_available, remote.catalog_version)
 
-    def apply(self) -> RemoteResourceApplyResult:
+    def apply(self, *, progress: Callable[[int], object] | None = None) -> RemoteResourceApplyResult:
         if not self.update_available:
             return RemoteResourceApplyResult(False, self.state.remote_catalog_version)
         try:
-            manifest = self.cache.sync()
+            manifest = self.cache.sync(progress=progress) if progress is not None else self.cache.sync()
         except Exception as error:  # noqa: BLE001 - retain the badge for a retry.
             message = str(error) or error.__class__.__name__
             self.state = self._replace(last_error=message, update_available=True)

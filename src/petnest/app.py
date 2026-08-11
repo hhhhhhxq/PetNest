@@ -515,12 +515,15 @@ class PetNest:
         )
         self._resource_worker = worker
         if self.tray is not None:
-            self.tray.set_resource_update_loading(True, message="正在下载资源…")
+            self.tray.set_resource_update_loading(True, message="正在下载资源（0%）…")
         worker.start()
 
     def _resource_apply_worker(self) -> None:
+        def report_progress(progress: int) -> None:
+            self._resource_results.put(("progress", False, progress))
+
         try:
-            result = self.remote_resource_update.apply()
+            result = self.remote_resource_update.apply(progress=report_progress)
         except Exception as error:  # noqa: BLE001 - failed update is reported in the UI.
             LOGGER.exception("远程资源更新线程异常")
             result = RemoteResourceApplyResult(False, error=str(error))
@@ -546,6 +549,12 @@ class PetNest:
                 self._handle_resource_check_result(payload, manual=manual)
             elif kind == "apply" and isinstance(payload, RemoteResourceApplyResult):
                 self._handle_resource_apply_result(payload)
+            elif kind == "progress" and isinstance(payload, int):
+                self._handle_resource_progress(payload)
+
+    def _handle_resource_progress(self, progress: int) -> None:
+        if self.tray is not None:
+            self.tray.set_resource_update_progress(progress)
 
     def _handle_resource_check_result(self, result: RemoteResourceCheckResult, *, manual: bool) -> None:
         if self.tray is not None:
