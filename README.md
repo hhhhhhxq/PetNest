@@ -2,7 +2,7 @@
 
 PetNest 是一个基于 Python 3.12+ 与 PySide6 的跨平台轻量桌面宠物播放器。它播放由 `pet.json` 配置的透明 PNG 序列帧，不绑定特定角色、AI 工具或素材风格。
 
-目前以 Windows 10/11 为主要目标；macOS 已支持基础桌宠运行和自定义普通箭头，并在 macOS 实机完成开发环境验证。Linux 会安全降级，便于后续扩展。
+目前以 Windows 10/11 为主要目标；macOS 已支持基础桌宠运行和自定义系统光标，并在 macOS 实机完成开发环境验证。Linux 会安全降级，便于后续扩展。
 
 ## 当前功能与边界
 
@@ -10,8 +10,8 @@ PetNest 是一个基于 Python 3.12+ 与 PySide6 的跨平台轻量桌面宠物�
 - 宠物旁可显示工作日上下班倒计时；可在设置中开关并调整上下班时间。
 - 宠物包自动校验、扫描、切换与重新加载；随项目提供 Pillow 生成的 `sample_pet`。
 - 系统托盘提供显示/隐藏、暂停、切换宠物、导入精灵图、逐动作时长编辑、重新加载、设置和退出。
-- 鼠标样式可在 Windows 替换主题包含的系统光标；macOS 通过 WindowServer 光标注册表替换全局普通箭头，文本、忙碌和缩放等角色仍保留系统默认，并在关闭功能或退出时恢复此前的系统箭头。
-- macOS 原生箭头实现参考 [Mousecape](https://github.com/alexzielenski/Mousecape) 的公开架构，依赖未公开的 WindowServer 接口；当前已在 macOS 15.7.7 验证，系统升级后仍需重新做替换与恢复测试。
+- 鼠标样式可在 Windows 和 macOS 替换主题包含的普通箭头、文本、忙碌、移动及缩放光标；macOS 通过 WindowServer 光标注册表原生替换，并在关闭功能或退出时恢复此前的系统样式。
+- macOS 原生光标实现参考 [Mousecape](https://github.com/alexzielenski/Mousecape) 的公开架构，依赖未公开的 WindowServer 接口；当前已在 macOS 15.7.7 验证，系统升级后仍需重新做替换与恢复测试。
 - 本机 TCP 事件接口只监听 `127.0.0.1`，支持 `agent.working`、`agent.success` 等通用事件。
 - 第一阶段不实现自动行走、重力、多宠物、在线商店、账户或云同步。
 - 已实现应用内部的透明 alpha 命中判断；**系统级按像素点击穿透尚未实现**，不要将它视作安全或无干扰的输入方案。

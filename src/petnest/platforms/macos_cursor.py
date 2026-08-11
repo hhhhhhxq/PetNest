@@ -1,4 +1,4 @@
-"""macOS 系统普通箭头的原生注册与可恢复替换。"""
+"""macOS 系统光标角色的原生注册与可恢复替换。"""
 
 from __future__ import annotations
 
@@ -19,52 +19,74 @@ _APPLICATION_SERVICES_PATH = "/System/Library/Frameworks/ApplicationServices.fra
 _CORE_FOUNDATION_PATH = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
 _IMAGE_IO_PATH = "/System/Library/Frameworks/ImageIO.framework/ImageIO"
 _CG_SUCCESS = 0
-_ARROW_IDENTIFIER = b"com.apple.coregraphics.Arrow"
-_BACKUP_IDENTIFIER = b"com.petnest.cursorbackup.com.apple.coregraphics.Arrow"
+_ROLE_IDENTIFIERS = {
+    "arrow": b"com.apple.coregraphics.Arrow",
+    "text": b"com.apple.coregraphics.IBeam",
+    "busy": b"com.apple.cursor.4",
+    "move": b"com.apple.coregraphics.Move",
+    "resize_horizontal": b"com.apple.cursor.19",
+    "resize_vertical": b"com.apple.cursor.23",
+    "resize_diag_1": b"com.apple.cursor.34",
+    "resize_diag_2": b"com.apple.cursor.30",
+}
+_CORE_CURSOR_IDS = {
+    "busy": 4,
+    "resize_horizontal": 19,
+    "resize_vertical": 23,
+    "resize_diag_1": 34,
+    "resize_diag_2": 30,
+}
+_BACKUP_PREFIX = b"com.petnest.cursorbackup."
 
 
 class _MacCursorApi(Protocol):
-    def apply_arrow(self, cursor_path: Path) -> bool: ...
+    def apply_role(self, role: str, cursor_path: Path) -> bool: ...
 
-    def restore_arrow(self) -> bool: ...
+    def restore_role(self, role: str) -> bool: ...
+
+    def restore_roles(self) -> bool: ...
 
 
 class MacOSCursorController:
-    """通过 WindowServer 注册表替换普通箭头，不绘制额外光标。"""
+    """通过 WindowServer 注册表替换系统光标，不绘制额外光标。"""
 
-    supported_roles = frozenset({"arrow"})
+    supported_roles = frozenset(_ROLE_IDENTIFIERS)
 
     def __init__(self, *, api: _MacCursorApi | None = None, platform: str | None = None) -> None:
         self._platform = platform or sys.platform
         self._api = api
 
     def apply(self, cursor_path: Path) -> bool:
-        if self._platform != "darwin":
-            return False
-        try:
-            return self._get_api().apply_arrow(cursor_path)
-        except (OSError, RuntimeError, ValueError):
-            LOGGER.warning("无法应用 macOS 普通箭头样式：%s", cursor_path, exc_info=True)
-            return False
+        return self.apply_role("arrow", cursor_path)
 
     def apply_role(self, role: str, cursor_path: Path) -> bool:
-        return self.apply(cursor_path) if role == "arrow" else False
+        if self._platform != "darwin" or role not in _ROLE_IDENTIFIERS:
+            return False
+        try:
+            return self._get_api().apply_role(role, cursor_path)
+        except (OSError, RuntimeError, ValueError):
+            LOGGER.warning("无法应用 macOS 光标角色 %s：%s", role, cursor_path, exc_info=True)
+            return False
 
     def restore_normal(self) -> bool:
         return self.restore_system_defaults()
 
     def restore_role(self, role: str) -> bool:
-        if role != "arrow":
-            return True
-        return self.restore_system_defaults()
+        if self._platform != "darwin" or role not in _ROLE_IDENTIFIERS:
+            return False
+        try:
+            return self._get_api().restore_role(role)
+        except (OSError, RuntimeError, ValueError):
+            LOGGER.warning("无法恢复 macOS 系统光标角色：%s", role, exc_info=True)
+            return False
 
     def restore_system_defaults(self) -> bool:
         if self._platform != "darwin":
             return False
         try:
-            return self._get_api().restore_arrow()
+            return self._get_api().restore_roles()
         except (OSError, RuntimeError, ValueError):
-            LOGGER.warning("无法恢复 macOS 系统箭头", exc_info=True)
+            LOGGER.warning("无法恢复 macOS 系统光标", exc_info=True)
             return False
 
     def _get_api(self) -> _MacCursorApi:
@@ -105,48 +127,73 @@ class _CtypesMacCursorApi:
         self._declare_functions()
         self._connection = int(self._application_services.CGSMainConnectionID())
 
-    def apply_arrow(self, cursor_path: Path) -> bool:
+    def apply_role(self, role: str, cursor_path: Path) -> bool:
+        identifier = _ROLE_IDENTIFIERS.get(role)
+        if identifier is None:
+            return False
         custom = self._cursor_from_file(cursor_path)
         if custom is None:
             return False
         try:
-            if not self._ensure_backup():
+            if not self._ensure_backup(role):
                 return False
-            if self._register(_ARROW_IDENTIFIER, custom, instantly=True):
+            if self._register(identifier, custom, instantly=True):
                 return True
-            self.restore_arrow()
+            self.restore_role(role)
             return False
         finally:
             self._release_cursor(custom)
 
-    def restore_arrow(self) -> bool:
-        backup = self._copy_registered(_BACKUP_IDENTIFIER)
+    def restore_role(self, role: str) -> bool:
+        identifier = _ROLE_IDENTIFIERS.get(role)
+        if identifier is None:
+            return False
+        backup_identifier = self._backup_identifier(identifier)
+        backup = self._copy_registered(backup_identifier)
         if backup is None:
             return True
         try:
-            if not self._register(_ARROW_IDENTIFIER, backup, instantly=True):
+            if not self._register(identifier, backup, instantly=True):
                 return False
             removed = self._application_services.CGSRemoveRegisteredCursor(
                 self._connection,
-                _BACKUP_IDENTIFIER,
+                backup_identifier,
                 True,
             )
             return removed == _CG_SUCCESS
         finally:
             self._release_cursor(backup)
 
-    def _ensure_backup(self) -> bool:
-        existing_backup = self._copy_registered(_BACKUP_IDENTIFIER)
+    def restore_roles(self) -> bool:
+        restored = True
+        for role in _ROLE_IDENTIFIERS:
+            restored = self.restore_role(role) and restored
+        return restored
+
+    def _ensure_backup(self, role: str) -> bool:
+        identifier = _ROLE_IDENTIFIERS[role]
+        backup_identifier = self._backup_identifier(identifier)
+        existing_backup = self._copy_registered(backup_identifier)
         if existing_backup is not None:
             self._release_cursor(existing_backup)
             return True
-        current = self._copy_registered(_ARROW_IDENTIFIER)
+        current = self._copy_current(role)
         if current is None:
             return False
         try:
-            return self._register(_BACKUP_IDENTIFIER, current, instantly=False)
+            return self._register(backup_identifier, current, instantly=False)
         finally:
             self._release_cursor(current)
+
+    def _copy_current(self, role: str) -> _RegisteredCursor | None:
+        core_cursor_id = _CORE_CURSOR_IDS.get(role)
+        if core_cursor_id is not None:
+            return self._copy_core_cursor(core_cursor_id)
+        return self._copy_registered(_ROLE_IDENTIFIERS[role])
+
+    @staticmethod
+    def _backup_identifier(identifier: bytes) -> bytes:
+        return _BACKUP_PREFIX + identifier
 
     def _copy_registered(self, identifier: bytes) -> _RegisteredCursor | None:
         size = _CGSize()
@@ -162,6 +209,34 @@ class _CtypesMacCursorApi:
             ctypes.byref(frame_count),
             ctypes.byref(frame_duration),
             ctypes.byref(images),
+        )
+        if error != _CG_SUCCESS or not images.value or frame_count.value < 1:
+            if images.value:
+                self._core_foundation.CFRelease(images)
+            return None
+        return _RegisteredCursor(
+            size,
+            hotspot,
+            int(frame_count.value),
+            float(frame_duration.value),
+            int(images.value),
+            (int(images.value),),
+        )
+
+    def _copy_core_cursor(self, cursor_id: int) -> _RegisteredCursor | None:
+        size = _CGSize()
+        hotspot = _CGPoint()
+        frame_count = ctypes.c_ulong()
+        frame_duration = ctypes.c_double()
+        images = ctypes.c_void_p()
+        error = self._application_services.CoreCursorCopyImages(
+            self._connection,
+            cursor_id,
+            ctypes.byref(images),
+            ctypes.byref(size),
+            ctypes.byref(hotspot),
+            ctypes.byref(frame_count),
+            ctypes.byref(frame_duration),
         )
         if error != _CG_SUCCESS or not images.value or frame_count.value < 1:
             if images.value:
@@ -269,6 +344,16 @@ class _CtypesMacCursorApi:
         ]
         app.CGSRemoveRegisteredCursor.restype = ctypes.c_int32
         app.CGSRemoveRegisteredCursor.argtypes = [ctypes.c_int32, ctypes.c_char_p, ctypes.c_bool]
+        app.CoreCursorCopyImages.restype = ctypes.c_int32
+        app.CoreCursorCopyImages.argtypes = [
+            ctypes.c_int32,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(_CGSize),
+            ctypes.POINTER(_CGPoint),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_double),
+        ]
         cf = self._core_foundation
         cf.CFDataCreate.restype = ctypes.c_void_p
         cf.CFDataCreate.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long]
