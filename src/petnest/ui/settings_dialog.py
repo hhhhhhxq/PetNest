@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections.abc import Callable
 
 from PySide6.QtCore import QTime
 from PySide6.QtWidgets import (
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QSpinBox,
     QTimeEdit,
+    QPushButton,
     QWidget,
 )
 
@@ -24,7 +26,13 @@ from petnest.models.settings import Settings
 class SettingsDialog(QDialog):
     """编辑可由应用层持久化的 ``Settings``，不直接写磁盘。"""
 
-    def __init__(self, settings: Settings, parent: QDialog | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        parent: QDialog | None = None,
+        *,
+        on_check_app_update: Callable[[], object] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("PetNest 设置")
         self._settings = settings
@@ -111,6 +119,11 @@ class SettingsDialog(QDialog):
             row_layout.addWidget(end_input)
             self.daily_work_inputs[key] = (enabled_input, end_input)
             layout.addRow(f"{name}下班", row)
+        if on_check_app_update is not None:
+            self.app_update_button = QPushButton("检查程序更新…", self)
+            self.app_update_button.setToolTip("从 PetNest GitHub Releases 检查新的安装包")
+            self.app_update_button.clicked.connect(on_check_app_update)
+            layout.addRow("程序版本", self.app_update_button)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)

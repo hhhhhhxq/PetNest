@@ -11,6 +11,7 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMessageBox
 
+from . import __version__
 from .app import PetNest
 from .logging_config import configure_logging
 from .core.settings_manager import SettingsManager
@@ -36,7 +37,7 @@ def main(arguments: list[str] | None = None) -> int:
     # macOS 在 QApplication 构造期间创建全局应用菜单，所以名称必须在
     # QApplication 之前设置，否则菜单会沿用 python / __main__.py。
     QCoreApplication.setApplicationName("PetNest")
-    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setApplicationVersion(__version__)
     QCoreApplication.setOrganizationName("PetNest")
     application = QApplication(sys.argv)
     application.setApplicationDisplayName("PetNest")
