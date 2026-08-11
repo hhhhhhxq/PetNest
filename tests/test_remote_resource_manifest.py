@@ -76,6 +76,26 @@ def test_rejects_duplicate_resource_ids_and_invalid_hashes() -> None:
         ResourceManifest.from_dict(invalid_hash)
 
 
+def test_rejects_file_path_prefix_conflicts() -> None:
+    parent = _resource(files=[_file("resources/effects/demo")])
+    child = _resource(
+        "other",
+        "interaction_effect",
+        files=[_file("resources/effects/demo/frame.png")],
+    )
+
+    with pytest.raises(ManifestError, match="父路径"):
+        ResourceManifest.from_dict(_manifest(parent, child))
+
+    nested = _manifest(
+        _resource(files=[_file("resources/a")]),
+        _resource("other", "interaction_effect", files=[_file("resources/a/b")]),
+        _resource("third", "interaction_effect", files=[_file("resources/a-b")]),
+    )
+    with pytest.raises(ManifestError, match="父路径"):
+        ResourceManifest.from_dict(nested)
+
+
 def test_json_round_trip_preserves_catalog() -> None:
     raw = _manifest(_resource("demo", "countdown_background"))
 

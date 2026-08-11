@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from petnest.core.remote_resource_cache import ResourceSyncFailure, ResourceSyncResult
 from petnest.core.remote_resource_manifest import ResourceManifest
 from petnest.core.remote_resource_update import RemoteResourceUpdateCoordinator
 
@@ -49,6 +50,22 @@ class _FakeCache:
             raise RuntimeError("offline")
         self.current = self.remote
         return self.remote
+
+
+@dataclass
+class _PartialFakeCache:
+    remote: ResourceManifest
+    current: ResourceManifest
+    result: ResourceSyncResult
+
+    def fetch_manifest(self) -> ResourceManifest:
+        return self.remote
+
+    def load_current_manifest(self) -> ResourceManifest:
+        return self.current
+
+    def sync_partial(self) -> ResourceSyncResult:
+        return self.result
 
 
 def _clock(start: datetime):
@@ -120,3 +137,29 @@ def test_failed_apply_keeps_update_badge(tmp_path: Path) -> None:
 
     assert result.applied is False
     assert coordinator.update_available is True
+
+
+def test_partial_apply_keeps_badge_and_reports_resource_level_result(tmp_path: Path) -> None:
+    now, _advance = _clock(datetime(2026, 8, 11, 9, tzinfo=UTC))
+    old = _manifest(b"old")
+    remote = _manifest(b"new")
+    cache = _PartialFakeCache(
+        remote=remote,
+        current=old,
+        result=ResourceSyncResult(
+            manifest=remote,
+            applied_resource_ids=("demo",),
+            failures=(ResourceSyncFailure("spark", "HTTP 502"),),
+        ),
+    )
+    coordinator = RemoteResourceUpdateCoordinator(cache, tmp_path / "state.json", now=now)
+    coordinator.check()
+
+    result = coordinator.apply()
+
+    assert result.applied is False
+    assert result.partial is True
+    assert result.updated_resource_ids == ("demo",)
+    assert result.failed_resource_ids == ("spark",)
+    assert coordinator.update_available is True
+    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))["last_error"] == "spark: HTTP 502"

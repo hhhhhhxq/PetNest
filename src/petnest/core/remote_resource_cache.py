@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -19,7 +21,7 @@ from urllib.request import Request, urlopen
 import uuid
 from zipfile import BadZipFile, ZipFile, ZipInfo
 
-from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, ResourceManifest
+from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, RemoteResource, ResourceManifest
 
 
 LOGGER = logging.getLogger(__name__)
@@ -42,6 +44,33 @@ class RemoteResourceHTTPError(RemoteResourceError):
 
 class RemoteResourceTransientError(RemoteResourceError):
     """A network error that is safe to retry for one resource file."""
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceSyncFailure:
+    """One resource that could not be activated during a partial sync."""
+
+    identifier: str
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceSyncResult:
+    """Result of an independent resource sync.
+
+    Successful resources are already active when this result is returned.  A
+    failed resource keeps its previous generation (or the bundled fallback if
+    it had never been downloaded).
+    """
+
+    manifest: ResourceManifest
+    applied_resource_ids: tuple[str, ...] = ()
+    removed_resource_ids: tuple[str, ...] = ()
+    failures: tuple[ResourceSyncFailure, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.failures
 
 
 class RemoteResourceCache:
@@ -77,6 +106,7 @@ class RemoteResourceCache:
         self.retry_attempts = retry_attempts
         self.retry_delay = retry_delay
         self.seed_root = Path(seed_root) if seed_root is not None else None
+        self._sync_lock = Lock()
 
     @property
     def manifest_path(self) -> Path:
@@ -98,11 +128,30 @@ class RemoteResourceCache:
             pointer = json.loads(self.current_pointer_path.read_text(encoding="utf-8"))
             version_id = pointer.get("version_id")
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return None
+            return self._legacy_root()
         if not isinstance(version_id, str) or not _VERSION_ID.fullmatch(version_id):
-            return None
+            return self._legacy_root()
         candidate = self.versions_path / version_id
-        return candidate if candidate.is_dir() else None
+        return candidate if candidate.is_dir() else self._legacy_root()
+
+    def _legacy_root(self) -> Path | None:
+        """Return a verified pre-versioned cache root for one-time migration."""
+        if self.versions_path.is_dir() and any(
+            item.is_dir() and _VERSION_ID.fullmatch(item.name) for item in self.versions_path.iterdir()
+        ):
+            # A versioned view has already been materialized. Never resurrect
+            # the stale legacy tree when its pointer is damaged.
+            return None
+        resources_root = self.root / "resources"
+        if not resources_root.is_dir():
+            return None
+        try:
+            manifest = ResourceManifest.from_bytes(self.manifest_path.read_bytes())
+        except (OSError, ManifestError):
+            return None
+        if not all(_file_matches(_join_relative(self.root, remote_file.path), remote_file) for remote_file in manifest.files):
+            return None
+        return self.root
 
     def load_current_manifest(self) -> ResourceManifest | None:
         current = self.current_root
@@ -114,7 +163,20 @@ class RemoteResourceCache:
             return None
 
     def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest:
-        """Fetch and verify a complete catalog before committing it locally."""
+        """Fetch and verify a catalog, requiring every resource to succeed.
+
+        The legacy API remains strict for callers that expect an exception on
+        failure.  The update coordinator uses :meth:`sync_partial` so
+        independent resources can be activated one by one.
+        """
+        result = self.sync_partial(progress=progress)
+        if result.failures:
+            details = "；".join(f"{failure.identifier}: {failure.error}" for failure in result.failures)
+            raise RemoteResourceError(f"部分资源更新失败：{details}")
+        return result.manifest
+
+    def sync_partial(self, *, progress: Callable[[int], object] | None = None) -> ResourceSyncResult:
+        """Synchronize resources independently and activate each successful one."""
         try:
             manifest_payload = self._fetch_bytes(self._manifest_url())
             manifest = ResourceManifest.from_bytes(manifest_payload)
@@ -123,58 +185,154 @@ class RemoteResourceCache:
         except (ManifestError, OSError, UnicodeError) as error:
             raise RemoteResourceError(f"无法读取远程资源 manifest: {error}") from error
 
-        version_digest = hashlib.sha256(manifest_payload).hexdigest()
-        version_id = f"{manifest.catalog_version}-{version_digest[:12]}"
         progress_reporter = _ProgressReporter(sum(file.size for file in manifest.files), progress)
-        current_root = self.current_root
-        current_manifest = self.load_current_manifest() if current_root is not None else None
         staging = self.root / "staging" / uuid.uuid4().hex
-        version_root = self.versions_path / version_id
+        with self._sync_lock:
+            return self._sync_partial_locked(manifest, staging, progress_reporter)
+
+    def _sync_partial_locked(
+        self,
+        manifest: ResourceManifest,
+        staging: Path,
+        progress: "_ProgressReporter",
+    ) -> ResourceSyncResult:
+        current_root = self.current_root
+        active_manifest = self.load_current_manifest() if current_root is not None else None
+        applied_resource_ids: list[str] = []
+        removed_resource_ids: list[str] = []
+        failures: list[ResourceSyncFailure] = []
+        prepared: dict[str, tuple[RemoteFile, ...]] = {}
+        old_resources: dict[str, RemoteResource | None] = {}
         try:
             staging.mkdir(parents=True, exist_ok=False)
-            pending_files = list(manifest.files)
-            if current_root is not None and current_manifest is not None:
-                pending_files = self._reuse_unchanged_files(
-                    current_root,
-                    current_manifest,
-                    pending_files,
-                    staging,
-                    progress_reporter,
-                )
-            if self.seed_root is not None and pending_files:
-                pending_files = self._reuse_seed_files(pending_files, staging, progress_reporter)
-            if pending_files:
-                if len(pending_files) == len(manifest.files):
-                    try:
-                        self._download_archive(staging, manifest, progress_reporter)
-                    except RemoteResourceHTTPError as error:
-                        if error.status != 404:
-                            raise
-                        # Older Worker deployments expose one file per request.
-                        # Keep this fallback until the archive route is deployed.
-                        self._download_manifest_files(pending_files, staging, progress_reporter)
-                else:
-                    # A current generation exists, so only new or changed
-                    # files need a network request; unchanged files were copied
-                    # into staging above.
-                    self._download_manifest_files(pending_files, staging, progress_reporter)
-            progress_reporter.complete()
 
-            staging_manifest = staging / "manifest.json"
-            staging_manifest.write_bytes(manifest_payload)
-            self.versions_path.mkdir(parents=True, exist_ok=True)
-            if version_root.exists():
-                shutil.rmtree(version_root)
-            staging.replace(version_root)
-            self._write_pointer(
-                {
-                    "schema_version": 1,
-                    "catalog_version": manifest.catalog_version,
-                    "version_id": version_id,
-                    "manifest_sha256": version_digest,
-                }
+            # Removed resources are independent too.  If materializing the
+            # new view fails, the previous resource remains available.
+            if active_manifest is not None:
+                for old_resource in active_manifest.resources:
+                    if manifest.resource(old_resource.identifier) is not None:
+                        continue
+                    try:
+                        next_manifest = _without_resource(active_manifest, old_resource.identifier, manifest.catalog_version)
+                        current_root = self._commit_view(
+                            current_root,
+                            next_manifest,
+                            staging,
+                            old_resource=old_resource,
+                        )
+                        active_manifest = next_manifest
+                        removed_resource_ids.append(old_resource.identifier)
+                    except (OSError, RemoteResourceError, URLError) as error:
+                        failures.append(ResourceSyncFailure(old_resource.identifier, str(error) or error.__class__.__name__))
+
+            # Stage reusable files first.  A resource is either unchanged and
+            # already valid, or it gets a complete private file set before any
+            # view switch is attempted.
+            for resource in manifest.resources:
+                previous = active_manifest.resource(resource.identifier) if active_manifest is not None else None
+                if (
+                    previous is not None
+                    and _resource_signature(previous) == _resource_signature(resource)
+                    and self._resource_files_valid(current_root, resource)
+                ):
+                    for remote_file in resource.files:
+                        progress.file_completed(remote_file.size)
+                    continue
+                try:
+                    pending = self._stage_reusable_files(
+                        resource,
+                        previous,
+                        current_root,
+                        staging,
+                        progress,
+                    )
+                    prepared[resource.identifier] = tuple(pending)
+                    old_resources[resource.identifier] = previous
+                except (OSError, RemoteResourceError, URLError) as error:
+                    failures.append(ResourceSyncFailure(resource.identifier, str(error) or error.__class__.__name__))
+
+            pending_count = sum(len(files) for files in prepared.values())
+            if (
+                current_root is None
+                and active_manifest is None
+                and pending_count == len(manifest.files)
+                and pending_count > 0
+            ):
+                try:
+                    # The archive is only an optimization for a truly cold
+                    # cache. Once any local generation or bundled seed exists,
+                    # per-resource requests preserve independent failures.
+                    self._download_archive(staging, manifest, progress)
+                    prepared = {identifier: () for identifier in prepared}
+                except RemoteResourceError as error:
+                    # The archive is an optional transport optimization.  Any
+                    # gateway error or corrupt archive falls back to the
+                    # resource-scoped file requests so one bad transport does
+                    # not block unrelated resources.
+                    LOGGER.warning("资源归档不可用，回退逐资源下载：%s", error)
+                    _remove_staged_files(staging, manifest.files)
+
+            for resource in manifest.resources:
+                if resource.identifier not in prepared:
+                    continue
+                pending = list(prepared[resource.identifier])
+                previous = old_resources.get(resource.identifier)
+                if pending:
+                    try:
+                        self._download_manifest_files(pending, staging, progress)
+                    except (OSError, RemoteResourceError, URLError) as error:
+                        self._remove_staged_resource(staging, resource)
+                        failures.append(ResourceSyncFailure(resource.identifier, str(error) or error.__class__.__name__))
+                        continue
+                if not self._resource_files_valid(staging, resource):
+                    self._remove_staged_resource(staging, resource)
+                    failures.append(ResourceSyncFailure(resource.identifier, "资源文件校验失败"))
+                    continue
+                try:
+                    next_manifest = _with_resource(active_manifest, resource, manifest.catalog_version)
+                    current_root = self._commit_view(
+                        current_root,
+                        next_manifest,
+                        staging,
+                        old_resource=previous,
+                        new_resource=resource,
+                    )
+                    active_manifest = next_manifest
+                    applied_resource_ids.append(resource.identifier)
+                except (OSError, RemoteResourceError, URLError) as error:
+                    self._remove_staged_resource(staging, resource)
+                    failures.append(ResourceSyncFailure(resource.identifier, str(error) or error.__class__.__name__))
+
+            # Keep catalog metadata/order aligned with the remote manifest.
+            # A failed resource intentionally remains represented by its old
+            # entry, so the next check keeps the update available.
+            if active_manifest is None and not manifest.resources and not failures:
+                current_root = self._commit_view(None, manifest, staging)
+                active_manifest = manifest
+            elif active_manifest is not None and (not failures or applied_resource_ids or removed_resource_ids):
+                normalized = _ordered_active_manifest(active_manifest, manifest)
+                legacy_view = current_root is not None and current_root.resolve() == self.root.resolve()
+                if normalized != active_manifest or legacy_view:
+                    try:
+                        current_root = self._commit_view(
+                            current_root,
+                            normalized,
+                            staging,
+                        )
+                        active_manifest = normalized
+                    except (OSError, RemoteResourceError, URLError) as error:
+                        # Earlier resource switches are already valid. Keep
+                        # them active and leave the badge for this metadata
+                        # view retry instead of hiding the partial success.
+                        failures.append(ResourceSyncFailure("catalog", str(error) or error.__class__.__name__))
+            if not failures:
+                progress.complete()
+            return ResourceSyncResult(
+                manifest=manifest,
+                applied_resource_ids=tuple(applied_resource_ids),
+                removed_resource_ids=tuple(removed_resource_ids),
+                failures=tuple(failures),
             )
-            return manifest
         except RemoteResourceError:
             raise
         except (OSError, URLError) as error:
@@ -325,7 +483,9 @@ class RemoteResourceCache:
             raise RemoteResourceError(f"下载资源归档失败: {error}") from error
 
         try:
-            self._extract_archive(archive_path, staging, manifest, progress)
+            self._extract_archive(archive_path, staging, manifest)
+            for remote_file in manifest.files:
+                progress.file_completed(remote_file.size)
         except (BadZipFile, OSError, KeyError) as error:
             raise RemoteResourceError(f"资源归档无效: {error}") from error
         finally:
@@ -336,7 +496,6 @@ class RemoteResourceCache:
         archive_path: Path,
         staging: Path,
         manifest: ResourceManifest,
-        progress: "_ProgressReporter",
     ) -> None:
         with ZipFile(archive_path) as archive:
             entries: dict[str, ZipInfo] = {}
@@ -367,7 +526,6 @@ class RemoteResourceCache:
                 if total != remote_file.size or digest.hexdigest() != remote_file.sha256:
                     target.unlink(missing_ok=True)
                     raise RemoteResourceError(f"归档中的文件校验失败: {remote_file.path}")
-                progress.file_completed(remote_file.size)
 
     def _download_manifest_files(
         self,
@@ -388,50 +546,105 @@ class RemoteResourceCache:
                 future.result()
                 progress.file_completed(remote_file.size)
 
-    def _reuse_unchanged_files(
+    def _stage_reusable_files(
         self,
-        current_root: Path,
-        current_manifest: ResourceManifest,
-        remote_files: list[RemoteFile],
+        resource: RemoteResource,
+        previous: RemoteResource | None,
+        current_root: Path | None,
         staging: Path,
         progress: "_ProgressReporter",
     ) -> list[RemoteFile]:
-        previous = {file.path: file for file in current_manifest.files}
+        """Copy matching files for one resource and return network pending files."""
         pending: list[RemoteFile] = []
-        for remote_file in remote_files:
-            previous_file = previous.get(remote_file.path)
-            source = _join_relative(current_root, remote_file.path)
-            if (
-                previous_file is not None
-                and previous_file.size == remote_file.size
-                and previous_file.sha256 == remote_file.sha256
-                and _file_matches(source, remote_file)
-            ):
-                target = _join_relative(staging, remote_file.path)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-                progress.file_completed(remote_file.size)
-            else:
+        for remote_file in resource.files:
+            source: Path | None = None
+            source_is_seed = False
+            if previous is not None and current_root is not None:
+                candidate = _join_relative(current_root, remote_file.path)
+                if _file_matches(candidate, remote_file):
+                    source = candidate
+            if source is None:
+                candidate = _bundled_resource_path(self.seed_root, remote_file)
+                if candidate is not None and _file_matches(candidate, remote_file):
+                    source = candidate
+                    source_is_seed = True
+            if source is None:
                 pending.append(remote_file)
+                continue
+            target = _join_relative(staging, remote_file.path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source_is_seed:
+                _copy_file_contents(source, target)
+            else:
+                _copy_file(source, target)
+            progress.file_completed(remote_file.size)
         return pending
 
-    def _reuse_seed_files(
+    @staticmethod
+    def _resource_files_valid(root: Path | None, resource: RemoteResource) -> bool:
+        return root is not None and all(_file_matches(_join_relative(root, file.path), file) for file in resource.files)
+
+    @staticmethod
+    def _remove_staged_resource(staging: Path, resource: RemoteResource) -> None:
+        for remote_file in resource.files:
+            target = _join_relative(staging, remote_file.path)
+            target.unlink(missing_ok=True)
+            _prune_empty_parents(target.parent, staging)
+
+    def _commit_view(
         self,
-        remote_files: list[RemoteFile],
+        base_root: Path | None,
+        new_manifest: ResourceManifest,
         staging: Path,
-        progress: "_ProgressReporter",
-    ) -> list[RemoteFile]:
-        pending: list[RemoteFile] = []
-        for remote_file in remote_files:
-            source = _bundled_resource_path(self.seed_root, remote_file)
-            if source is not None and _file_matches(source, remote_file):
-                target = _join_relative(staging, remote_file.path)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-                progress.file_completed(remote_file.size)
+        *,
+        old_resource: RemoteResource | None = None,
+        new_resource: RemoteResource | None = None,
+    ) -> Path:
+        """Materialize a new mixed-resource view and switch its pointer atomically."""
+        view_staging = staging / f"view-{uuid.uuid4().hex}"
+        try:
+            if base_root is not None and base_root.is_dir():
+                _clone_active_view(base_root, self.root, view_staging)
             else:
-                pending.append(remote_file)
-        return pending
+                view_staging.mkdir(parents=True, exist_ok=False)
+            if old_resource is not None:
+                _remove_resource_from_tree(view_staging, old_resource)
+            _overlay_bundled_fallbacks(self.seed_root, view_staging)
+            if new_resource is not None:
+                for remote_file in new_resource.files:
+                    source = _join_relative(staging, remote_file.path)
+                    if not _file_matches(source, remote_file):
+                        raise RemoteResourceError(f"资源文件校验失败: {remote_file.path}")
+                    target = _join_relative(view_staging, remote_file.path)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    _copy_file(source, target)
+
+            manifest_payload = new_manifest.to_bytes()
+            manifest_path = view_staging / "manifest.json"
+            manifest_path.unlink(missing_ok=True)
+            manifest_path.write_bytes(manifest_payload)
+            digest = hashlib.sha256(manifest_payload).hexdigest()
+            version_id = f"{new_manifest.catalog_version}-{digest[:12]}"
+            version_root = self.versions_path / version_id
+            if version_root.exists():
+                # Never delete an immutable view (it may still be selected by
+                # another process after a crash); use a fresh id instead.
+                version_id = f"{new_manifest.catalog_version}-{hashlib.sha256(manifest_payload + uuid.uuid4().bytes).hexdigest()[:12]}"
+                version_root = self.versions_path / version_id
+            self.versions_path.mkdir(parents=True, exist_ok=True)
+            view_staging.replace(version_root)
+            self._write_pointer(
+                {
+                    "schema_version": 2,
+                    "catalog_version": new_manifest.catalog_version,
+                    "version_id": version_id,
+                    "manifest_sha256": digest,
+                    "resource_ids": [resource.identifier for resource in new_manifest.resources],
+                }
+            )
+            return version_root
+        finally:
+            shutil.rmtree(view_staging, ignore_errors=True)
 
     def _write_pointer(self, payload: dict[str, object]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -441,6 +654,134 @@ class RemoteResourceCache:
             temporary.replace(self.current_pointer_path)
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def _clone_tree(source: Path, target: Path) -> None:
+    """Clone an immutable view, preferring hard links to avoid duplicate bytes."""
+    shutil.copytree(source, target, copy_function=_link_or_copy)
+
+
+def _clone_active_view(source: Path, cache_root: Path, target: Path) -> None:
+    """Clone only view data, excluding legacy cache control files."""
+    if source.resolve() != cache_root.resolve():
+        _clone_tree(source, target)
+        return
+    target.mkdir(parents=True, exist_ok=False)
+    source_resources = source / "resources"
+    if source_resources.is_dir():
+        _clone_tree(source_resources, target / "resources")
+    source_manifest = source / "manifest.json"
+    if source_manifest.is_file():
+        _copy_file(source_manifest, target / "manifest.json")
+
+
+def _overlay_bundled_fallbacks(seed_root: Path | None, target: Path) -> None:
+    """Keep trusted bundled defaults visible for resources not yet applied."""
+    if seed_root is None:
+        return
+    mappings = (
+        (seed_root / "assets" / "cursors", target / "resources" / "cursors"),
+        (seed_root / "assets" / "countdown", target / "resources" / "countdown"),
+        (seed_root / "effects", target / "resources" / "effects"),
+    )
+    for source_root, target_root in mappings:
+        if not source_root.is_dir():
+            continue
+        for source in source_root.rglob("*"):
+            if not source.is_file():
+                continue
+            destination = target_root / source.relative_to(source_root)
+            if destination.exists():
+                continue
+            try:
+                _copy_file_contents(source, destination)
+            except OSError:
+                LOGGER.warning("无法写入默认资源回退文件：%s", destination, exc_info=True)
+
+
+def _link_or_copy(source: str, target: str) -> None:
+    destination = Path(target)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copyfile(source, target)
+
+
+def _copy_file(source: Path, target: Path) -> None:
+    """Copy without modifying a hard-linked source in an older view."""
+    target.unlink(missing_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _link_or_copy(str(source), str(target))
+
+
+def _copy_file_contents(source: Path, target: Path) -> None:
+    """Copy bundled seed bytes rather than linking into the install bundle."""
+    target.unlink(missing_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+
+
+def _remove_resource_from_tree(root: Path, resource: RemoteResource) -> None:
+    for remote_file in resource.files:
+        target = _join_relative(root, remote_file.path)
+        target.unlink(missing_ok=True)
+        _prune_empty_parents(target.parent, root)
+
+
+def _remove_staged_files(staging: Path, remote_files: tuple[RemoteFile, ...]) -> None:
+    for remote_file in remote_files:
+        target = _join_relative(staging, remote_file.path)
+        target.unlink(missing_ok=True)
+        _prune_empty_parents(target.parent, staging)
+
+
+def _prune_empty_parents(directory: Path, stop: Path) -> None:
+    current = directory
+    stop = stop.resolve()
+    while current != stop and current != current.parent:
+        try:
+            current.rmdir()
+        except OSError:
+            return
+        current = current.parent
+
+
+def _with_resource(
+    active_manifest: ResourceManifest | None,
+    resource: RemoteResource,
+    catalog_version: str,
+) -> ResourceManifest:
+    resources = list(active_manifest.resources) if active_manifest is not None else []
+    for index, existing in enumerate(resources):
+        if existing.identifier == resource.identifier:
+            resources[index] = resource
+            break
+    else:
+        resources.append(resource)
+    return ResourceManifest(1, catalog_version, tuple(resources))
+
+
+def _without_resource(active_manifest: ResourceManifest, identifier: str, catalog_version: str) -> ResourceManifest:
+    return ResourceManifest(
+        1,
+        catalog_version,
+        tuple(resource for resource in active_manifest.resources if resource.identifier != identifier),
+    )
+
+
+def _ordered_active_manifest(active_manifest: ResourceManifest, remote_manifest: ResourceManifest) -> ResourceManifest:
+    active = {resource.identifier: resource for resource in active_manifest.resources}
+    ordered = [active[resource.identifier] for resource in remote_manifest.resources if resource.identifier in active]
+    remote_ids = {resource.identifier for resource in remote_manifest.resources}
+    ordered.extend(resource for resource in active_manifest.resources if resource.identifier not in remote_ids)
+    return ResourceManifest(1, remote_manifest.catalog_version, tuple(ordered))
+
+
+def _resource_signature(resource: RemoteResource) -> tuple[object, ...]:
+    metadata = json.dumps(dict(resource.metadata), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    files = tuple((file.path, file.size, file.sha256) for file in resource.files)
+    return resource.identifier, resource.type, resource.version, files, metadata
 
 
 def _is_manifest_path(path: str) -> bool:
@@ -482,7 +823,7 @@ class _ProgressReporter:
             return
         with self._lock:
             self._completed += max(0, size)
-            percentage = 100 if self._total == 0 else min(100, self._completed * 100 // self._total)
+            percentage = 99 if self._total == 0 else min(99, self._completed * 100 // self._total)
             if percentage == self._last:
                 return
             self._last = percentage

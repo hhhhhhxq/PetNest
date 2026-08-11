@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -160,6 +161,32 @@ def test_resource_directory_falls_back_when_current_generation_is_missing(tmp_pa
     cache = RemoteResourceCache(tmp_path / "remote-resources", "https://resources.example")
 
     assert resource_directory_for_cache(cache) is None
+
+
+def test_resource_directory_uses_verified_legacy_cache(tmp_path: Path) -> None:
+    relative = "resources/countdown/cream.png"
+    content = b"legacy countdown"
+    legacy_file = tmp_path / relative
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_bytes(content)
+    manifest = {
+        "schema_version": 1,
+        "catalog_version": "2026.8.11",
+        "resources": [
+            {
+                "id": "cream",
+                "type": "countdown_background",
+                "version": "1.0.0",
+                "files": [{"path": relative, "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}],
+                "metadata": {},
+            }
+        ],
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example")
+
+    assert resource_directory_for_cache(cache) == tmp_path / "resources"
 
 
 def test_tray_resource_update_action_shows_and_clears_blue_badge(

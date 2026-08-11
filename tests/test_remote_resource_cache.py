@@ -22,10 +22,8 @@ def _payload(path: str, content: bytes) -> dict[str, object]:
 
 
 def _manifest(files: list[dict[str, object]], *, version: str = "2026.8.11") -> bytes:
-    raw = {
-        "schema_version": 1,
-        "catalog_version": version,
-        "resources": [
+    return _manifest_resources(
+        [
             {
                 "id": "demo",
                 "type": "cursor_theme",
@@ -34,6 +32,15 @@ def _manifest(files: list[dict[str, object]], *, version: str = "2026.8.11") -> 
                 "metadata": {"name": "Demo"},
             }
         ],
+        version=version,
+    )
+
+
+def _manifest_resources(resources: list[dict[str, object]], *, version: str = "2026.8.11") -> bytes:
+    raw = {
+        "schema_version": 1,
+        "catalog_version": version,
+        "resources": resources,
     }
     return json.dumps(raw).encode("utf-8")
 
@@ -219,6 +226,28 @@ def test_sync_falls_back_to_files_when_archive_route_returns_http_404(tmp_path: 
     assert (cache.current_root / relative).read_bytes() == content
 
 
+def test_sync_falls_back_to_files_when_archive_gateway_fails(tmp_path: Path) -> None:
+    content = b"gateway fallback cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    manifest_bytes = _manifest([_payload(relative, content)])
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("/v1/manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("/v1/archive.zip"):
+            raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+        assert request.full_url.endswith("/v1/files/resources/cursors/demo/arrow.cur")
+        return _Response(content)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, retry_delay=0)
+
+    cache.sync()
+
+    assert cache.current_root is not None
+    assert (cache.current_root / relative).read_bytes() == content
+
+
 def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
     first = b"first cursor bytes"
     second = b"second cursor bytes, a little longer"
@@ -322,6 +351,215 @@ def test_sync_reuses_unchanged_files_from_current_generation(tmp_path: Path) -> 
     assert (updated_cache.current_root / changed_path).read_bytes() == new_changed
 
 
+def test_sync_partial_activates_successful_resource_and_keeps_failed_resource(
+    tmp_path: Path,
+) -> None:
+    old_cursor = b"old cursor"
+    old_effect = b"old effect"
+    cursor_path = "resources/cursors/demo/arrow.cur"
+    effect_path = "resources/effects/spark/frames/0001.png"
+    old_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, old_cursor)],
+                "metadata": {"name": "Demo"},
+            },
+            {
+                "id": "spark",
+                "type": "interaction_effect",
+                "version": "1.0.0",
+                "files": [_payload(effect_path, old_effect)],
+                "metadata": {"name": "Spark"},
+            },
+        ],
+        version="2026.8.10",
+    )
+
+    def old_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(old_manifest)
+        if request.full_url.endswith("archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(old_cursor if request.full_url.endswith("arrow.cur") else old_effect)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, retry_delay=0)
+    cache.sync()
+    old_root = cache.current_root
+    assert old_root is not None
+
+    new_cursor = b"new cursor"
+    new_effect = b"new effect"
+    new_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.1.0",
+                "files": [_payload(cursor_path, new_cursor)],
+                "metadata": {"name": "Demo"},
+            },
+            {
+                "id": "spark",
+                "type": "interaction_effect",
+                "version": "1.1.0",
+                "files": [_payload(effect_path, new_effect)],
+                "metadata": {"name": "Spark"},
+            },
+        ],
+        version="2026.8.11",
+    )
+
+    def new_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(new_manifest)
+        assert "/v1/files/" in request.full_url
+        if request.full_url.endswith("arrow.cur"):
+            return _Response(new_cursor)
+        raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+
+    result = RemoteResourceCache(tmp_path, "https://resources.example", opener=new_opener, retry_delay=0).sync_partial()
+
+    assert result.applied_resource_ids == ("demo",)
+    assert [failure.identifier for failure in result.failures] == ["spark"]
+    updated_root = cache.current_root
+    assert updated_root is not None and updated_root != old_root
+    assert (updated_root / cursor_path).read_bytes() == new_cursor
+    assert (updated_root / effect_path).read_bytes() == old_effect
+    active = cache.load_current_manifest()
+    assert active is not None
+    assert active.resource("demo").version == "1.1.0"  # type: ignore[union-attr]
+    assert active.resource("spark").version == "1.0.0"  # type: ignore[union-attr]
+
+    reloaded = RemoteResourceCache(tmp_path, "https://resources.example", opener=new_opener, retry_delay=0)
+    assert reloaded.current_root == updated_root
+    assert (reloaded.current_root / effect_path).read_bytes() == old_effect  # type: ignore[union-attr]
+
+
+def test_sync_partial_removes_resource_missing_from_remote_catalog(tmp_path: Path) -> None:
+    cursor = b"cursor"
+    effect = b"effect"
+    fallback_effect = b"bundled effect fallback"
+    cursor_path = "resources/cursors/demo/arrow.cur"
+    effect_path = "resources/effects/spark/frames/0001.png"
+    old_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, cursor)],
+                "metadata": {},
+            },
+            {
+                "id": "spark",
+                "type": "interaction_effect",
+                "version": "1.0.0",
+                "files": [_payload(effect_path, effect)],
+                "metadata": {},
+            },
+        ],
+        version="2026.8.10",
+    )
+    seed_root = tmp_path / "bundle"
+    seed_file = seed_root / "effects" / "spark" / "frames" / "0001.png"
+    seed_file.parent.mkdir(parents=True)
+    seed_file.write_bytes(fallback_effect)
+
+    def old_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(old_manifest)
+        if request.full_url.endswith("archive.zip"):
+            return _Response(b"", status=404)
+        return _Response(cursor if request.full_url.endswith("arrow.cur") else effect)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=old_opener, seed_root=seed_root)
+    cache.sync()
+
+    new_manifest = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, cursor)],
+                "metadata": {},
+            }
+        ],
+        version="2026.8.11",
+    )
+
+    def new_opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        assert request.full_url.endswith("manifest.json")
+        return _Response(new_manifest)
+
+    result = RemoteResourceCache(tmp_path, "https://resources.example", opener=new_opener, seed_root=seed_root).sync_partial()
+
+    assert result.removed_resource_ids == ("spark",)
+    assert result.failures == ()
+    assert cache.current_root is not None
+    assert (cache.current_root / cursor_path).read_bytes() == cursor
+    assert (cache.current_root / effect_path).read_bytes() == fallback_effect
+    active = cache.load_current_manifest()
+    assert active is not None
+    assert [resource.identifier for resource in active.resources] == ["demo"]
+
+
+def test_sync_partial_keeps_bundled_fallbacks_for_failed_new_resources(tmp_path: Path) -> None:
+    cursor = b"new cursor"
+    effect_default = b"bundled effect"
+    effect_remote = b"remote effect"
+    cursor_path = "resources/cursors/demo/arrow.cur"
+    effect_path = "resources/effects/spark/frames/0001.png"
+    manifest_bytes = _manifest_resources(
+        [
+            {
+                "id": "demo",
+                "type": "cursor_theme",
+                "version": "1.0.0",
+                "files": [_payload(cursor_path, cursor)],
+                "metadata": {},
+            },
+            {
+                "id": "spark",
+                "type": "interaction_effect",
+                "version": "1.0.0",
+                "files": [_payload(effect_path, effect_remote)],
+                "metadata": {},
+            },
+        ]
+    )
+    seed_root = tmp_path / "bundle"
+    seed_file = seed_root / "effects" / "spark" / "frames" / "0001.png"
+    seed_file.parent.mkdir(parents=True)
+    seed_file.write_bytes(effect_default)
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(manifest_bytes)
+        if request.full_url.endswith("archive.zip"):
+            return _Response(b"", status=404)
+        if request.full_url.endswith("arrow.cur"):
+            return _Response(cursor)
+        raise HTTPError(request.full_url, 502, "Bad Gateway", {}, BytesIO())
+
+    cache = RemoteResourceCache(tmp_path / "cache", "https://resources.example", opener=opener, seed_root=seed_root, retry_delay=0)
+    result = cache.sync_partial()
+
+    assert result.applied_resource_ids == ("demo",)
+    assert [failure.identifier for failure in result.failures] == ["spark"]
+    assert cache.current_root is not None
+    assert (cache.current_root / cursor_path).read_bytes() == cursor
+    assert (cache.current_root / effect_path).read_bytes() == effect_default
+
+
 def test_sync_seeds_matching_bundled_resources_without_network_download(tmp_path: Path) -> None:
     content = b"bundled countdown skin"
     relative = "resources/countdown/cream.png"
@@ -343,6 +581,49 @@ def test_sync_seeds_matching_bundled_resources_without_network_download(tmp_path
 
     assert cache.current_root is not None
     assert (cache.current_root / relative).read_bytes() == content
+
+
+def test_sync_migrates_verified_legacy_cache_without_redownloading(tmp_path: Path) -> None:
+    content = b"legacy cursor bytes"
+    relative = "resources/cursors/demo/arrow.cur"
+    manifest_bytes = _manifest([_payload(relative, content)])
+    legacy_file = tmp_path / relative
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_bytes(content)
+    (tmp_path / "manifest.json").write_bytes(manifest_bytes)
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        if request.full_url.endswith("manifest.json"):
+            return _Response(manifest_bytes)
+        raise AssertionError(f"legacy file should be reused: {request.full_url}")
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+    assert cache.current_root == tmp_path
+
+    cache.sync_partial()
+
+    assert cache.current_root is not None
+    assert cache.current_root != tmp_path
+    assert (cache.current_root / relative).read_bytes() == content
+    assert (tmp_path / "current.json").is_file()
+
+
+def test_sync_applies_empty_catalog_to_clear_update_state(tmp_path: Path) -> None:
+    manifest_bytes = _manifest_resources([], version="2026.8.12")
+
+    def opener(request: Request, timeout: float = 0) -> _Response:
+        del timeout
+        assert request.full_url.endswith("manifest.json")
+        return _Response(manifest_bytes)
+
+    cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+    result = cache.sync_partial()
+
+    assert result.complete
+    assert cache.current_root is not None
+    assert cache.load_current_manifest() is not None
+    assert cache.load_current_manifest().resources == ()  # type: ignore[union-attr]
 
 
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:

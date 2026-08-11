@@ -103,6 +103,13 @@ class ResourceManifest:
             identifiers.add(resource.identifier)
             resources.append(resource)
 
+        for path in file_paths:
+            parts = path.split("/")
+            for index in range(1, len(parts)):
+                parent = "/".join(parts[:index])
+                if parent in file_paths:
+                    raise ManifestError(f"资源路径冲突: {parent} 是 {path} 的父路径")
+
         return cls(schema_version, catalog_version, tuple(resources))
 
     def resource(self, identifier: str) -> RemoteResource | None:
@@ -117,6 +124,28 @@ class ResourceManifest:
     def files(self) -> tuple[RemoteFile, ...]:
         """Flatten all files for cache download."""
         return tuple(file for resource in self.resources for file in resource.files)
+
+    def to_bytes(self) -> bytes:
+        """Serialize the validated manifest for an atomically materialized view."""
+        resources = [
+            {
+                "id": resource.identifier,
+                "type": resource.type,
+                "version": resource.version,
+                "files": [
+                    {"path": file.path, "size": file.size, "sha256": file.sha256}
+                    for file in resource.files
+                ],
+                "metadata": dict(resource.metadata),
+            }
+            for resource in self.resources
+        ]
+        return json.dumps(
+            {"schema_version": self.schema_version, "catalog_version": self.catalog_version, "resources": resources},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 
 def _parse_resource(raw: object, index: int, known_paths: set[str]) -> RemoteResource:

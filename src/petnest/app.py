@@ -583,11 +583,19 @@ class PetNest:
     def _handle_resource_apply_result(self, result: RemoteResourceApplyResult) -> None:
         if self.tray is not None:
             self.tray.set_resource_update_loading(False)
-        if result.applied:
+        if result.updated_resource_ids:
             self._refresh_resource_directories()
+        if result.applied:
             if self.tray is not None:
                 self.tray.set_resource_update_available(False)
                 self.tray.showMessage("PetNest", "资源已更新，新的未使用资源已立即可用")
+            return
+        if result.partial:
+            if self.tray is not None:
+                self.tray.set_resource_update_available(True)
+                updated = "、".join(result.updated_resource_ids)
+                failed = "、".join(result.failed_resource_ids)
+                self.tray.showMessage("PetNest", f"已更新 {updated}；{failed} 更新失败，可稍后重试")
             return
         if self.tray is not None:
             self.tray.set_resource_update_available(self.remote_resource_update.update_available)

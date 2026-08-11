@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 import uuid
 
+from petnest.core.remote_resource_cache import ResourceSyncResult
 from petnest.core.remote_resource_manifest import ResourceManifest
 
 
@@ -19,6 +20,8 @@ class _ResourceCache(Protocol):
     def load_current_manifest(self) -> ResourceManifest | None: ...
 
     def sync(self, *, progress: Callable[[int], object] | None = None) -> ResourceManifest: ...
+
+    def sync_partial(self, *, progress: Callable[[int], object] | None = None) -> ResourceSyncResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,9 @@ class RemoteResourceApplyResult:
     applied: bool
     catalog_version: str | None = None
     error: str | None = None
+    partial: bool = False
+    updated_resource_ids: tuple[str, ...] = ()
+    failed_resource_ids: tuple[str, ...] = ()
 
 
 class RemoteResourceUpdateCoordinator:
@@ -121,6 +127,10 @@ class RemoteResourceUpdateCoordinator:
         if not self.update_available:
             return RemoteResourceApplyResult(False, self.state.remote_catalog_version)
         try:
+            sync_partial = getattr(self.cache, "sync_partial", None)
+            if callable(sync_partial):
+                result = sync_partial(progress=progress) if progress is not None else sync_partial()
+                return self._apply_partial_result(result)
             manifest = self.cache.sync(progress=progress) if progress is not None else self.cache.sync()
         except Exception as error:  # noqa: BLE001 - retain the badge for a retry.
             message = str(error) or error.__class__.__name__
@@ -136,6 +146,30 @@ class RemoteResourceUpdateCoordinator:
         )
         self._save_state()
         return RemoteResourceApplyResult(True, manifest.catalog_version)
+
+    def _apply_partial_result(self, result: ResourceSyncResult) -> RemoteResourceApplyResult:
+        current = self.cache.load_current_manifest()
+        remaining = current is None or _manifest_signature(current) != _manifest_signature(result.manifest)
+        error = "；".join(f"{failure.identifier}: {failure.error}" for failure in result.failures) or None
+        if remaining and error is None:
+            error = "仍有资源未应用"
+        self.state = self._replace(
+            remote_catalog_version=result.manifest.catalog_version,
+            applied_catalog_version=(
+                result.manifest.catalog_version if not remaining else self.state.applied_catalog_version
+            ),
+            update_available=remaining,
+            last_error=error,
+        )
+        self._save_state()
+        return RemoteResourceApplyResult(
+            applied=not remaining,
+            catalog_version=result.manifest.catalog_version,
+            error=error,
+            partial=bool((result.applied_resource_ids or result.removed_resource_ids) and result.failures),
+            updated_resource_ids=result.applied_resource_ids + result.removed_resource_ids,
+            failed_resource_ids=tuple(failure.identifier for failure in result.failures),
+        )
 
     def _replace(self, **changes: Any) -> RemoteResourceUpdateState:
         values = asdict(self.state)
@@ -166,5 +200,14 @@ class RemoteResourceUpdateCoordinator:
 
 
 def _manifest_signature(manifest: ResourceManifest) -> tuple[object, ...]:
-    files = tuple(sorted((file.path, file.size, file.sha256) for file in manifest.files))
-    return manifest.catalog_version, files
+    resources = tuple(
+        (
+            resource.identifier,
+            resource.type,
+            resource.version,
+            tuple((file.path, file.size, file.sha256) for file in resource.files),
+            json.dumps(dict(resource.metadata), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
+        for resource in manifest.resources
+    )
+    return manifest.catalog_version, resources
