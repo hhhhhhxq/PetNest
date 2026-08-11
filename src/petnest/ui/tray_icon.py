@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
@@ -66,6 +67,12 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_cursor_styles = on_cursor_styles
         self._on_resource_update = on_resource_update
         self._on_toggle_mouse_follow = on_toggle_mouse_follow
+        self._resource_update_available = False
+        self._resource_update_loading = False
+        self._resource_loading_phase = 0
+        self._resource_loading_timer = QTimer(self)
+        self._resource_loading_timer.setInterval(120)
+        self._resource_loading_timer.timeout.connect(self._advance_resource_loading)
         self.menu = QMenu(window)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
         self.toggle_pause_action = QAction("暂停动画", self.menu)
@@ -121,8 +128,25 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def set_resource_update_available(self, available: bool) -> None:
         """在资源动作旁显示或清除蓝色更新提示点。"""
+        self._resource_update_available = available
+        if self._resource_update_loading:
+            return
+        self.resource_update_action.setEnabled(True)
         self.resource_update_action.setText("● 立即检查资源更新" if available else "立即检查资源更新")
         self.resource_update_action.setIcon(_blue_dot_icon() if available else QIcon())
+
+    def set_resource_update_loading(self, loading: bool, *, message: str = "正在下载资源…") -> None:
+        """将资源动作切换为不可重复点击的动态 loading 状态。"""
+        self._resource_update_loading = loading
+        self.resource_update_action.setEnabled(not loading)
+        if not loading:
+            self._resource_loading_timer.stop()
+            self.set_resource_update_available(self._resource_update_available)
+            return
+        self._resource_loading_phase = 0
+        self.resource_update_action.setText(message)
+        self.resource_update_action.setIcon(_loading_icon(self._resource_loading_phase))
+        self._resource_loading_timer.start()
 
     def _toggle_visibility(self) -> None:
         if self.window.isVisible():
@@ -183,6 +207,12 @@ class PetTrayIcon(QSystemTrayIcon):
         if self._on_resource_update is not None:
             self._on_resource_update()
 
+    def _advance_resource_loading(self) -> None:
+        if not self._resource_update_loading:
+            return
+        self._resource_loading_phase = (self._resource_loading_phase + 1) % 12
+        self.resource_update_action.setIcon(_loading_icon(self._resource_loading_phase))
+
 
 def _blue_dot_icon() -> QIcon:
     pixmap = QPixmap(10, 10)
@@ -192,5 +222,16 @@ def _blue_dot_icon() -> QIcon:
     painter.setPen(QColor("#1677ff"))
     painter.setBrush(QColor("#1677ff"))
     painter.drawEllipse(1, 1, 8, 8)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _loading_icon(phase: int) -> QIcon:
+    pixmap = QPixmap(16, 16)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(QColor("#1677ff"))
+    painter.drawArc(2, 2, 12, 12, phase * 30 * 16, 270 * 16)
     painter.end()
     return QIcon(pixmap)

@@ -492,6 +492,8 @@ class PetNest:
             name="petnest-resource-check",
         )
         self._resource_worker = worker
+        if self.tray is not None:
+            self.tray.set_resource_update_loading(True, message="正在检查资源…")
         worker.start()
 
     def _resource_check_worker(self, force: bool) -> None:
@@ -512,6 +514,8 @@ class PetNest:
             name="petnest-resource-apply",
         )
         self._resource_worker = worker
+        if self.tray is not None:
+            self.tray.set_resource_update_loading(True, message="正在下载资源…")
         worker.start()
 
     def _resource_apply_worker(self) -> None:
@@ -545,6 +549,8 @@ class PetNest:
 
     def _handle_resource_check_result(self, result: RemoteResourceCheckResult, *, manual: bool) -> None:
         if self.tray is not None:
+            self.tray.set_resource_update_loading(False)
+        if self.tray is not None:
             self.tray.set_resource_update_available(result.update_available)
         if result.error:
             LOGGER.warning("远程资源检查失败：%s", result.error)
@@ -556,6 +562,8 @@ class PetNest:
             self.tray.showMessage("PetNest", "资源已是最新")
 
     def _handle_resource_apply_result(self, result: RemoteResourceApplyResult) -> None:
+        if self.tray is not None:
+            self.tray.set_resource_update_loading(False)
         if result.applied:
             self._refresh_resource_directories()
             if self.tray is not None:
