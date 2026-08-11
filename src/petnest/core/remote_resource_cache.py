@@ -27,6 +27,7 @@ from petnest.core.remote_resource_manifest import ManifestError, RemoteFile, Rem
 LOGGER = logging.getLogger(__name__)
 _CHUNK_SIZE = 1024 * 1024
 _DOWNLOAD_WORKERS = 8
+_VERSION_RETENTION = 2
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -326,6 +327,7 @@ class RemoteResourceCache:
                         # view retry instead of hiding the partial success.
                         failures.append(ResourceSyncFailure("catalog", str(error) or error.__class__.__name__))
             if not failures:
+                self._prune_old_versions(current_root)
                 progress.complete()
             return ResourceSyncResult(
                 manifest=manifest,
@@ -654,6 +656,51 @@ class RemoteResourceCache:
             temporary.replace(self.current_pointer_path)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _prune_old_versions(self, active_root: Path | None) -> None:
+        """Keep the active view and one recent rollback view only.
+
+        A cleanup failure must never turn a successful resource update into a
+        failed update.  Symlinked or malformed entries are ignored so cleanup
+        cannot escape the cache's ``versions`` directory.
+        """
+        if active_root is None:
+            return
+        versions_root = self.versions_path
+        try:
+            versions_resolved = versions_root.resolve()
+            active_resolved = active_root.resolve()
+            if (
+                active_root.is_symlink()
+                or not active_root.is_dir()
+                or active_resolved.parent != versions_resolved
+            ):
+                return
+            candidates: list[tuple[int, Path]] = []
+            for candidate in versions_root.iterdir():
+                if candidate.is_symlink() or not candidate.is_dir() or not _VERSION_ID.fullmatch(candidate.name):
+                    continue
+                try:
+                    candidates.append((candidate.stat().st_mtime_ns, candidate))
+                except OSError:
+                    continue
+            candidates.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+            keep = {active_root.name}
+            for _mtime, candidate in candidates:
+                if len(keep) >= _VERSION_RETENTION:
+                    break
+                keep.add(candidate.name)
+            for _mtime, candidate in candidates:
+                if candidate.name in keep:
+                    continue
+                try:
+                    if candidate.resolve().parent != versions_resolved:
+                        continue
+                    shutil.rmtree(candidate)
+                except (OSError, RuntimeError) as error:
+                    LOGGER.warning("无法清理旧资源缓存版本 %s：%s", candidate, error)
+        except (OSError, RuntimeError) as error:
+            LOGGER.warning("无法扫描旧资源缓存版本：%s", error)
 
 
 def _clone_tree(source: Path, target: Path) -> None:

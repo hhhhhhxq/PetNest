@@ -626,6 +626,34 @@ def test_sync_applies_empty_catalog_to_clear_update_state(tmp_path: Path) -> Non
     assert cache.load_current_manifest().resources == ()  # type: ignore[union-attr]
 
 
+def test_sync_prunes_old_versions_after_a_complete_update(tmp_path: Path) -> None:
+    relative = "resources/cursors/demo/arrow.cur"
+    content = b"stable cursor"
+    roots: list[Path] = []
+
+    for index in range(4):
+        manifest_bytes = _manifest([_payload(relative, content)], version=f"2026.8.{10 + index}")
+
+        def opener(request: Request, timeout: float = 0, *, payload=manifest_bytes) -> _Response:
+            del timeout
+            if request.full_url.endswith("/v1/manifest.json"):
+                return _Response(payload)
+            if request.full_url.endswith("/v1/archive.zip"):
+                return _Response(b"", status=404)
+            return _Response(content)
+
+        cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener, retry_delay=0)
+        cache.sync()
+        current = cache.current_root
+        assert current is not None
+        roots.append(current)
+
+    version_roots = {path for path in (tmp_path / "versions").iterdir() if path.is_dir()}
+
+    assert version_roots == set(roots[-2:])
+    assert cache.current_root == roots[-1]
+
+
 def test_path_for_rejects_traversal(tmp_path: Path) -> None:
     cache = RemoteResourceCache(tmp_path, "https://resources.example")
 
