@@ -19,6 +19,7 @@ from petnest.core.event_bus import EventBus
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
+from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
@@ -37,6 +38,7 @@ from petnest.ui.tray_icon import PetTrayIcon
 from petnest.ui.work_countdown import WorkCountdownWindow
 
 LOGGER = logging.getLogger(__name__)
+REMOTE_RESOURCE_BASE_URL = "https://red-lake-ce5a.bbbbbiubiubiu.workers.dev"
 _CURSOR_STYLE_ROLES = (
     "arrow",
     "busy",
@@ -65,6 +67,15 @@ def bundled_cursor_styles_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "assets" / "cursors"
 
 
+def resource_directory_for_cache(cache: RemoteResourceCache) -> Path | None:
+    """Return the verified current resource root, or ``None`` for fallback."""
+    current = cache.current_root
+    if current is None:
+        return None
+    directory = current / "resources"
+    return directory if directory.is_dir() else None
+
+
 class PetNest:
     """第一阶段桌宠运行时，负责有序启动、宠物切换和有序退出。"""
 
@@ -81,7 +92,16 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
-        self.cursor_catalog = CursorStyleCatalog(bundled_cursor_styles_directory())
+        self.remote_resource_cache = RemoteResourceCache(
+            self.settings_manager.path.parent / "remote-resources", REMOTE_RESOURCE_BASE_URL
+        )
+        self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
+        cursor_root = (
+            self.resource_directory / "cursors"
+            if self.resource_directory is not None and (self.resource_directory / "cursors").is_dir()
+            else bundled_cursor_styles_directory()
+        )
+        self.cursor_catalog = CursorStyleCatalog(cursor_root)
         self.cursor_controller = cursor_controller or WindowsCursorController()
         self._active_cursor_roles: set[str] = set()
         self._recover_pending_cursor()
@@ -101,7 +121,12 @@ class PetNest:
             raise RuntimeError(f"未找到可用宠物包：{self.pets_root}")
         self.package = self._select_package(self.settings.current_pet_id)
         self.event_bus = EventBus()
-        self.window = PetWindow(self.package, position_saved=self._save_window_position)
+        countdown_root = self.resource_directory / "countdown" if self.resource_directory is not None else None
+        self.window = PetWindow(
+            self.package,
+            position_saved=self._save_window_position,
+            countdown_root=countdown_root,
+        )
         self.work_countdown = WorkCountdownWindow(self.window)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")

@@ -111,6 +111,20 @@ def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: p
     assert window.size().height() == 12
 
 
+def test_countdown_skins_can_be_loaded_from_a_verified_resource_directory(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    del qtbot
+    skin_root = tmp_path / "resources" / "countdown"
+    skin_root.mkdir(parents=True)
+    for theme in ("cream", "night", "yarn"):
+        Image.new("RGBA", (4, 4), (255, 255, 255, 255)).save(skin_root / f"{theme}.png")
+
+    skins = PetWindow._load_countdown_skins(skin_root)
+
+    assert all(not skins[theme].isNull() for theme in ("cream", "night", "yarn"))
+
+
 def test_macos_tool_window_remains_visible_when_application_is_inactive(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

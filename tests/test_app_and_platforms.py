@@ -14,9 +14,10 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QPoint
 
-from petnest.app import PetNest
+from petnest.app import PetNest, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
+from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
 from petnest.models.settings import Settings
@@ -139,6 +140,26 @@ def _write_cursor_style(root: Path, identifier: str, roles: tuple[str, ...]) -> 
     (style_root / "arrow.png").write_bytes(b"preview")
     for role in roles:
         (style_root / f"{role}.cur").write_bytes(role.encode())
+
+
+def test_resource_directory_uses_verified_current_generation(tmp_path: Path) -> None:
+    cache_root = tmp_path / "remote-resources"
+    version_root = cache_root / "versions" / "2026.8.12-0123456789ab"
+    resources = version_root / "resources"
+    (resources / "cursors").mkdir(parents=True)
+    cache_root.joinpath("current.json").write_text(
+        json.dumps({"schema_version": 1, "version_id": version_root.name}), encoding="utf-8"
+    )
+
+    cache = RemoteResourceCache(cache_root, "https://resources.example")
+
+    assert resource_directory_for_cache(cache) == cache_root / "versions" / version_root.name / "resources"
+
+
+def test_resource_directory_falls_back_when_current_generation_is_missing(tmp_path: Path) -> None:
+    cache = RemoteResourceCache(tmp_path / "remote-resources", "https://resources.example")
+
+    assert resource_directory_for_cache(cache) is None
 
 
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:

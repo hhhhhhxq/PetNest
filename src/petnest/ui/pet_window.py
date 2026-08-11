@@ -38,6 +38,7 @@ class PetWindow(QWidget):
         player: AnimationPlayer | None = None,
         state_machine: PetStateMachine | None = None,
         position_saved: PositionSaved | None = None,
+        countdown_root: Path | None = None,
         parent: QWidget | None = None,
     ) -> None:
         flags = (
@@ -80,7 +81,7 @@ class PetWindow(QWidget):
         self._countdown_width = 132
         self._countdown_card_height = 37
         self._countdown_theme = "cream"
-        self._countdown_skins = self._load_countdown_skins()
+        self._countdown_skins = self._load_countdown_skins(countdown_root)
         self._follow_mode_enabled = False
         self._follow_motion = False
         self._normal_scale: float | None = None
@@ -558,9 +559,10 @@ class PetWindow(QWidget):
         return round(visible_bottom * self.scale) + self._countdown_gap
 
     @staticmethod
-    def _load_countdown_skins() -> dict[str, QPixmap]:
-        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
-        directory = root / "assets" / "countdown"
+    def _load_countdown_skins(directory: Path | None = None) -> dict[str, QPixmap]:
+        if directory is None:
+            root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+            directory = root / "assets" / "countdown"
         return {theme: QPixmap(str(directory / f"{theme}.png")) for theme in ("cream", "night", "yarn")}
 
     def _is_interactive(self, event: QMouseEvent) -> bool:
