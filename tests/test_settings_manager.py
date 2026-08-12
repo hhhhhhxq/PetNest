@@ -104,13 +104,27 @@ def test_version_8_adds_compact_countdown_card_layout_defaults(tmp_path) -> None
     )
 
 
-def test_countdown_theme_round_trips(tmp_path) -> None:
+def test_countdown_appearance_round_trips(tmp_path) -> None:
     path = tmp_path / "settings.json"
-    SettingsManager(path).save(Settings(countdown_theme="night", countdown_width=142, countdown_height=32))
+    SettingsManager(path).save(
+        Settings(countdown_theme="night", countdown_width=142, countdown_height=32, countdown_placement="below")
+    )
 
     loaded = SettingsManager(path).load()
 
-    assert (loaded.countdown_theme, loaded.countdown_width, loaded.countdown_height) == ("night", 142, 32)
+    assert (loaded.countdown_theme, loaded.countdown_width, loaded.countdown_height, loaded.countdown_placement) == (
+        "night", 142, 32, "below"
+    )
+
+
+def test_version_17_adds_countdown_placement(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 17}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
+    assert loaded.countdown_placement == "above"
 
 
 def test_mouse_follow_defaults_round_trip_and_migrate(tmp_path) -> None:
@@ -161,3 +175,29 @@ def test_lan_interaction_preference_round_trips_and_migrates(tmp_path) -> None:
     migrated = manager.load()
     assert migrated.schema_version == Settings.SCHEMA_VERSION
     assert migrated.lan_interaction_enabled is True
+
+
+def test_godot_client_preferences_survive_standard_client_save(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    advanced = Settings(
+        godot_auto_walk=False,
+        godot_power_saver=True,
+        godot_pet_x=640.0,
+        godot_pet_y=360.0,
+        godot_position_space_version=1,
+        godot_renderer_max_fps=165,
+        preferred_client="godot",
+    )
+
+    manager.save(advanced)
+    manager.save(manager.load())
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["godot_auto_walk"] is False
+    assert saved["godot_power_saver"] is True
+    assert saved["godot_pet_x"] == 640.0
+    assert saved["godot_pet_y"] == 360.0
+    assert saved["godot_position_space_version"] == 1
+    assert saved["godot_renderer_max_fps"] == 165
+    assert saved["preferred_client"] == "godot"

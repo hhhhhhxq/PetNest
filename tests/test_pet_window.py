@@ -306,6 +306,22 @@ def test_countdown_card_is_below_centered_pet_and_uses_adjustable_geometry(
     assert not window.is_opaque_at(window.width() // 2, window.height() - 1)
 
 
+def test_countdown_card_can_move_above_without_moving_pet(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.move(300, 300)
+    window.set_countdown_appearance(gap=12, width=200, height=60, placement="below")
+    window.set_countdown_text("距离下班 01:23:45")
+    original_pet_origin = window.pos() + QPoint(window._pet_left(), window._pet_top())
+
+    window.set_countdown_appearance(gap=12, width=200, height=60, placement="above")
+
+    assert window._countdown_rect().top() == 0
+    assert window._pet_top() == 72
+    assert window.pos() + QPoint(window._pet_left(), window._pet_top()) == original_pet_origin
+    assert window.is_opaque_at(window._pet_left(), window._pet_top())
+
+
 def test_countdown_ignores_transparent_padding_below_visible_pet(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     package = _package(tmp_path)
     for path in package.animations["idle"].frames:

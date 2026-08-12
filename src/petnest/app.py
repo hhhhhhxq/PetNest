@@ -1031,6 +1031,7 @@ class PetNest:
             width=self.settings.countdown_width,
             height=self.settings.countdown_height,
             theme=self.settings.countdown_theme,
+            placement=self.settings.countdown_placement,
             always_on_top=self.settings.always_on_top,
         )
 

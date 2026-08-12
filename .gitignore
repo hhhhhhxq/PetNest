@@ -11,7 +11,14 @@ venv/
 build/
 dist/
 PetNest.spec
+PetNestUpdater.spec
 *.egg-info/
+.godot/
+
+# Local/generated artwork and imported pets must never become bundled resources
+/assets/generated/
+/pets/*/
+!/pets/sample_pet/
 
 # IDE and OS files
 .idea/

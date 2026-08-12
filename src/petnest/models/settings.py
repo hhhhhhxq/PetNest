@@ -19,7 +19,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 17
+    SCHEMA_VERSION = 18
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -51,11 +51,19 @@ class Settings:
     countdown_width: int = 132
     countdown_height: int = 37
     countdown_theme: str = "cream"
+    countdown_placement: str = "above"
     mouse_follow_enabled: bool = False
     mouse_follow_scale: float = 0.45
     cursor_style_enabled: bool = False
     cursor_style_id: str | None = None
     cursor_restore_pending: bool = False
+    godot_auto_walk: bool = True
+    godot_power_saver: bool = False
+    godot_pet_x: float = -1.0
+    godot_pet_y: float = -1.0
+    godot_position_space_version: int = 0
+    godot_renderer_max_fps: int = 240
+    preferred_client: str = "pyside6"
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

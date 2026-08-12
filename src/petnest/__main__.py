@@ -29,6 +29,11 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="PetNest 跨平台轻量桌面宠物")
     parser.add_argument("--check", action="store_true", help="仅校验内置宠物包，不创建 GUI")
     parser.add_argument("--set-pets-root", type=Path, metavar="目录", help="供安装器保存自定义宠物库位置")
+    parser.add_argument("--maintenance", choices=("app-update", "resource-update"), help="运行独立维护窗口，不启动桌宠")
+    parser.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--restart-path", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--cursor-action", choices=("apply", "restore"), help=argparse.SUPPRESS)
+    parser.add_argument("--cursor-style-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(arguments)
     if args.check:
         return PetNest.check_installation()
@@ -58,6 +63,16 @@ def main(arguments: list[str] | None = None) -> int:
     application.setApplicationDisplayName("PetNest")
     application.setQuitOnLastWindowClosed(False)
     application.setWindowIcon(application_icon())
+    if args.cursor_action is not None:
+        return _run_cursor_helper(args.cursor_action, args.cursor_style_root)
+    if args.maintenance is not None:
+        from .ui.maintenance_dialog import run_maintenance
+
+        return run_maintenance(
+            args.maintenance,
+            parent_pid=max(0, args.parent_pid),
+            restart_path=args.restart_path.expanduser().resolve() if args.restart_path is not None else None,
+        )
     pid_path = SettingsManager.default_path().with_name("instance.pid")
     try:
         previous_pid = pid_path.read_text(encoding="utf-8").strip() if pid_path.exists() else ""
@@ -96,6 +111,33 @@ def main(arguments: list[str] | None = None) -> int:
         LOGGER.info("PetNest 进程清理开始")
         coordinator.release()
         LOGGER.info("PetNest 进程清理结束")
+
+
+def _run_cursor_helper(action: str, style_root: Path | None) -> int:
+    """供 Godot 高级版复用标准版的 macOS 系统光标适配器。"""
+
+    if sys.platform != "darwin":
+        return 2
+    from .core.cursor_style_catalog import CursorStyleCatalog
+    from .platforms.macos_cursor import MacOSCursorController
+
+    controller = MacOSCursorController()
+    if action == "restore":
+        return 0 if controller.restore_system_defaults() else 1
+    if style_root is None:
+        return 2
+    normalized = style_root.expanduser().resolve()
+    style = CursorStyleCatalog(normalized.parent).get(normalized.name)
+    if style is None:
+        return 2
+    succeeded = True
+    for role in controller.supported_roles:
+        path = style.roles.get(role)
+        if path is None:
+            succeeded = controller.restore_role(role) and succeeded
+        else:
+            succeeded = controller.apply_role(role, path) and succeeded
+    return 0 if succeeded else 1
 
 
 if __name__ == "__main__":

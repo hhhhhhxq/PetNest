@@ -74,6 +74,7 @@ class WorkCountdownWindow(QObject):
         width: int,
         height: int,
         theme: str,
+        placement: str,
         always_on_top: bool,
     ) -> None:
         del always_on_top
@@ -82,7 +83,7 @@ class WorkCountdownWindow(QObject):
         self.daily_end_times = daily_end_times
         if self.pet_window is not None:
             self.pet_window.set_countdown_appearance(  # type: ignore[attr-defined]
-                gap=gap, width=width, height=height, theme=theme
+                gap=gap, width=width, height=height, theme=theme, placement=placement
             )
         if enabled:
             self.refresh()

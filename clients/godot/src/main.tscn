@@ -1,0 +1,52 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/main.gd" id="1_main"]
+
+[node name="PetNestAdvanced" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="EffectUnder" type="Sprite2D" parent="."]
+centered = true
+z_index = -10
+
+[node name="Pet" type="Sprite2D" parent="."]
+centered = true
+
+[node name="EffectOver" type="Sprite2D" parent="."]
+centered = true
+z_index = 10
+
+[node name="Countdown" type="Label" parent="."]
+visible = false
+z_index = 20
+text = ""
+horizontal_alignment = 1
+vertical_alignment = 1
+theme_override_colors/font_color = Color(0.2, 0.15, 0.1, 1)
+theme_override_colors/font_shadow_color = Color(1, 1, 1, 0.8)
+theme_override_constants/shadow_offset_x = 1
+theme_override_constants/shadow_offset_y = 1
+theme_override_font_sizes/font_size = 16
+
+[node name="InteractionBubble" type="Label" parent="."]
+visible = false
+z_index = 21
+text = ""
+horizontal_alignment = 1
+vertical_alignment = 1
+autowrap_mode = 2
+theme_override_colors/font_color = Color(0.12, 0.12, 0.15, 1)
+theme_override_font_sizes/font_size = 16
+
+[node name="Menu" type="PopupMenu" parent="."]
+
+[node name="ContextMenu" type="PopupMenu" parent="."]
+always_on_top = true
+transient = false
+exclusive = false
+prefer_native_menu = false
+
+[node name="Tray" type="StatusIndicator" parent="."]
+tooltip = "PetNest Advanced"
+menu = NodePath("../Menu")
+

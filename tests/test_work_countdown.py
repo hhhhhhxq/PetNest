@@ -62,6 +62,7 @@ def test_countdown_controller_never_creates_a_second_visible_window(qtbot: QtBot
         width=132,
         height=37,
         theme="cream",
+        placement="above",
         always_on_top=True,
     )
 

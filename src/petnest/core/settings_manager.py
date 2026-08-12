@@ -107,7 +107,7 @@ class SettingsManager:
             migrated.setdefault("work_countdown_enabled", True)
             migrated.setdefault("work_start_time", "09:00")
             migrated.setdefault("work_end_time", "18:00")
-            migrated["schema_version"] = Settings.SCHEMA_VERSION
+            migrated["schema_version"] = 7
             version = 7
         if version == 7:
             legacy_end = migrated.get("work_end_time", "18:00")
@@ -174,6 +174,10 @@ class SettingsManager:
             version = 16
         if version == 16:
             migrated.setdefault("lan_interaction_enabled", True)
+            migrated["schema_version"] = 17
+            version = 17
+        if version == 17:
+            migrated.setdefault("countdown_placement", "above")
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

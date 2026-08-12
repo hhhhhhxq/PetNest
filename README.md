@@ -1,10 +1,17 @@
 # PetNest
 
-PetNest 是一个基于 Python 3.12+ 与 PySide6 的跨平台轻量桌面宠物播放器。它播放由 `pet.json` 配置的透明 PNG 序列帧，不绑定特定角色、AI 工具或素材风格。
+PetNest 是一个播放 `pet.json` 透明 PNG 序列帧的桌面宠物项目，不绑定特定角色、AI 工具或素材风格。仓库同时提供 PySide6 标准客户端和 Godot 4.7 高级客户端。
 
-目前以 Windows 10/11 为主要目标；macOS 已支持基础桌宠运行和自定义系统光标，并在 macOS 实机完成开发环境验证。Linux 会安全降级，便于后续扩展。
+目前以 Windows 10/11 为主要目标；macOS 支持 PySide6 标准版，并已补齐 Godot 高级版的通用 `.app` 导出、透明桌面窗口、按宠物轮廓点击穿透、全局键鼠空闲时间、登录启动和共享资源布局。高级版仍需在签名后的 macOS 实机产物上完成最终发行验收。Linux 会安全降级，便于后续扩展。
 
 ## 当前功能与边界
+
+### 客户端版本
+
+- **标准版（PySide6）**：提供当前成熟的设置、精灵图导入、动画时长编辑、系统光标和跨平台基础能力。
+- **高级版（Godot 4.7 / GDScript）**：共享同一宠物库、设置、局域网协议和特效资源，提供 GPU 高刷新率、透明区域鼠标穿透、自动行走、转向、程序化跳跃、鼠标跟随和 60 FPS 省电模式。
+
+高级版当前已覆盖宠物播放、状态机、拖动/点击、托盘菜单、原生设置窗口、缩放、暂停、多宠物切换、Windows/macOS 全局鼠标与键盘空闲动作、倒计时、动画时长编辑、精灵图自动/手动选帧导入、系统光标主题、程序与远程资源更新入口、开机启动、本机事件接口、局域网发现与互动、本地 PNG 特效及互动气泡。详见 [`docs/godot-advanced-client-plan.md`](docs/godot-advanced-client-plan.md)。
 
 - 透明、无边框、置顶桌宠；支持缩放、悬停、点击、拖动、释放及位置保存。
 - 宠物旁可显示工作日上下班倒计时；可在设置中开关并调整上下班时间。
@@ -13,9 +20,9 @@ PetNest 是一个基于 Python 3.12+ 与 PySide6 的跨平台轻量桌面宠物�
 - 鼠标样式可在 Windows 和 macOS 替换主题包含的普通箭头、文本、忙碌、移动及缩放光标；macOS 通过 WindowServer 光标注册表原生替换，并在关闭功能或退出时恢复此前的系统样式。
 - macOS 原生光标实现参考 [Mousecape](https://github.com/alexzielenski/Mousecape) 的公开架构，依赖未公开的 WindowServer 接口；当前已在 macOS 15.7.7 验证，系统升级后仍需重新做替换与恢复测试。
 - 本机 TCP 事件接口只监听 `127.0.0.1`，支持 `agent.working`、`agent.success` 等通用事件。
-- 第一阶段不实现自动行走、重力、多宠物、在线商店、账户或云同步。
-- 已实现应用内部的透明 alpha 命中判断；**系统级按像素点击穿透尚未实现**，不要将它视作安全或无干扰的输入方案。
-- macOS 系统空闲、会话事件与登录启动项目前是安全 fallback；正式发布前仍需完成签名产物的 macOS 回归测试。
+- 标准版第一阶段不实现自动行走和重力；高级版已提供自动行走与程序化跳跃。两个版本均不包含在线商店、账户或云同步。
+- 高级版在 Windows 由原生逐像素窗口、在 macOS 由 Godot `mouse_passthrough_polygon` 实现透明区域点击穿透；标准版仍使用应用内部 alpha 命中判断。
+- macOS 高级版通过 `IOHIDSystem/HIDIdleTime` 只读取距上次全局键盘或鼠标输入的时长，不安装按键内容钩子；辅助程序不可用时安全退回鼠标移动检测。
 
 ## 环境与安装
 
@@ -73,6 +80,29 @@ python tools/preview_animation.py pets/sample_pet idle
 python tools/normalize_frames.py input_frames output_frames --width 256 --height 256 --align bottom --dry-run
 python tools/import_spritesheet.py path/to/spritesheet.png --pet-id my_codex_pet
 ```
+
+### Godot 4.7 高级版开发
+
+构建机需要 Godot 4.7.1 stable 和同版本的目标平台导出模板；最终用户运行导出的 EXE 或 `.app` 时不需要安装 Godot 编辑器。可通过 `PETNEST_GODOT_EXE` 指向 Godot 可执行文件：
+
+```powershell
+$env:PETNEST_GODOT_EXE = "D:\Tools\Godot\4.7.1\Godot_v4.7.1-stable_win64_console.exe"
+& $env:PETNEST_GODOT_EXE --path clients\godot --editor
+& $env:PETNEST_GODOT_EXE --headless --path clients\godot --script res://tests/smoke_test.gd
+.\clients\godot\build-windows.ps1
+```
+
+macOS 高级版开发与构建：
+
+```bash
+export PETNEST_GODOT_EXE="/Applications/Godot.app/Contents/MacOS/Godot"
+"$PETNEST_GODOT_EXE" --path clients/godot --editor
+sh clients/godot/build-macos.sh
+```
+
+高级版导出到 `dist\PetNestGodot\PetNestGodot.exe`，构建脚本同时复制 `effects` 和 Windows 原生透明显示器到高级版目录。Godot 负责动画状态、自动行走、跳跃和高刷新率调度；Windows 由独立的 `UpdateLayeredWindow` 逐像素 Alpha 窗口显示最终 PNG 帧，并由 DWM 合成到桌面。该路径保留半透明边缘，不使用洋红色键，也避开部分显卡驱动上透明交换链产生的黑底、黑色剪影或闪烁。开发运行会自动发现仓库资源；也可设置 `PETNEST_PETS_ROOT` 指定宠物库。
+
+高级版托盘或宠物右键菜单可直接打开设置、局域网互动、动画时长编辑器、精灵图导入器、程序更新和远程资源更新，也可直接预览已安装特效。Godot 与 PySide6 使用同一 UDP `18487` 协议，可以互相发现并发送招呼、爱心、文字或特效 ID。原生导入器支持标准 8×9（1536×1872）以及可选扩展 8×11（1536×2288）透明 PNG，可自动跳过透明格位，也可手动选择每个动作的帧，并且不会覆盖已有同名宠物。默认安装只提供中性的 `sample_pet`。
 
 `normalize_frames.py` 默认输出到新目录并连续编号，保留透明背景，不覆盖源帧。`preview_animation.py` 仅打开动作预览窗口，不启动完整桌宠。
 
@@ -236,23 +266,23 @@ python tools/emit_event.py agent.error --source script
 
 PetNest 默认启用「系统空闲动作」，每秒通过系统接口读取最后一次鼠标或键盘输入的时间差；它不会记录按键、鼠标位置或任何输入内容。默认规则是：20 秒无操作触发 `bored`，35 秒无操作触发 `sleep`，恢复系统输入触发一次 `wake`。
 
-宠物包可在 `animations` 中提供 `bored`、`sleep`、`wake` 动作；缺少其中任何资源时会安全回退到 `idle`。该功能在 Windows 使用全系统空闲时间，不限于宠物窗口；其他平台暂不支持时不会影响桌宠正常运行。
+宠物包可在 `animations` 中提供 `bored`、`sleep`、`wake` 动作；缺少其中任何资源时会安全回退到 `idle`。高级版在 Windows 和 macOS 都使用全系统空闲时间，不限于宠物窗口；平台辅助程序不可用时不会影响桌宠正常运行。
 
 ## 打包
 
-Windows 使用 PyInstaller `--onedir` 生成应用目录，再用 Inno Setup 生成 `PetNest-Setup.exe`。构建机需要先安装 Inno Setup 6；Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
+Windows 使用 PyInstaller `--onedir` 生成标准版；检测到 Godot 4.7.1 时同时导出高级版，再用 Inno Setup 生成 `PetNest-Setup.exe`。构建机需要先安装 Inno Setup 6；Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
 
 ```powershell
 .\build_windows.bat
 ```
 
-完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。
+完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择 Godot 高级版组件，并分别创建标准版和高级版快捷方式；宠物库由两个客户端共享，默认位于 `%LOCALAPPDATA%\PetNest\pets`。设置 `PETNEST_BUILD_GODOT=0` 可只构建标准版；本机缺少 Godot 时也会自动跳过高级版。
 
 ```bash
 ./build_macos.sh
 ```
 
-macOS 正式分发还需要签名和公证；本项目第一阶段产物不保证已签名。
+macOS 构建同时生成标准版 `dist/PetNest.app`、高级版 `dist/PetNest Advanced.app` 和便于传输的 `dist/PetNest-Advanced-macOS.zip`。高级版只预置中性的 `sample_pet`。默认执行临时签名；正式分发请设置 `PETNEST_CODESIGN_IDENTITY` 使用 Developer ID，并在发行前完成 Apple 公证和 macOS 实机透明/输入回归。
 
 ## 隐私与日志
 

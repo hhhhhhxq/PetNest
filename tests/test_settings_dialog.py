@@ -37,3 +37,13 @@ def test_application_update_entry_is_absent_without_platform_support(qtbot) -> N
     qtbot.addWidget(dialog)
 
     assert not hasattr(dialog, "app_update_button")
+
+
+def test_countdown_card_placement_can_be_changed(qtbot) -> None:
+    dialog = SettingsDialog(Settings(countdown_placement="below"))
+    qtbot.addWidget(dialog)
+
+    assert dialog.countdown_placement_input.currentData() == "below"
+    dialog.countdown_placement_input.setCurrentIndex(dialog.countdown_placement_input.findData("above"))
+
+    assert dialog.updated_settings().countdown_placement == "above"

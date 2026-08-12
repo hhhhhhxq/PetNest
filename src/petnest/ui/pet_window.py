@@ -93,6 +93,7 @@ class PetWindow(QWidget):
         self._countdown_width = 132
         self._countdown_card_height = 37
         self._countdown_theme = "cream"
+        self._countdown_placement = "below"
         self._countdown_skins = self._load_countdown_skins(countdown_root)
         self._pending_countdown_skins: dict[str, QPixmap] | None = None
         self._follow_mode_enabled = False
@@ -188,7 +189,7 @@ class PetWindow(QWidget):
         if frame is None:
             return False
         logical_x = int((x - self._pet_left()) / self.scale)
-        logical_y = int(y / self.scale)
+        logical_y = int((y - self._pet_top()) / self.scale)
         if logical_x < 0 or logical_y < 0 or logical_x >= frame.width or logical_y >= frame.height:
             return False
         cache_key = id(frame)
@@ -311,7 +312,7 @@ class PetWindow(QWidget):
         self._mouse_interaction_enabled = enabled
 
     def set_countdown_text(self, text: str | None) -> None:
-        """在宠物下方显示倒计时；空值会移除预留区域。"""
+        """显示倒计时；空值会移除预留区域。"""
         normalized = text or None
         if normalized is None and self._pending_countdown_skins is not None:
             self._countdown_skins = self._pending_countdown_skins
@@ -323,15 +324,26 @@ class PetWindow(QWidget):
             self.move(self.clamp_position(self.pos()))
         self.update()
 
-    def set_countdown_appearance(self, *, gap: int, width: int, height: int, theme: str = "cream") -> None:
+    def set_countdown_appearance(
+        self,
+        *,
+        gap: int,
+        width: int,
+        height: int,
+        theme: str = "cream",
+        placement: str = "below",
+    ) -> None:
         """更新倒计时卡片尺寸及它与宠物之间的垂直间距。"""
+        pet_origin = self.pos() + QPoint(self._pet_left(), self._pet_top())
         self._countdown_gap = max(0, min(int(gap), 80))
         self._countdown_width = max(110, min(int(width), 420))
         self._countdown_card_height = max(26, min(int(height), 100))
         self._countdown_theme = theme if theme in {"cream", "night", "yarn"} else "cream"
+        self._countdown_placement = placement if placement in {"above", "below"} else "above"
         if self.countdown_is_visible:
             self.setFixedSize(self._scaled_canvas_size())
-            self.move(self.clamp_position(self.pos()))
+            target = pet_origin - QPoint(self._pet_left(), self._pet_top())
+            self.move(self.clamp_position(target))
         self.update()
 
     def reload_countdown_skins(self, directory: Path | None = None) -> None:
@@ -518,7 +530,7 @@ class PetWindow(QWidget):
             | QPainter.RenderHint.TextAntialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
         )
-        pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
+        pet_rect = QRect(self._pet_left(), self._pet_top(), self._pet_width(), self._pet_height())
         if self._active_effect_layer == "under":
             self._draw_active_effect(painter, pet_rect)
         if self._follow_motion and self._follow_facing_left and self._playing_action in {"walk", "drag"}:
@@ -622,7 +634,10 @@ class PetWindow(QWidget):
         height = self._pet_height()
         if self.countdown_is_visible:
             width = max(width, self._effective_countdown_width())
-            height = max(height, self._countdown_top() + self._countdown_card_height)
+            if self._countdown_placement == "above":
+                height = self._pet_top() + height
+            else:
+                height = max(height, self._countdown_top() + self._countdown_card_height)
         return QSize(width, height)
 
     def _pet_width(self) -> int:
@@ -648,11 +663,16 @@ class PetWindow(QWidget):
     def _pet_left(self) -> int:
         return max(0, (self.width() - self._pet_width()) // 2)
 
+    def _pet_top(self) -> int:
+        if self.countdown_is_visible and self._countdown_placement == "above":
+            return self._countdown_card_height + self._countdown_gap
+        return 0
+
     def _countdown_rect(self) -> QRect:
         width = self._effective_countdown_width()
         height = self._countdown_card_height
         left = (self.width() - width) // 2
-        top = self._countdown_top()
+        top = 0 if self._countdown_placement == "above" else self._countdown_top()
         return QRect(left, top, width, height)
 
     def _effective_countdown_width(self) -> int:

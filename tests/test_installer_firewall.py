@@ -17,10 +17,13 @@ def test_installer_declares_scoped_lan_firewall_configuration() -> None:
     assert "localport=18487" in script
     assert "program=\"' +" in script
     assert "ExpandConstant('{app}\\PetNest.exe')" in script
+    assert "ExpandConstant('{app}\\advanced\\PetNestGodot.exe')" in script
     assert "Profiles := GetFirewallProfiles('');" in script
     assert "[UninstallRun]" in script
     assert "PetNest LAN UDP 18487" in script
     assert "RunOnceId: \"RemovePetNestLanFirewall\"" in script
+    assert "PetNest Advanced LAN UDP 18487" in script
+    assert "RunOnceId: \"RemovePetNestAdvancedLanFirewall\"" in script
 
 
 def test_installer_warns_when_firewall_rule_cannot_be_created() -> None:

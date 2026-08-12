@@ -1,0 +1,36 @@
+; PetNest 高级客户端 Godot 工程。
+; 尽量通过文本维护，避免把编辑器缓存提交到仓库。
+
+config_version=5
+
+[application]
+
+config/name="PetNest Advanced"
+run/main_scene="res://src/main.tscn"
+run/max_fps=240
+config/features=PackedStringArray("4.7")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=340
+window/size/window_width_override=1280
+window/size/window_height_override=340
+window/size/borderless=true
+window/size/always_on_top=true
+window/size/transparent=false
+window/size/no_focus=true
+window/per_pixel_transparency/allowed=true
+window/vsync/vsync_mode=1
+window/stretch/mode="canvas_items"
+window/subwindows/embed_subwindows=false
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+textures/canvas_textures/default_texture_filter=1
+textures/vram_compression/import_etc2_astc=true
+viewport/transparent_background=false
+

@@ -29,6 +29,21 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "PetNestUpdater" in build_script
     assert "Source: \"..\\dist\\PetNestUpdater.exe\"" in contents
     assert "skipifsilent" in contents
+    assert "assets\\generated" not in build_script.casefold()
+    assert "assets\\countdown;assets\\countdown" in build_script
+    assert "assets\\cursors;assets\\cursors" in build_script
+    assert "assets\\icons;assets\\icons" in build_script
+
+
+def test_macos_build_only_bundles_the_neutral_sample_pet() -> None:
+    contents = Path("build_macos.sh").read_text(encoding="utf-8")
+
+    assert "--add-data pets/sample_pet:pets/sample_pet" in contents
+    assert "--add-data pets:pets" not in contents
+    assert "--add-data assets:assets" not in contents
+    assert "--add-data assets/countdown:assets/countdown" in contents
+    assert "--add-data assets/cursors:assets/cursors" in contents
+    assert "--add-data assets/icons:assets/icons" in contents
 
 
 def test_installer_and_application_use_the_dedicated_app_icon() -> None:
@@ -54,3 +69,19 @@ def test_release_manifest_generator_is_checked_in() -> None:
     assert "sha256" in contents
     assert "schema_version" in contents
     assert "app-update.json" in contents
+
+
+def test_installer_offers_the_exported_godot_client_as_an_optional_component() -> None:
+    contents = Path("installer/PetNest.iss").read_text(encoding="utf-8")
+    build_script = Path("build_windows.bat").read_text(encoding="utf-8")
+
+    assert 'Name: "standard"' in contents
+    assert 'Name: "advanced"' in contents
+    assert 'FileExists("..\\dist\\PetNestGodot\\PetNestGodot.exe")' in contents
+    assert 'DestDir: "{app}\\advanced"' in contents
+    assert "PetNest 高级版" in contents
+    assert "clients\\godot\\build-windows.ps1 -Optional" in build_script
+    assert 'PETNEST_BUILD_GODOT%"=="0' in build_script
+    godot_build = Path("clients/godot/build-windows.ps1").read_text(encoding="utf-8")
+    assert 'Join-Path $RepositoryRoot "effects"' in godot_build
+    assert "Copy-Item -LiteralPath $EffectsDirectory" in godot_build
