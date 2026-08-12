@@ -56,13 +56,14 @@ class MacOSCursorController:
         self._platform = platform or sys.platform
         self._api = api
 
-    def apply(self, cursor_path: Path) -> bool:
-        return self.apply_role("arrow", cursor_path)
+    def apply(self, cursor_path: Path, *, scale: float = 1.0) -> bool:
+        return self.apply_role("arrow", cursor_path, scale=scale)
 
-    def apply_role(self, role: str, cursor_path: Path) -> bool:
+    def apply_role(self, role: str, cursor_path: Path, *, scale: float = 1.0) -> bool:
         if self._platform != "darwin" or role not in _ROLE_IDENTIFIERS:
             return False
         try:
+            del scale  # WindowServer 注册 API 使用资源本身尺寸；保持跨平台安全回退。
             return self._get_api().apply_role(role, cursor_path)
         except (OSError, RuntimeError, ValueError):
             LOGGER.warning("无法应用 macOS 光标角色 %s：%s", role, cursor_path, exc_info=True)

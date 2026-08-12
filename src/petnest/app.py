@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import replace
+from datetime import datetime
 import logging
 import os
 from pathlib import Path
@@ -58,7 +59,6 @@ from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.settings_dialog import SettingsDialog
-from petnest.ui.cursor_style_dialog import CursorStyleDialog
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
@@ -189,6 +189,7 @@ class PetNest:
         self._app_update_results: Queue[tuple[str, object]] = Queue()
         self._app_update_worker: Thread | None = None
         self._app_update_dialog: AppUpdateDialog | None = None
+        self._settings_center_dialog: SettingsDialog | None = None
         self._pending_app_update: AppUpdateInfo | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
         cursor_root = (
@@ -496,25 +497,38 @@ class PetNest:
         self.apply_settings(replace(self.settings, mouse_follow_enabled=not self.settings.mouse_follow_enabled))
 
     def show_settings_dialog(self) -> None:
-        """打开简单设置窗；确认后立即将安全的显示偏好写入用户目录。"""
+        """打开或激活统一设置中心。"""
+        self._show_settings_center("display")
+
+    def show_cursor_style_dialog(self) -> None:
+        """保留托盘独立入口，但定位到设置中心的鼠标分类。"""
+        self._show_settings_center("mouse_behavior")
+
+    def _show_settings_center(self, initial_section: str) -> None:
+        dialog = self._settings_center_dialog
+        if dialog is not None:
+            dialog.select_section(initial_section)
+            dialog.showNormal()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        supported_roles = getattr(self.cursor_controller, "supported_roles", frozenset(_CURSOR_STYLE_ROLES))
         dialog = SettingsDialog(
             self.settings,
             self.window,
             on_check_app_update=self._show_app_update_dialog if sys.platform in APP_UPDATE_PLATFORMS else None,
-        )
-        if dialog.exec():
-            self.apply_settings(dialog.updated_settings())
-
-    def show_cursor_style_dialog(self) -> None:
-        supported_roles = getattr(self.cursor_controller, "supported_roles", frozenset(_CURSOR_STYLE_ROLES))
-        dialog = CursorStyleDialog(
-            self.settings,
-            self.cursor_catalog.discover(),
-            self.window,
+            cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
+            initial_section=initial_section,
         )
-        if dialog.exec():
-            self.apply_settings(dialog.updated_settings())
+        self._settings_center_dialog = dialog
+        dialog.accepted.connect(lambda: self.apply_settings(dialog.updated_settings()))
+        dialog.finished.connect(lambda _result: self._clear_settings_center(dialog))
+        dialog.open()
+
+    def _clear_settings_center(self, dialog: SettingsDialog) -> None:
+        if self._settings_center_dialog is dialog:
+            self._settings_center_dialog = None
 
     def show_lan_interaction_dialog(self) -> None:
         """打开附近设备与远程伙伴的统一互动入口。"""
@@ -1125,7 +1139,23 @@ class PetNest:
             height=self.settings.countdown_height,
             theme=self.settings.countdown_theme,
             always_on_top=self.settings.always_on_top,
+            schedule_mode=self.settings.work_schedule_mode,
+            clock_in_start_time=self.settings.clock_in_start_time,
+            clock_in_end_time=self.settings.clock_in_end_time,
+            work_duration_minutes=self.settings.work_duration_minutes,
+            clock_in_date=self.settings.clock_in_date,
+            clock_in_time=self.settings.clock_in_time,
+            on_clock_in=self._record_clock_in,
         )
+
+    def _record_clock_in(self, recorded_at: datetime) -> None:
+        """保存当天的弹性打卡时间，并让控制器继续负责显示。"""
+        self.settings = replace(
+            self.settings,
+            clock_in_date=recorded_at.date().isoformat(),
+            clock_in_time=recorded_at.strftime("%H:%M"),
+        )
+        self.settings_manager.save(self.settings)
 
     def _configure_mouse_follow(self) -> None:
         enabled = self.settings.mouse_follow_enabled
@@ -1163,7 +1193,7 @@ class PetNest:
             applied = {
                 role
                 for role, path in selected.roles.items()
-                if (self.cursor_controller.apply(path) if role == "arrow" else self.cursor_controller.apply_role(role, path))
+                if self._apply_cursor_role(role, path)
             }
             if applied:
                 self._active_cursor_roles = applied
@@ -1176,6 +1206,18 @@ class PetNest:
                 self._active_cursor_roles.clear()
             return
         self.settings = replace(self.settings, cursor_restore_pending=False)
+
+    def _apply_cursor_role(self, role: str, path: Path) -> bool:
+        """应用带尺寸的光标；兼容旧的控制器替身。"""
+        scale = self.settings.cursor_scale / 100
+        try:
+            if role == "arrow":
+                return self.cursor_controller.apply(path, scale=scale)
+            return self.cursor_controller.apply_role(role, path, scale=scale)
+        except TypeError:
+            if role == "arrow":
+                return self.cursor_controller.apply(path)
+            return self.cursor_controller.apply_role(role, path)
 
     def _restore_cursor_style(self) -> None:
         """正常退出时恢复由本进程替换的普通箭头。"""

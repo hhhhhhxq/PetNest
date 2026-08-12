@@ -178,6 +178,16 @@ class SettingsManager:
             version = 17
         if version == 17:
             migrated.setdefault("remote_interaction_enabled", True)
+            migrated["schema_version"] = 18
+            version = 18
+        if version == 18:
+            migrated.setdefault("cursor_scale", 100)
+            migrated.setdefault("work_schedule_mode", "fixed")
+            migrated.setdefault("clock_in_start_time", "09:30")
+            migrated.setdefault("clock_in_end_time", "10:00")
+            migrated.setdefault("work_duration_minutes", 540)
+            migrated.setdefault("clock_in_date", None)
+            migrated.setdefault("clock_in_time", None)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

@@ -174,3 +174,61 @@ def test_remote_interaction_preference_round_trips_and_migrates(tmp_path) -> Non
     migrated = manager.load()
     assert migrated.schema_version == Settings.SCHEMA_VERSION
     assert migrated.remote_interaction_enabled is True
+
+
+def test_elastic_clock_in_defaults_are_available_and_round_trip(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+
+    defaults = manager.load()
+    assert (defaults.cursor_scale, defaults.work_schedule_mode) == (100, "fixed")
+    assert (defaults.clock_in_start_time, defaults.clock_in_end_time) == ("09:30", "10:00")
+    assert (defaults.work_duration_minutes, defaults.clock_in_date, defaults.clock_in_time) == (540, None, None)
+
+    manager.save(
+        Settings(
+            cursor_scale=125,
+            work_schedule_mode="elastic",
+            clock_in_start_time="09:30",
+            clock_in_end_time="10:00",
+            work_duration_minutes=540,
+            clock_in_date="2026-08-13",
+            clock_in_time="09:40",
+        )
+    )
+    loaded = manager.load()
+    assert (
+        loaded.cursor_scale,
+        loaded.work_schedule_mode,
+        loaded.clock_in_start_time,
+        loaded.clock_in_end_time,
+        loaded.work_duration_minutes,
+        loaded.clock_in_date,
+        loaded.clock_in_time,
+    ) == (125, "elastic", "09:30", "10:00", 540, "2026-08-13", "09:40")
+
+
+def test_schema_18_migrates_new_settings_with_safe_defaults(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 18}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
+    assert loaded.cursor_scale == 100
+    assert loaded.work_schedule_mode == "fixed"
+    assert loaded.clock_in_start_time == "09:30"
+    assert loaded.clock_in_end_time == "10:00"
+    assert loaded.work_duration_minutes == 540
+
+
+def test_invalid_new_settings_fall_back_to_safe_defaults() -> None:
+    loaded = Settings.from_dict(
+        {
+            "cursor_scale": 111,
+            "work_schedule_mode": "daily-exceptions",
+            "work_duration_minutes": 0,
+        }
+    )
+
+    assert (loaded.cursor_scale, loaded.work_schedule_mode, loaded.work_duration_minutes) == (100, "fixed", 540)

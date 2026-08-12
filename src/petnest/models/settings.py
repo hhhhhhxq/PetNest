@@ -19,7 +19,9 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 18
+    SCHEMA_VERSION = 19
+    CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
+    WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -57,6 +59,13 @@ class Settings:
     cursor_style_enabled: bool = False
     cursor_style_id: str | None = None
     cursor_restore_pending: bool = False
+    cursor_scale: int = 100
+    work_schedule_mode: str = "fixed"
+    clock_in_start_time: str = "09:30"
+    clock_in_end_time: str = "10:00"
+    work_duration_minutes: int = 540
+    clock_in_date: str | None = None
+    clock_in_time: str | None = None
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,9 +79,36 @@ class Settings:
         """忽略未知键，避免未来版本设置使旧版本崩溃。"""
         fields = cls.__dataclass_fields__
         values = {name: raw[name] for name in fields if name in raw}
+        values["cursor_scale"] = _cursor_scale(values.get("cursor_scale", 100))
+        values["work_schedule_mode"] = _work_schedule_mode(values.get("work_schedule_mode", "fixed"))
+        values["work_duration_minutes"] = _work_duration_minutes(values.get("work_duration_minutes", 540))
+        for name in ("clock_in_start_time", "clock_in_end_time"):
+            if not isinstance(values.get(name), str) or not values[name]:
+                values[name] = "09:30" if name == "clock_in_start_time" else "10:00"
+        for name in ("clock_in_date", "clock_in_time"):
+            if values.get(name) is not None and not isinstance(values[name], str):
+                values[name] = None
         if "animation_overrides" in values:
             values["animation_overrides"] = _animation_overrides(values["animation_overrides"])
         return cls(**values)
+
+
+def _cursor_scale(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in Settings.CURSOR_SCALE_OPTIONS:
+        return 100
+    return value
+
+
+def _work_schedule_mode(value: object) -> str:
+    if value not in Settings.WORK_SCHEDULE_MODES:
+        return "fixed"
+    return str(value)
+
+
+def _work_duration_minutes(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 24 * 60:
+        return 540
+    return value
 
 
 def _animation_overrides(value: object) -> dict[str, dict[str, AnimationOverride]]:

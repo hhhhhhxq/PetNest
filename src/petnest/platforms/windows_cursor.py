@@ -23,7 +23,7 @@ _SPI_SETCURSORS = 0x0057
 
 
 class _CursorApi(Protocol):
-    def load_file_cursor(self, path: Path) -> int | None: ...
+    def load_file_cursor(self, path: Path, size: tuple[int, int] | None = None) -> int | None: ...
 
     def load_saved_cursor_or_system_default(self, value_name: str, resource_id: int) -> int | None: ...
 
@@ -43,12 +43,12 @@ class WindowsCursorController:
         self._platform = platform or sys.platform
         self._api = api or _CtypesCursorApi()
 
-    def apply(self, cursor_path: Path) -> bool:
+    def apply(self, cursor_path: Path, *, scale: float = 1.0) -> bool:
         """将一个 `.cur` 样式应用到 OCR_NORMAL。"""
         if self._platform != "win32":
             return False
         try:
-            return self.apply_role("arrow", cursor_path)
+            return self.apply_role("arrow", cursor_path, scale=scale)
         except (OSError, ValueError):
             LOGGER.warning("无法应用 Windows 普通箭头光标：%s", cursor_path, exc_info=True)
             return False
@@ -66,14 +66,30 @@ class WindowsCursorController:
             LOGGER.warning("无法恢复 Windows 普通箭头光标", exc_info=True)
             return False
 
-    def apply_role(self, role: str, cursor_path: Path) -> bool:
+    def apply_role(self, role: str, cursor_path: Path, *, scale: float = 1.0) -> bool:
         if self._platform != "win32" or role not in _ROLE_CODES:
             return False
         try:
-            return self._set_cursor(self._api.load_file_cursor(cursor_path), _ROLE_CODES[role])
+            size = self._scaled_size(scale)
+            try:
+                loaded = self._api.load_file_cursor(cursor_path, size=size if size != (32, 32) else None)
+            except TypeError:
+                # 兼容旧的第三方/测试 API 替身；不支持尺寸时仍可应用主题。
+                loaded = self._api.load_file_cursor(cursor_path)
+            return self._set_cursor(loaded, _ROLE_CODES[role])
         except (OSError, ValueError):
             LOGGER.warning("无法应用 Windows 光标角色：%s", role, exc_info=True)
             return False
+
+    @staticmethod
+    def _scaled_size(scale: float) -> tuple[int, int]:
+        """将设置中的比例转换为系统光标加载尺寸。"""
+        try:
+            normalized = min(2.0, max(0.5, float(scale)))
+        except (TypeError, ValueError):
+            normalized = 1.0
+        size = max(16, round(32 * normalized))
+        return size, size
 
     def restore_role(self, role: str) -> bool:
         if self._platform != "win32" or role not in _ROLE_CODES:
@@ -136,10 +152,11 @@ class _CtypesCursorApi:
                 wintypes.UINT,
             ]
 
-    def load_file_cursor(self, path: Path) -> int | None:
+    def load_file_cursor(self, path: Path, size: tuple[int, int] | None = None) -> int | None:
         if self._user32 is None or not path.is_file():
             return None
-        handle = self._user32.LoadImageW(None, str(path), _IMAGE_CURSOR, 0, 0, _LR_LOADFROMFILE)
+        width, height = size or (0, 0)
+        handle = self._user32.LoadImageW(None, str(path), _IMAGE_CURSOR, width, height, _LR_LOADFROMFILE)
         return int(handle) if handle else None
 
     def load_saved_cursor_or_system_default(self, value_name: str, resource_id: int) -> int | None:
