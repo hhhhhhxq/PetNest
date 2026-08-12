@@ -179,6 +179,8 @@ class FirebaseRemoteInteractionService(QObject):
     pair_code_changed = Signal(str)
     status_changed = Signal(str)
     error = Signal(str)
+    interaction_send_succeeded = Signal(object)
+    interaction_send_failed = Signal(object, str)
     running_changed = Signal(bool)
 
     def __init__(
@@ -510,8 +512,11 @@ class FirebaseRemoteInteractionService(QObject):
                 method="PUT",
                 data=_json_bytes(payload),
             )
+            self.interaction_send_succeeded.emit(draft)
         except (OSError, ValueError, HTTPError, URLError, LanProtocolError) as error:
-            self.error.emit(f"远程互动发送失败：{_friendly_network_error(error)}")
+            message = f"远程互动发送失败：{_friendly_network_error(error)}"
+            self.error.emit(message)
+            self.interaction_send_failed.emit(draft, message)
 
     def _database_url(self, path: str, token: str) -> str:
         assert self.config is not None

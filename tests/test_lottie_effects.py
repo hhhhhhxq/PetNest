@@ -84,3 +84,17 @@ def test_catalog_rejects_manifest_with_frame_count_mismatch(tmp_path: Path) -> N
 
     with pytest.raises(EffectImportError, match="帧数"):
         EffectCatalog().load(result.package_root)
+
+
+def test_catalog_can_discover_without_decoding_every_frame(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """互动列表只需读取清单，不能为每张预览帧启动 Pillow 解码。"""
+    result = LottieEffectImporter().import_file(_lottie_file(tmp_path), tmp_path / "effects", "heart")
+
+    def fail_if_frame_is_decoded(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("快速发现不应解码 PNG 帧")
+
+    monkeypatch.setattr("petnest.core.lottie_effects.Image.open", fail_if_frame_is_decoded)
+
+    effects = EffectCatalog().discover(tmp_path / "effects", verify_frames=False)
+
+    assert [effect.identifier for effect in effects] == [result.manifest.identifier]

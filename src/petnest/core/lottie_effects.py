@@ -223,7 +223,13 @@ class LottieEffectImporter:
 class EffectCatalog:
     """发现和校验本地 PNG 动效包。"""
 
-    def load(self, package_root: Path) -> EffectManifest:
+    def load(self, package_root: Path, *, verify_frames: bool = True) -> EffectManifest:
+        """读取一个动效清单。
+
+        ``verify_frames=False`` 只检查帧文件数量和清单字段，不逐张解码 PNG。
+        互动选择器只需要列出动效，使用快速模式可以避免打开窗口时阻塞 GUI；
+        导入、管理和其它需要完整校验的路径继续使用默认的严格模式。
+        """
         root = package_root.expanduser().resolve()
         manifest_path = root / "effect.json"
         if not root.is_dir() or not manifest_path.is_file():
@@ -258,13 +264,14 @@ class EffectCatalog:
         if len(frames) != expected_count:
             raise EffectImportError(f"动效帧数不一致：清单为 {expected_count}，实际为 {len(frames)}")
         fps = _positive_float(raw.get("fps"))
-        for frame_path in frames:
-            try:
-                with Image.open(frame_path) as frame:
-                    if frame.size != (width, height) or frame.mode != "RGBA":
-                        raise EffectImportError(f"帧 {frame_path.name} 不是统一的 RGBA {width}×{height} PNG")
-            except OSError as error:
-                raise EffectImportError(f"无法读取帧 {frame_path.name}：{error}") from error
+        if verify_frames:
+            for frame_path in frames:
+                try:
+                    with Image.open(frame_path) as frame:
+                        if frame.size != (width, height) or frame.mode != "RGBA":
+                            raise EffectImportError(f"帧 {frame_path.name} 不是统一的 RGBA {width}×{height} PNG")
+                except OSError as error:
+                    raise EffectImportError(f"无法读取帧 {frame_path.name}：{error}") from error
         source_hash = raw.get("source_sha256", "")
         renderer = raw.get("renderer", "")
         layer = raw.get("layer", "over")
@@ -286,7 +293,8 @@ class EffectCatalog:
             renderer=str(renderer),
         )
 
-    def discover(self, effects_root: Path) -> list[EffectManifest]:
+    def discover(self, effects_root: Path, *, verify_frames: bool = True) -> list[EffectManifest]:
+        """发现动效包；列表场景可用 ``verify_frames=False`` 避免逐帧解码。"""
         root = effects_root.expanduser()
         if not root.is_dir():
             return []
@@ -296,7 +304,7 @@ class EffectCatalog:
             key=lambda item: item.name.casefold(),
         ):
             try:
-                effects.append(self.load(candidate))
+                effects.append(self.load(candidate, verify_frames=verify_frames))
             except EffectImportError:
                 LOGGER.warning("忽略无效动效包：%s", candidate, exc_info=True)
         return effects

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QGuiApplication, QPixmap
+from PySide6.QtCore import QTimer, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -134,6 +135,9 @@ class RemotePairDialog(QDialog):
 class LanInteractionDialog(QDialog):
     """附近设备、远程伙伴和三种互斥互动方式的统一入口。"""
 
+    _PREVIEW_SAMPLE_COUNT = 9
+    _DEFAULT_STATUS = "选择一个互动方式后发送"
+
     def __init__(
         self,
         *,
@@ -147,6 +151,7 @@ class LanInteractionDialog(QDialog):
         on_remote_pair: Callable[[str], bool | None] | None = None,
         on_preview: Callable[[object], bool | None] | None = None,
         on_preview_clear: Callable[[], None] | None = None,
+        remote_send_async: bool = False,
         remote_pair_code: str = "",
         remote_status: str = "Firebase 尚未配置",
         parent: QWidget | None = None,
@@ -165,11 +170,18 @@ class LanInteractionDialog(QDialog):
         self._on_remote_pair = on_remote_pair
         self._on_preview = on_preview
         self._on_preview_clear = on_preview_clear
+        self._remote_send_async = bool(remote_send_async)
         self._remote_pair_code = remote_pair_code
         self._remote_status = remote_status
         self._preview_active = False
         self._selected_peer: LanPeer | None = None
         self._selected_effect_id: str | None = None
+        self._pending_send_draft: InteractionDraft | None = None
+        self._success_feedback_timeout_ms = 2_500
+        self._failure_feedback_timeout_ms = 4_000
+        self._status_reset_timer = QTimer(self)
+        self._status_reset_timer.setSingleShot(True)
+        self._status_reset_timer.timeout.connect(self._restore_default_status)
         self._build_ui()
         self._populate_peers()
         self._populate_remote_peers()
@@ -187,7 +199,29 @@ class LanInteractionDialog(QDialog):
         )
 
     def set_status_message(self, message: str) -> None:
-        self.status_label.setText(str(message))
+        if self._pending_send_draft is not None:
+            return
+        self._show_feedback(str(message), timeout_ms=4_000)
+
+    def remote_send_succeeded(self, draft: InteractionDraft) -> None:
+        """远程服务确认写入 Firebase 后更新发送反馈。"""
+        if self._pending_send_draft != draft:
+            return
+        self._pending_send_draft = None
+        self._refresh_send_button()
+        self._show_feedback("已发送 ✓", timeout_ms=self._success_feedback_timeout_ms)
+
+    def remote_send_failed(self, draft: InteractionDraft, message: str) -> None:
+        """远程服务报告写入失败后解除发送锁定。"""
+        if self._pending_send_draft != draft:
+            return
+        self._pending_send_draft = None
+        self._refresh_send_button()
+        detail = str(message).strip()
+        self._show_feedback(
+            f"发送失败：{detail}" if detail else "发送失败，请稍后重试",
+            timeout_ms=self._failure_feedback_timeout_ms,
+        )
 
     def set_remote_status(self, message: str) -> None:
         self._remote_status = str(message)
@@ -339,6 +373,7 @@ class LanInteractionDialog(QDialog):
         self.peer_list = QListWidget(nearby_page)
         self.peer_list.setObjectName("peerList")
         self.peer_list.setSpacing(4)
+        self.peer_list.setIconSize(QSize(30, 30))
         self.peer_list.currentItemChanged.connect(self._peer_changed)
         nearby_layout.addWidget(self.peer_list, 1)
         self.device_tabs.addTab(nearby_page, "附近设备")
@@ -371,6 +406,7 @@ class LanInteractionDialog(QDialog):
         self.remote_peer_list = QListWidget(remote_page)
         self.remote_peer_list.setObjectName("remotePeerList")
         self.remote_peer_list.setSpacing(4)
+        self.remote_peer_list.setIconSize(QSize(30, 30))
         self.remote_peer_list.currentItemChanged.connect(self._remote_peer_changed)
         remote_layout.addWidget(self.remote_peer_list, 1)
         self.device_tabs.addTab(remote_page, "远程伙伴")
@@ -503,7 +539,7 @@ class LanInteractionDialog(QDialog):
             return
         for peer in self._peers:
             label = peer.display_name.strip() or f"用户-{peer.device_id[-4:].upper()}"
-            item = QListWidgetItem(f"{initials_for(label)}  {label}\n{peer.subtitle}", self.peer_list)
+            item = QListWidgetItem(self._peer_avatar(label), label + "\n" + peer.subtitle, self.peer_list)
             item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
             item.setToolTip(peer.ip_address or "局域网设备")
 
@@ -516,9 +552,28 @@ class LanInteractionDialog(QDialog):
             return
         for peer in self._remote_peers:
             label = peer.display_name.strip() or f"用户-{peer.device_id[-4:].upper()}"
-            item = QListWidgetItem(f"{initials_for(label)}  {label}\n{peer.subtitle}", self.remote_peer_list)
+            item = QListWidgetItem(self._peer_avatar(label), label + "\n" + peer.subtitle, self.remote_peer_list)
             item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
             item.setToolTip("Firebase 远程伙伴")
+
+    @staticmethod
+    def _peer_avatar(label: str) -> QIcon:
+        """在名称左侧绘制头像缩写，右侧文字只保留完整名称。"""
+        pixmap = QPixmap(30, 30)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#fff0e8"))
+        painter.drawEllipse(1, 1, 28, 28)
+        painter.setPen(QColor("#a85d3e"))
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(9)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, initials_for(label))
+        painter.end()
+        return QIcon(pixmap)
 
     def _populate_effects(self) -> None:
         self.effect_list.clear()
@@ -543,6 +598,7 @@ class LanInteractionDialog(QDialog):
     def _peer_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if self.device_tabs.currentIndex() != 0:
             return
+        self._restore_default_status()
         self._selected_peer = None
         if current is not None:
             peer_id = current.data(Qt.ItemDataRole.UserRole)
@@ -554,6 +610,7 @@ class LanInteractionDialog(QDialog):
     def _remote_peer_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if self.device_tabs.currentIndex() != 1:
             return
+        self._restore_default_status()
         self._selected_peer = None
         if current is not None:
             peer_id = current.data(Qt.ItemDataRole.UserRole)
@@ -573,9 +630,11 @@ class LanInteractionDialog(QDialog):
             self._remote_peer_changed(self.remote_peer_list.currentItem(), None)
 
     def _quick_selection_changed(self) -> None:
+        self._restore_default_status()
         self._refresh_send_button()
 
     def _mode_changed(self, _index: int) -> None:
+        self._restore_default_status()
         self._refresh_send_button()
 
     def _effect_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -591,7 +650,8 @@ class LanInteractionDialog(QDialog):
         effect = self._selected_effect()
         frame_paths = tuple(getattr(effect, "frames", ())) if effect is not None else ()
         if frame_paths:
-            pixmap = QPixmap(str(frame_paths[0]))
+            preview_path = self._preview_frame_path(effect)
+            pixmap = QPixmap(str(preview_path)) if preview_path is not None else QPixmap()
             self.effect_preview.setPixmap(pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             self.effect_preview.setText("")
         else:
@@ -601,6 +661,40 @@ class LanInteractionDialog(QDialog):
         self.effect_meta.setText(f"{self._selected_effect_id} · {duration / 1000:.1f} 秒\n只发送编号，不传输资源文件")
         self.preview_button.setEnabled(effect is not None and self._on_preview is not None)
         self._refresh_send_button()
+
+    @classmethod
+    def _preview_frame_path(cls, effect: object) -> Path | None:
+        """从少量均匀采样帧中选出可见内容最多的一帧作为缩略图。
+
+        不扫描整组动效，避免大动效在互动页中造成新的卡顿；首帧为空时，
+        也能选到已经进入画面的代表帧。
+        """
+        frames = tuple(Path(path) for path in getattr(effect, "frames", ()) if path)
+        if not frames:
+            return None
+        if len(frames) <= cls._PREVIEW_SAMPLE_COUNT:
+            sample_indices = range(len(frames))
+        else:
+            last = len(frames) - 1
+            sample_indices = sorted(
+                {round(index * last / (cls._PREVIEW_SAMPLE_COUNT - 1)) for index in range(cls._PREVIEW_SAMPLE_COUNT)}
+            )
+        best_path: Path | None = None
+        best_score = -1
+        for index in sample_indices:
+            path = frames[index]
+            image = QImage(str(path)).convertToFormat(QImage.Format.Format_RGBA8888)
+            if image.isNull():
+                continue
+            try:
+                data = bytes(image.constBits())
+            except (TypeError, ValueError):
+                continue
+            score = sum(1 for alpha in data[3::4] if alpha > 8)
+            if score > best_score:
+                best_score = score
+                best_path = path
+        return best_path or frames[0]
 
     def _selected_effect(self) -> object | None:
         if not self._selected_effect_id:
@@ -638,9 +732,15 @@ class LanInteractionDialog(QDialog):
 
     def _update_text_count(self) -> None:
         self.text_count_label.setText(f"{len(self.text_input.toPlainText())} / 120")
+        self._restore_default_status()
         self._refresh_send_button()
 
     def _refresh_send_button(self) -> None:
+        if self._pending_send_draft is not None:
+            self.send_button.setText("发送中…")
+            self.send_button.setEnabled(False)
+            return
+        self.send_button.setEnabled(True)
         if self.mode_tabs.currentIndex() == 0:
             self.send_button.setText("发送招呼" if self.greeting_button.isChecked() else "发送爱心")
             return
@@ -665,20 +765,50 @@ class LanInteractionDialog(QDialog):
         return None
 
     def _send_current(self) -> None:
+        if self._pending_send_draft is not None:
+            return
         draft = self.interaction_draft()
         if draft is None:
-            self.status_label.setText("请先选择设备和有效内容")
+            self._show_feedback("请先选择设备和有效内容", timeout_ms=4_000)
             return
         sender = self._on_remote_send if self._selected_peer.transport == "remote" else self._on_send
         if sender is None:
-            self.status_label.setText("发送接口尚未启用，当前仅完成本地预览")
+            self._show_feedback("发送接口尚未启用，当前仅完成本地预览", timeout_ms=4_000)
             return
+        is_remote_async = self._selected_peer.transport == "remote" and self._remote_send_async
+        if is_remote_async:
+            self._pending_send_draft = draft
+            self._refresh_send_button()
+            self._show_feedback("正在发送…")
         try:
             sent = sender(draft)
         except Exception as error:  # noqa: BLE001 - UI 必须把网络层错误转为可见状态。
-            self.status_label.setText(f"发送失败：{error}")
+            if is_remote_async:
+                self._pending_send_draft = None
+                self._refresh_send_button()
+            self._show_feedback(f"发送失败：{error}", timeout_ms=self._failure_feedback_timeout_ms)
             return
-        self.status_label.setText("已发送" if sent is not False else "发送失败，请稍后重试")
+        if is_remote_async:
+            if sent is False:
+                self._pending_send_draft = None
+                self._refresh_send_button()
+                self._show_feedback("发送失败，请稍后重试", timeout_ms=self._failure_feedback_timeout_ms)
+            return
+        if sent is True:
+            self._show_feedback("已发送 ✓", timeout_ms=self._success_feedback_timeout_ms)
+        else:
+            self._show_feedback("发送失败，请稍后重试", timeout_ms=self._failure_feedback_timeout_ms)
+
+    def _show_feedback(self, message: str, *, timeout_ms: int = 0) -> None:
+        self._status_reset_timer.stop()
+        self.status_label.setText(str(message))
+        if timeout_ms > 0:
+            self._status_reset_timer.start(timeout_ms)
+
+    def _restore_default_status(self) -> None:
+        self._status_reset_timer.stop()
+        if self._pending_send_draft is None:
+            self.status_label.setText(self._DEFAULT_STATUS)
 
     def _edit_nickname(self) -> None:
         dialog = NicknameDialog(self._settings.nickname, self)

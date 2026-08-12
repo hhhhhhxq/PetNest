@@ -541,6 +541,7 @@ class PetNest:
             ),
             on_preview=self._preview_lan_effect,
             on_preview_clear=self.window.clear_effect,
+            remote_send_async=self.remote_interaction_service.is_configured,
             remote_pair_code=(
                 self.remote_interaction_service.pair_code
                 if self.remote_interaction_service.is_configured
@@ -559,6 +560,8 @@ class PetNest:
         self.remote_interaction_service.pair_code_changed.connect(dialog.set_remote_pair_code)
         self.remote_interaction_service.status_changed.connect(dialog.set_remote_status)
         self.remote_interaction_service.error.connect(dialog.set_status_message)
+        self.remote_interaction_service.interaction_send_succeeded.connect(dialog.remote_send_succeeded)
+        self.remote_interaction_service.interaction_send_failed.connect(dialog.remote_send_failed)
         dialog.exec()
         updated = dialog.settings
         if (
@@ -587,7 +590,9 @@ class PetNest:
             bundled_root=bundled_resource_seed_root(),
             application_root=application_root,
         ):
-            for effect in catalog.discover(root):
+            # 这里只生成互动选择器的列表；逐帧 Pillow 校验会在打开窗口前
+            # 阻塞 GUI（动效帧越多越明显），实际播放时再由 QPixmap 读取帧。
+            for effect in catalog.discover(root, verify_frames=False):
                 by_identifier.setdefault(effect.identifier, effect)
         return sorted(by_identifier.values(), key=lambda item: str(getattr(item, "identifier", "")).casefold())
 

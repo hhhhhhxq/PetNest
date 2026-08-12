@@ -17,7 +17,7 @@ from petnest.core.remote_interaction_service import (
     _decode_remote_message,
     normalize_pair_code,
 )
-from petnest.models.lan_interaction import InteractionDraft, InteractionKind
+from petnest.models.lan_interaction import InteractionDraft, InteractionKind, LanPeer
 
 
 def test_firebase_config_loads_from_file_and_requires_https(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,3 +173,27 @@ def test_remote_message_reuses_existing_protocol_validation() -> None:
     payload["expires_at"] = int((time() - 1) * 1000)
     with pytest.raises(LanProtocolError, match="已过期"):
         _decode_remote_message(payload, local_uid="receiver")
+
+
+def test_remote_send_worker_emits_success_only_after_firebase_write(tmp_path, monkeypatch, qtbot) -> None:
+    service = FirebaseRemoteInteractionService(
+        display_name="小平安",
+        pet_name="平安",
+        config_directory=tmp_path,
+        config=FirebaseConfig("public-key", "https://petnest.example"),
+    )
+    draft = InteractionDraft.quick("receiver", InteractionKind.GREETING)
+    service._token = "token"
+    service._uid = "sender"
+    with service._peers_lock:
+        service._peers["receiver"] = LanPeer("receiver", "对方", "平安", transport="remote")
+    succeeded: list[object] = []
+    failed: list[object] = []
+    service.interaction_send_succeeded.connect(succeeded.append)
+    service.interaction_send_failed.connect(lambda item, message: failed.append((item, message)))
+    monkeypatch.setattr("petnest.core.remote_interaction_service._request_json", lambda *_args, **_kwargs: {})
+
+    service._send_interaction_worker(draft, "token", "sender")
+
+    assert succeeded == [draft]
+    assert failed == []
