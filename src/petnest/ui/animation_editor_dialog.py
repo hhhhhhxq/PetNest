@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.models.pet_package import AnimationDefinition, PetPackage
+from petnest.ui.theme import COLORS, dialog_stylesheet
 
 
 _TRIGGER_TEXT = {
@@ -31,7 +33,7 @@ _TRIGGER_TEXT = {
     "hover": "鼠标移入时", "codex_running_left": "外部事件可触发",
     "bored": "系统长时间无输入时", "sleep": "系统无人操作更久时", "wake": "系统恢复输入时",
 }
-_PREVIEW_HIGHLIGHT_STYLE = "background: #dcecff; border: 1px solid #5b8dd9; border-radius: 5px;"
+_PREVIEW_HIGHLIGHT_STYLE = f"background: {COLORS['accent_soft']}; border: 1px solid {COLORS['accent']}; border-radius: 8px;"
 
 
 class AnimationEditorDialog(QDialog):
@@ -39,8 +41,11 @@ class AnimationEditorDialog(QDialog):
 
     def __init__(self, package: PetPackage, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("animationEditorDialog")
         self.setWindowTitle(f"编辑动画时长 — {package.name}")
-        self.resize(900, 620)
+        self.resize(1120, 720)
+        self.setMinimumSize(980, 650)
+        self.setStyleSheet(dialog_stylesheet())
         self._package = package
         self._timelines = {action: _source_durations(definition) for action, definition in package.animations.items()}
         self._modes = {
@@ -59,17 +64,44 @@ class AnimationEditorDialog(QDialog):
         self.preview_timer.timeout.connect(self._advance_preview)
 
         root = QVBoxLayout(self)
-        root.addWidget(QLabel("选择一种编辑方式；保存后会写入 pet.json 并自动重载当前宠物。", self))
+        root.setContentsMargins(22, 18, 22, 16)
+        root.setSpacing(12)
+        header = QHBoxLayout()
+        title = QLabel("编辑动画时长", self)
+        title.setObjectName("pageTitle")
+        header.addWidget(title)
+        header.addStretch(1)
+        subtitle = QLabel("保存后自动重载当前宠物", self)
+        subtitle.setObjectName("mutedLabel")
+        header.addWidget(subtitle)
+        root.addLayout(header)
+        intro = QLabel("选择左侧动作，再按总时长或逐帧调整；修改会写入宠物包的 pet.json。", self)
+        intro.setObjectName("pageDescription")
+        root.addWidget(intro)
+
+        self.action_card = QFrame(self)
+        self.action_card.setObjectName("settingsCard")
+        action_card_layout = QVBoxLayout(self.action_card)
+        action_card_layout.setContentsMargins(14, 12, 14, 12)
+        action_card_layout.addWidget(QLabel("动作列表", self.action_card))
         self.action_table = QTableWidget(0, 5, self)
+        self.action_table.setObjectName("animationActionTable")
         self.action_table.setHorizontalHeaderLabels(("动作", "展示时机", "帧数", "当前方式", "实际总时长"))
         self.action_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.action_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.action_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.action_table.itemSelectionChanged.connect(self._load_selected_action)
-        root.addWidget(self.action_table, 1)
+        action_card_layout.addWidget(self.action_table, 1)
+
+        self.editor_card = QFrame(self)
+        self.editor_card.setObjectName("settingsCard")
+        editor_card_layout = QVBoxLayout(self.editor_card)
+        editor_card_layout.setContentsMargins(14, 12, 14, 12)
+        editor_card_layout.addWidget(QLabel("时长设置", self.editor_card))
 
         self.mode_status_label = QLabel("—", self)
-        root.addWidget(self.mode_status_label)
+        self.mode_status_label.setObjectName("mutedLabel")
+        editor_card_layout.addWidget(self.mode_status_label)
         self.total_radio = QRadioButton("按总时长播放（保留原有帧间节奏）", self)
         self.per_frame_radio = QRadioButton("手动编辑每帧时长", self)
         self.mode_group = QButtonGroup(self)
@@ -77,7 +109,7 @@ class AnimationEditorDialog(QDialog):
         self.mode_group.addButton(self.per_frame_radio)
         self.total_radio.toggled.connect(self._mode_changed)
         self.per_frame_radio.toggled.connect(self._mode_changed)
-        root.addWidget(self.total_radio)
+        editor_card_layout.addWidget(self.total_radio)
 
         controls = QFormLayout()
         self.base_duration_label = QLabel("—", self)
@@ -88,12 +120,13 @@ class AnimationEditorDialog(QDialog):
         self.total_duration_spin.valueChanged.connect(self._total_duration_changed)
         controls.addRow("基准时长", self.base_duration_label)
         controls.addRow("目标总时长", self.total_duration_spin)
-        root.addLayout(controls)
+        editor_card_layout.addLayout(controls)
 
-        root.addWidget(self.per_frame_radio)
+        editor_card_layout.addWidget(self.per_frame_radio)
         editor_row = QHBoxLayout()
         self.frame_list = QListWidget(self)
         self.frame_list.setMinimumWidth(320)
+        self.frame_list.setObjectName("animationFrameList")
         self.frame_list.setSpacing(4)
         self.frame_list.itemClicked.connect(self._select_preview_frame)
         editor_row.addWidget(self.frame_list, 1)
@@ -103,20 +136,36 @@ class AnimationEditorDialog(QDialog):
         self.preview_label = QLabel("暂无可预览的帧", self)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(300, 300)
-        self.preview_label.setStyleSheet("background: #eef1f5; border: 1px solid #c6cbd3; border-radius: 8px;")
+        self.preview_label.setObjectName("animationPreview")
+        self.preview_label.setStyleSheet(
+            f"background: {COLORS['surface_alt']}; border: 1px solid {COLORS['border']}; border-radius: 10px;"
+        )
         preview_column.addWidget(self.preview_label, 1)
         self.preview_play_button = QPushButton("暂停预览", self)
         self.preview_play_button.clicked.connect(self._toggle_preview)
         preview_column.addWidget(self.preview_play_button)
-        editor_row.addLayout(preview_column, 1)
-        root.addLayout(editor_row, 2)
+        self.preview_card = QFrame(self)
+        self.preview_card.setObjectName("settingsCard")
+        preview_card_layout = QVBoxLayout(self.preview_card)
+        preview_card_layout.setContentsMargins(10, 10, 10, 10)
+        preview_card_layout.addLayout(preview_column)
+        editor_row.addWidget(self.preview_card, 1)
+        editor_card_layout.addLayout(editor_row, 2)
+        main_row = QHBoxLayout()
+        main_row.setSpacing(14)
+        main_row.addWidget(self.action_card, 1)
+        main_row.addWidget(self.editor_card, 2)
+        root.addLayout(main_row, 1)
         self.duration_table = self.frame_list
 
         self.apply_hint_label = QLabel("时长会随宠物文件夹一起分享。", self)
+        self.apply_hint_label.setObjectName("mutedLabel")
         root.addWidget(self.apply_hint_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存并重载")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setObjectName("primaryButton")
         root.addWidget(buttons)
         self._populate_action_table()
         if self.action_table.rowCount():

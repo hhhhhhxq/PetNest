@@ -403,6 +403,11 @@ class SettingsCenterDialog(QDialog):
         self.mode_stack.addWidget(self._build_fixed_schedule_page(mode_card))
         self.mode_stack.addWidget(self._build_elastic_schedule_page(mode_card))
         mode_layout.addWidget(self.mode_stack)
+        self.schedule_error_label = QLabel("", mode_card)
+        self.schedule_error_label.setStyleSheet("color: #C66C62;")
+        self.schedule_error_label.setWordWrap(True)
+        self.schedule_error_label.hide()
+        mode_layout.addWidget(self.schedule_error_label)
         layout.addWidget(mode_card)
 
         appearance = QGroupBox("高级设置 · 倒计时外观", page)
@@ -433,9 +438,16 @@ class SettingsCenterDialog(QDialog):
         layout.addStretch(1)
 
         self.schedule_mode_input.currentIndexChanged.connect(self.mode_stack.setCurrentIndex)
+        self.schedule_mode_input.currentIndexChanged.connect(self._update_schedule_validation)
         self.work_countdown_input.toggled.connect(self._update_countdown_controls)
+        self.work_start_input.timeChanged.connect(self._update_schedule_validation)
+        self.work_end_input.timeChanged.connect(self._update_schedule_validation)
+        self.clock_in_start_input.timeChanged.connect(self._update_schedule_validation)
+        self.clock_in_end_input.timeChanged.connect(self._update_schedule_validation)
+        self.work_duration_input.valueChanged.connect(self._update_schedule_validation)
         self._update_countdown_controls()
         self.mode_stack.setCurrentIndex(self.schedule_mode_input.currentIndex())
+        self._update_schedule_validation()
         return page
 
     def _build_fixed_schedule_page(self, parent: QWidget) -> QWidget:
@@ -487,6 +499,28 @@ class SettingsCenterDialog(QDialog):
             widget.setEnabled(enabled)
         for checkbox in self.workday_inputs.values():
             checkbox.setEnabled(enabled)
+        self._update_schedule_validation()
+
+    def _update_schedule_validation(self) -> None:
+        """只在当前输入确实无效时给出局部提示，并禁用确认。"""
+        if not hasattr(self, "schedule_error_label"):
+            return
+        mode = str(self.schedule_mode_input.currentData())
+        if mode == "elastic":
+            valid = (
+                self.clock_in_start_input.time().msecsSinceStartOfDay()
+                < self.clock_in_end_input.time().msecsSinceStartOfDay()
+                and self.work_duration_input.value() > 0
+            )
+            message = "允许打卡开始时间必须早于结束时间。" if not valid else ""
+        else:
+            valid = self.work_start_input.time().msecsSinceStartOfDay() < self.work_end_input.time().msecsSinceStartOfDay()
+            message = "上班时间必须早于下班时间。" if not valid else ""
+        enabled = self.work_countdown_input.isChecked()
+        self.schedule_error_label.setText(message)
+        self.schedule_error_label.setVisible(enabled and bool(message))
+        if hasattr(self, "button_box"):
+            self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(not enabled or valid)
 
     def _build_app_update_page(self) -> QWidget:
         page, layout = self._page("应用与更新", "查看当前版本，并在需要时手动检查新的 PetNest 安装包。", self)

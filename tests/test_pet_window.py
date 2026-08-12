@@ -592,6 +592,32 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     assert tray.import_action.text() == "导入精灵图…"
 
 
+def test_tray_menu_groups_application_and_pet_library_actions(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window, pet_names={"cat": "小猫"}, current_pet_name="小猫")
+
+    assert tray.current_pet_action.text() == "当前宠物：小猫"
+    assert tray.pet_library_menu.title() == "宠物库"
+    assert tray.import_action in tray.pet_library_menu.actions()
+    assert tray.edit_animations_action in tray.pet_library_menu.actions()
+    assert tray.import_action not in tray.menu.actions()
+    assert "动画播放中" not in [action.text() for action in tray.menu.actions()]
+    assert tray.toggle_always_on_top_action.isCheckable()
+    tray.set_always_on_top_enabled(True)
+    assert tray.toggle_always_on_top_action.isChecked()
+
+
+def test_tray_current_pet_title_can_follow_switches(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window, current_pet_name="小猫")
+
+    tray.set_current_pet_name("平安")
+
+    assert tray.current_pet_action.text() == "当前宠物：平安"
+
+
 def test_cursor_style_action_is_enabled_on_macos(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

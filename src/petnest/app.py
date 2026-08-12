@@ -296,6 +296,7 @@ class PetNest:
             PetTrayIcon(
                 self.window,
                 pet_names={item.identifier: item.name for item in self.packages},
+                current_pet_name=self.package.name,
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
                 on_import=self.show_spritesheet_import_dialog,
@@ -306,12 +307,15 @@ class PetNest:
                 on_cursor_styles=self.show_cursor_style_dialog,
                 on_resource_update=self._handle_resource_update_action,
                 on_lan_interactions=self.show_lan_interaction_dialog,
+                on_toggle_always_on_top=self._toggle_context_always_on_top,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_quit=self.shutdown,
             )
             if enable_tray
             else None
         )
+        if self.tray is not None:
+            self.tray.set_always_on_top_enabled(self.settings.always_on_top)
         self.menu_bar: QMenuBar | None = None
         if sys.platform == "darwin" and self.tray is not None:
             # 桌宠没有普通主窗口；显式提供原生全局菜单，避免所有功能只能
@@ -391,6 +395,8 @@ class PetNest:
             display_name=display_name_for(self.settings),
             pet_name=self.package.name,
         )
+        if self.tray is not None:
+            self.tray.set_current_pet_name(self.package.name)
         return True
 
     def reload_current_pet(self) -> bool:
@@ -426,6 +432,8 @@ class PetNest:
             return False
         self.package = reloaded
         self.packages = [reloaded if item.identifier == reloaded.identifier else item for item in self.packages]
+        if self.tray is not None:
+            self.tray.set_current_pet_name(self.package.name)
         if sync_result.added and self.tray is not None:
             summary = "、".join(f"{action.name}（{action.frame_count} 帧）" for action in sync_result.added)
             self.tray.showMessage("PetNest", f"已自动登记：{summary}")
@@ -457,6 +465,8 @@ class PetNest:
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
+        if self.tray is not None:
+            self.tray.set_always_on_top_enabled(settings.always_on_top)
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()

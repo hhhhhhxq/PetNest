@@ -37,6 +37,7 @@ from petnest.core.spritesheet_importer import (
     SpriteSheetInspection,
     _ROW_MAPPINGS,
 )
+from petnest.ui.theme import dialog_stylesheet
 
 
 _TRIGGER_TEXT = {
@@ -57,8 +58,11 @@ class SpriteSheetImportDialog(QDialog):
 
     def __init__(self, pets_root: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("spritesheetImportDialog")
         self.setWindowTitle("导入 Codex 精灵图")
-        self.resize(760, 600)
+        self.resize(920, 680)
+        self.setMinimumSize(820, 620)
+        self.setStyleSheet(dialog_stylesheet())
         self._pets_root = pets_root
         self._importer = SpriteSheetImporter()
         self._inspection: SpriteSheetInspection | None = None
@@ -66,7 +70,20 @@ class SpriteSheetImportDialog(QDialog):
         self.imported_result: SpriteSheetImportResult | None = None
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 16)
+        root.setSpacing(14)
+        header = QHBoxLayout()
+        title = QLabel("导入精灵图", self)
+        title.setObjectName("pageTitle")
+        self.step_label = QLabel("1  选择精灵图", self)
+        self.step_label.setStyleSheet("color: #D98663; font-weight: 700;")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.step_label)
+        root.addLayout(header)
         form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
         self.rules_label = QLabel(
             "仅读取你在本机选择的文件，不上传或联网。\n"
             "仅支持透明 PNG：1536 × 1872 像素、8 列 × 9 行、每格 192 × 208。\n"
@@ -76,6 +93,7 @@ class SpriteSheetImportDialog(QDialog):
             "jumping → drop；failed → error；waiting → waiting；running → working；review → hover。"
         )
         self.rules_label.setWordWrap(True)
+        self.rules_label.setObjectName("mutedLabel")
         form.addRow(self.rules_label)
 
         self.source_input = QLineEdit(self)
@@ -95,6 +113,7 @@ class SpriteSheetImportDialog(QDialog):
         root.addLayout(form)
 
         mode_box = QFrame(self)
+        mode_box.setObjectName("settingsCard")
         mode_layout = QVBoxLayout(mode_box)
         mode_layout.setContentsMargins(8, 8, 8, 8)
         self.auto_skip_radio = QRadioButton("自动跳过无内容帧", mode_box)
@@ -111,6 +130,7 @@ class SpriteSheetImportDialog(QDialog):
         root.addWidget(mode_box)
 
         self.manual_selection_panel = QFrame(self)
+        self.manual_selection_panel.setObjectName("settingsCard")
         panel_layout = QHBoxLayout(self.manual_selection_panel)
         self.action_list = QListWidget(self.manual_selection_panel)
         self.action_list.setMaximumWidth(220)
@@ -126,10 +146,12 @@ class SpriteSheetImportDialog(QDialog):
         self.manual_selection_panel.hide()
 
         self.status_label = QLabel("选择文件后会检测每一格是否含有像素。", self)
+        self.status_label.setObjectName("mutedLabel")
         self.status_label.setWordWrap(True)
         root.addWidget(self.status_label)
         self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, self)
         self.import_button = self.buttons.addButton("导入", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.import_button.setObjectName("primaryButton")
         self.import_button.clicked.connect(self.import_selected)
         self.buttons.rejected.connect(self.reject)
         root.addWidget(self.buttons)

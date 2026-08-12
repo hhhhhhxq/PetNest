@@ -11,6 +11,7 @@ from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from .pet_window import PetWindow
+from .theme import menu_stylesheet
 
 
 def petnest_icon() -> QIcon:
@@ -42,6 +43,7 @@ class PetTrayIcon(QSystemTrayIcon):
         window: PetWindow,
         *,
         pet_names: dict[str, str] | None = None,
+        current_pet_name: str | None = None,
         on_switch: Callable[[str], object] | None = None,
         on_reload: Callable[[], object] | None = None,
         on_import: Callable[[], object] | None = None,
@@ -52,6 +54,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_cursor_styles: Callable[[], object] | None = None,
         on_resource_update: Callable[[], object] | None = None,
         on_lan_interactions: Callable[[], object] | None = None,
+        on_toggle_always_on_top: Callable[[bool], object] | None = None,
         on_toggle_mouse_follow: Callable[[], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
@@ -68,16 +71,26 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_cursor_styles = on_cursor_styles
         self._on_resource_update = on_resource_update
         self._on_lan_interactions = on_lan_interactions
+        self._on_toggle_always_on_top = on_toggle_always_on_top
         self._on_toggle_mouse_follow = on_toggle_mouse_follow
         self._resource_update_available = False
         self._resource_update_loading = False
+        self._current_pet_name = current_pet_name or "未选择"
         self._resource_loading_phase = 0
         self._resource_loading_timer = QTimer(self)
         self._resource_loading_timer.setInterval(120)
         self._resource_loading_timer.timeout.connect(self._advance_resource_loading)
         self.menu = QMenu(window)
+        self.menu.setObjectName("trayMenu")
+        self.menu.setStyleSheet(menu_stylesheet("trayMenu"))
+        self.application_title_action = QAction("PetNest", self.menu)
+        self.application_title_action.setEnabled(False)
+        self.current_pet_action = QAction(f"当前宠物：{self._current_pet_name}", self.menu)
+        self.current_pet_action.setEnabled(False)
         self.toggle_visibility_action = QAction("隐藏", self.menu)
         self.toggle_pause_action = QAction("暂停动画", self.menu)
+        self.toggle_always_on_top_action = QAction("始终置顶", self.menu)
+        self.toggle_always_on_top_action.setCheckable(True)
         self.toggle_mouse_follow_action = QAction("跟随鼠标", self.menu)
         self.toggle_mouse_follow_action.setCheckable(True)
         self.quit_action = QAction("退出", self.menu)
@@ -96,6 +109,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_visibility_action.triggered.connect(self._toggle_visibility)
         self.toggle_pause_action.triggered.connect(self._toggle_pause)
         self.toggle_mouse_follow_action.triggered.connect(self._toggle_mouse_follow)
+        self.toggle_always_on_top_action.triggered.connect(self._toggle_always_on_top)
         self.quit_action.triggered.connect(self._quit)
         self.reload_action.triggered.connect(self._reload)
         self.import_action.triggered.connect(self._import)
@@ -106,21 +120,30 @@ class PetTrayIcon(QSystemTrayIcon):
         self.lan_interactions_action.triggered.connect(self._lan_interactions)
         self.cursor_styles_action.triggered.connect(self._cursor_styles)
         self.resource_update_action.triggered.connect(self._resource_update)
-        self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_mouse_follow_action))
+        self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_always_on_top_action, self.toggle_mouse_follow_action))
+        self.menu.insertAction(self.toggle_visibility_action, self.application_title_action)
+        self.menu.insertAction(self.toggle_visibility_action, self.current_pet_action)
+        self.menu.insertSeparator(self.toggle_visibility_action)
         self.pet_menu = self.menu.addMenu("切换宠物")
         self.set_pet_names(pet_names or {})
-        self.menu.addAction(self.import_action)
-        self.menu.addAction(self.open_pets_folder_action)
-        self.menu.addAction(self.refresh_pets_action)
-        self.menu.addAction(self.edit_animations_action)
-        self.menu.addAction(self.reload_action)
-        self.menu.addAction(self.settings_action)
         self.menu.addAction(self.lan_interactions_action)
+        self.pet_library_menu = self.menu.addMenu("宠物库")
+        self.pet_library_menu.addAction(self.import_action)
+        self.pet_library_menu.addAction(self.open_pets_folder_action)
+        self.pet_library_menu.addAction(self.refresh_pets_action)
+        self.pet_library_menu.addAction(self.edit_animations_action)
+        self.pet_library_menu.addAction(self.reload_action)
+        self.menu.addAction(self.settings_action)
         self.menu.addAction(self.cursor_styles_action)
         self.menu.addAction(self.resource_update_action)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.setContextMenu(self.menu)
+
+    def set_current_pet_name(self, name: str) -> None:
+        """同步菜单顶部的当前宠物标题。"""
+        self._current_pet_name = name or "未选择"
+        self.current_pet_action.setText(f"当前宠物：{self._current_pet_name}")
 
     def set_pet_names(self, pet_names: dict[str, str]) -> None:
         self.pet_menu.clear()
@@ -130,6 +153,9 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def set_mouse_follow_enabled(self, enabled: bool) -> None:
         self.toggle_mouse_follow_action.setChecked(enabled)
+
+    def set_always_on_top_enabled(self, enabled: bool) -> None:
+        self.toggle_always_on_top_action.setChecked(enabled)
 
     def set_resource_update_available(self, available: bool) -> None:
         """在资源动作旁显示或清除蓝色更新提示点。"""
@@ -176,6 +202,10 @@ class PetTrayIcon(QSystemTrayIcon):
     def _toggle_mouse_follow(self) -> None:
         if self._on_toggle_mouse_follow is not None:
             self._on_toggle_mouse_follow()
+
+    def _toggle_always_on_top(self, enabled: bool) -> None:
+        if self._on_toggle_always_on_top is not None:
+            self._on_toggle_always_on_top(enabled)
 
     def _quit(self) -> None:
         if self._on_quit is not None:
