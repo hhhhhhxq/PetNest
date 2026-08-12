@@ -214,6 +214,29 @@ effects/heart-burst/
 
 Windows 安装器会请求管理员权限并创建一条仅绑定 `PetNest.exe` 的 UDP `18487` 入站防火墙规则，默认只允许「专用网络」。安装页可选开启「公用网络」；不建议在咖啡店、机场等不可信网络中开启。卸载时会删除 PetNest 创建的规则。若规则创建失败，安装器会明确提示，程序本身仍可正常启动。
 
+## Firebase 远程伙伴
+
+互动窗口同时提供“远程伙伴”页。两台设备不需要位于同一局域网：一方复制自己的 10 位伙伴码，另一方点击“添加远程伙伴”并输入该码即可建立关系。快捷互动、文字和动效仍复用局域网互动的最小消息格式；Firebase 只中继互动类型、双方身份摘要、文字或动效 ID，不上传宠物图片与动效资源。未运行期间收到的消息会在下次启动时补收，消息最长保留 7 天。
+
+远程伙伴默认保持开启，但只有找到有效 Firebase 配置后才会访问网络；未配置或连接失败不会影响局域网互动和桌宠的其他功能。客户端使用 Firebase Anonymous Auth，用户不需要注册、输入账号或看到登录页面。刷新令牌单独保存在用户配置目录的 `firebase-remote-credentials.json` 中，不写入普通设置或日志。Firebase Web API Key 不是服务账号密钥；禁止把 Admin SDK 凭据或服务账号 JSON 放进安装包。
+
+部署自己的 Firebase 后端：
+
+1. 在 Firebase 控制台启用 Authentication 的 Anonymous 登录，并创建 Realtime Database。
+2. 在 `firebase/` 目录先运行 `firebase use --add` 选择项目，再运行 `firebase deploy --only database`，部署仓库提供的 `database.rules.json`。这些规则限制用户只能读取自己的账号节点，并校验配对请求和互动消息。
+3. 在 Firebase 控制台下载原版 `google-services.json`，保持这个文件名不变。确认其中包含 `project_info/firebase_url`；如果没有，请先创建 Realtime Database，再重新下载。
+4. 开发时把 `google-services.json` 放在项目根目录。Windows 和 macOS 打包脚本会自动把它放入安装包；已经安装的版本也可以直接从下列用户配置目录读取它。
+
+用户配置目录分别为：
+
+- Windows：`%APPDATA%\PetNest`
+- macOS：`~/Library/Application Support/PetNest`
+- Linux：`${XDG_CONFIG_HOME:-~/.config}/PetNest`
+
+开发和自动部署环境也可改用 `PETNEST_FIREBASE_API_KEY` 与 `PETNEST_FIREBASE_DATABASE_URL` 环境变量。普通互动内容只受 HTTPS 传输保护，并非端到端加密；不要通过文字互动发送密码、令牌或其他敏感信息。
+
+PetNest 会直接从原版 `google-services.json` 读取 `project_info/firebase_url`、`project_info/project_id` 和首个客户端的 `api_key/current_key`，不依赖 Gradle 插件。原来的简化版 `firebase.json` 仍兼容，可参考 `firebase/firebase.example.json`。配置优先级为：环境变量、用户目录 `firebase.json`、用户目录 `google-services.json`、安装包内或项目根目录的 `google-services.json`。
+
 ## 外部事件
 
 在设置中启用外部事件接口（默认端口 `18486`）后，任何本机工具都可发送一行 JSON。服务只绑定 `127.0.0.1`，不接收局域网连接；请求大小、字段与速率均受限，端口占用不会使桌宠崩溃。

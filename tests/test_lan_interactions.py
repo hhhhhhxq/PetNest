@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication
 from petnest.core.device_identity import display_name_for
 from petnest.models.lan_interaction import InteractionDraft, InteractionKind, LanPeer
 from petnest.models.settings import Settings
-from petnest.ui.lan_interaction_dialog import LanInteractionDialog, ManualPeerDialog
+from petnest.ui.lan_interaction_dialog import LanInteractionDialog, ManualPeerDialog, RemotePairDialog
 
 
 def test_quick_interaction_payload_contains_only_one_action() -> None:
@@ -146,3 +146,32 @@ def test_dialog_exposes_manual_ip_entry_and_normalizes_input(qtbot) -> None:
     manual.ip_input.setText(" 192.168.21.146 ")
 
     assert manual.ip_address() == "192.168.21.146"
+
+
+def test_dialog_routes_remote_partner_through_remote_sender(qtbot) -> None:
+    remote = LanPeer("remote-1", "小林", "橘猫", transport="remote")
+    sent: list[InteractionDraft] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local-1"),
+        remote_peers=[remote],
+        on_remote_send=lambda draft: sent.append(draft) or True,
+        remote_pair_code="23456789AB",
+        remote_status="远程伙伴已连接",
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.device_tabs.setCurrentIndex(1)
+    dialog.remote_peer_list.setCurrentRow(0)
+    dialog.send_button.click()
+
+    assert dialog.device_tabs.tabText(1) == "远程伙伴"
+    assert dialog.pair_code_label.text() == "我的码：2345-6789-AB"
+    assert sent == [InteractionDraft.quick("remote-1", InteractionKind.GREETING)]
+
+
+def test_remote_pair_dialog_normalizes_display_separators(qtbot) -> None:
+    dialog = RemotePairDialog()
+    qtbot.addWidget(dialog)
+    dialog.code_input.setText(" 2345-6789-ab ")
+
+    assert dialog.pair_code() == "23456789AB"

@@ -627,7 +627,7 @@ def test_tray_exposes_lan_interaction_action(qtbot: pytest.QtBot, tmp_path: Path
     calls: list[str] = []
     tray = PetTrayIcon(window, on_lan_interactions=lambda: calls.append("lan"))
 
-    assert tray.lan_interactions_action.text() == "局域网互动…"
+    assert tray.lan_interactions_action.text() == "互动…"
     tray.lan_interactions_action.trigger()
     assert calls == ["lan"]
 

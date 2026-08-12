@@ -27,6 +27,7 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "src\\petnest_launcher.py" in build_script
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
     assert "PetNestUpdater" in build_script
+    assert "google-services.json;." in build_script
     assert "Source: \"..\\dist\\PetNestUpdater.exe\"" in contents
     assert "skipifsilent" in contents
 

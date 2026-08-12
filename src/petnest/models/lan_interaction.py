@@ -18,7 +18,7 @@ class InteractionKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class LanPeer:
-    """发现到的局域网设备摘要；不携带远程文件或图片。"""
+    """可互动设备摘要；不携带远程文件或图片。"""
 
     device_id: str
     display_name: str
@@ -26,6 +26,7 @@ class LanPeer:
     ip_address: str | None = None
     port: int | None = None
     online: bool = True
+    transport: str = "lan"
 
     @property
     def subtitle(self) -> str:
@@ -34,6 +35,8 @@ class LanPeer:
             details.append(f"当前宠物：{self.pet_name}")
         if self.ip_address:
             details.append(self.ip_address)
+        elif self.transport == "remote":
+            details.append("远程伙伴")
         return " · ".join(details) or ("在线" if self.online else "离线")
 
 

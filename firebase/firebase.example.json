@@ -1,0 +1,4 @@
+{
+  "api_key": "your Firebase Web API key",
+  "database_url": "https://your-project-default-rtdb.asia-southeast1.firebasedatabase.app"
+}

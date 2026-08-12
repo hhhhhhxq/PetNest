@@ -1,0 +1,10 @@
+"""macOS 打包脚本的可选 Firebase 配置检查。"""
+
+from pathlib import Path
+
+
+def test_macos_build_includes_google_services_when_present() -> None:
+    contents = Path("build_macos.sh").read_text(encoding="utf-8")
+
+    assert '[ -f "google-services.json" ]' in contents
+    assert "--add-data google-services.json:." in contents

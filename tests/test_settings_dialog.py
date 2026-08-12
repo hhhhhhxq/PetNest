@@ -22,6 +22,15 @@ def test_regular_settings_dialog_has_no_cursor_controls(qtbot, tmp_path: Path) -
     assert not hasattr(dialog, "cursor_style_enabled_input")
 
 
+def test_settings_dialog_persists_remote_partner_toggle(qtbot) -> None:
+    dialog = SettingsDialog(Settings(remote_interaction_enabled=True))
+    qtbot.addWidget(dialog)
+
+    dialog.remote_interaction_input.setChecked(False)
+
+    assert dialog.updated_settings().remote_interaction_enabled is False
+
+
 def test_application_update_entry_is_opt_in_for_platform_owner(qtbot) -> None:
     called: list[bool] = []
     dialog = SettingsDialog(Settings(), on_check_app_update=lambda: called.append(True))

@@ -1,0 +1,91 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "profiles": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['uid', 'display_name', 'pet_name']) && newData.child('uid').val() === $uid",
+        "uid": {
+          ".validate": "newData.isString() && newData.val().length <= 128"
+        },
+        "display_name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+        },
+        "pet_name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+        }
+      }
+    },
+    "pairCodes": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.child('uid').val() === auth.uid) || data.child('uid').val() === auth.uid)",
+        ".validate": "$code.matches(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{10}$/) && newData.hasChildren(['uid', 'display_name', 'pet_name', 'updated_at'])",
+        "uid": {
+          ".validate": "newData.isString() && newData.val() === auth.uid"
+        },
+        "display_name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+        },
+        "pet_name": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+        },
+        "updated_at": {
+          ".validate": "newData.isNumber() && newData.val() <= now"
+        }
+      }
+    },
+    "accounts": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "partners": {
+          "$partner": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "!newData.exists() || (newData.hasChildren(['uid', 'display_name', 'pet_name', 'paired_at']) && newData.child('uid').val() === $partner)",
+            "uid": {
+              ".validate": "newData.isString() && newData.val().length <= 128"
+            },
+            "display_name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+            },
+            "pet_name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+            },
+            "paired_at": {
+              ".validate": "newData.isNumber() && newData.val() <= now"
+            }
+          }
+        },
+        "requests": {
+          "$sender": {
+            ".write": "auth != null && (auth.uid === $uid || (auth.uid === $sender && newData.child('uid').val() === auth.uid && root.child('pairCodes').child(newData.child('code').val()).child('uid').val() === $uid))",
+            ".validate": "!newData.exists() || newData.hasChildren(['uid', 'display_name', 'pet_name', 'code', 'created_at'])",
+            "uid": {
+              ".validate": "newData.isString() && newData.val() === $sender"
+            },
+            "display_name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+            },
+            "pet_name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 40"
+            },
+            "code": {
+              ".validate": "newData.isString() && newData.val().matches(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{10}$/)"
+            },
+            "created_at": {
+              ".validate": "newData.isNumber() && newData.val() <= now"
+            }
+          }
+        },
+        "inbox": {
+          "$message": {
+            ".write": "auth != null && (auth.uid === $uid || (newData.child('sender_device_id').val() === auth.uid && newData.child('target_device_id').val() === $uid && root.child('accounts').child(auth.uid).child('partners').child($uid).exists()))",
+            ".validate": "!newData.exists() || (newData.hasChildren(['version', 'kind', 'type', 'target_device_id', 'sender_device_id', 'sender_name', 'created_at', 'expires_at']) && newData.child('version').val() === 1 && newData.child('kind').val() === 'interaction' && newData.child('target_device_id').isString() && newData.child('target_device_id').val() === $uid && newData.child('sender_device_id').isString() && newData.child('sender_device_id').val() === auth.uid && newData.child('type').isString() && newData.child('type').val().matches(/^(greeting|heart|text|effect)$/) && newData.child('sender_name').isString() && newData.child('sender_name').val().length > 0 && newData.child('sender_name').val().length <= 40 && newData.child('created_at').isNumber() && newData.child('expires_at').isNumber() && newData.child('expires_at').val() > now && newData.child('expires_at').val() <= now + 604800000 && ((newData.child('type').val() === 'text' && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 120 && !newData.child('effect_id').exists()) || (newData.child('type').val() === 'effect' && newData.child('effect_id').isString() && newData.child('effect_id').val().matches(/^[a-z][a-z0-9_-]{0,63}$/) && !newData.child('text').exists()) || ((newData.child('type').val() === 'greeting' || newData.child('type').val() === 'heart') && !newData.child('text').exists() && !newData.child('effect_id').exists())))"
+          }
+        }
+      }
+    }
+  }
+}

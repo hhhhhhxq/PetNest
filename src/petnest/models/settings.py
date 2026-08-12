@@ -19,7 +19,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 17
+    SCHEMA_VERSION = 18
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
@@ -33,6 +33,7 @@ class Settings:
     external_event_server_enabled: bool = False
     external_event_port: int = 18486
     lan_interaction_enabled: bool = True
+    remote_interaction_enabled: bool = True
     system_idle_enabled: bool = True
     system_idle_seconds: int = 300
     system_bored_seconds: int = 20

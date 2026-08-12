@@ -18,6 +18,7 @@ from .lottie_effects import (
 )
 from .lan_interaction import LanPacketCodec, LanProtocolError, ReceivedInteraction
 from .lan_service import LanInteractionService
+from .remote_interaction_service import FirebaseConfig, FirebaseRemoteInteractionService
 from .animation_action_synchronizer import (
     AnimationActionSyncError,
     AnimationActionSyncResult,
@@ -35,6 +36,8 @@ __all__ = [
     "EffectImportResult",
     "EffectManifest",
     "EventBus",
+    "FirebaseConfig",
+    "FirebaseRemoteInteractionService",
     "FallbackResolver",
     "LottieEffectImporter",
     "LottieEffectInfo",

@@ -174,6 +174,10 @@ class SettingsManager:
             version = 16
         if version == 16:
             migrated.setdefault("lan_interaction_enabled", True)
+            migrated["schema_version"] = 17
+            version = 17
+        if version == 17:
+            migrated.setdefault("remote_interaction_enabled", True)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

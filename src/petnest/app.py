@@ -42,6 +42,7 @@ from petnest.core.remote_resource_update import (
     RemoteResourceCheckResult,
     RemoteResourceUpdateCoordinator,
 )
+from petnest.core.remote_interaction_service import FirebaseRemoteInteractionService
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.events.external_event_server import ExternalEventServer
@@ -225,6 +226,14 @@ class PetNest:
         )
         self.lan_service.interaction_received.connect(self._handle_lan_interaction)
         self.lan_service.error.connect(lambda message: LOGGER.warning("%s", message))
+        self.remote_interaction_service = FirebaseRemoteInteractionService(
+            display_name=display_name_for(self.settings),
+            pet_name=self.package.name,
+            config_directory=self.settings_manager.path.parent,
+            parent=self.window,
+        )
+        self.remote_interaction_service.interaction_received.connect(self._handle_lan_interaction)
+        self.remote_interaction_service.error.connect(lambda message: LOGGER.warning("%s", message))
         self.work_countdown = WorkCountdownWindow(self.window)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")
@@ -327,6 +336,7 @@ class PetNest:
             self._start_external_server()
         self._configure_system_idle_timer()
         self._configure_lan_service()
+        self._configure_remote_interaction_service()
         if self.tray is not None:
             self.tray.show()
         self.window.show()
@@ -372,6 +382,10 @@ class PetNest:
         self.settings = replace(self.settings, current_pet_id=candidate.identifier, scale=candidate.display.default_scale)
         self.settings_manager.save(self.settings)
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
+        self.remote_interaction_service.update_identity(
+            display_name=display_name_for(self.settings),
+            pet_name=self.package.name,
+        )
         return True
 
     def reload_current_pet(self) -> bool:
@@ -429,7 +443,12 @@ class PetNest:
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
+        self.remote_interaction_service.update_identity(
+            display_name=display_name_for(self.settings),
+            pet_name=self.package.name,
+        )
         self._configure_lan_service()
+        self._configure_remote_interaction_service()
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
@@ -494,29 +513,54 @@ class PetNest:
             self.apply_settings(dialog.updated_settings())
 
     def show_lan_interaction_dialog(self) -> None:
-        """打开局域网互动入口；当前无设备时明确展示空状态。"""
+        """打开附近设备与远程伙伴的统一互动入口。"""
         self._configure_lan_service()
+        self._configure_remote_interaction_service()
         self.lan_service.discover()
         effects = self._discover_effects()
         dialog = LanInteractionDialog(
             settings=self.settings,
             peers=self.lan_service.peers(),
+            remote_peers=self.remote_interaction_service.peers(),
             effects=effects,
             on_send=self.lan_service.send_interaction,
+            on_remote_send=(
+                self.remote_interaction_service.send_interaction
+                if self.remote_interaction_service.is_configured
+                else None
+            ),
             on_probe=self.lan_service.probe_peer,
+            on_remote_pair=(
+                self.remote_interaction_service.pair_peer
+                if self.remote_interaction_service.is_configured
+                else None
+            ),
             on_preview=self._preview_lan_effect,
             on_preview_clear=self.window.clear_effect,
+            remote_pair_code=(
+                self.remote_interaction_service.pair_code
+                if self.remote_interaction_service.is_configured
+                else ""
+            ),
+            remote_status=self.remote_interaction_service.status_message,
             parent=self.window,
         )
         self.lan_service.peer_changed.connect(dialog.update_peer)
         self.lan_service.manual_probe_succeeded.connect(dialog.manual_probe_succeeded)
         self.lan_service.peer_removed.connect(dialog.remove_peer)
         self.lan_service.error.connect(dialog.set_status_message)
+        self.remote_interaction_service.peer_changed.connect(dialog.update_remote_peer)
+        self.remote_interaction_service.peer_removed.connect(dialog.remove_remote_peer)
+        self.remote_interaction_service.pairing_succeeded.connect(dialog.remote_pair_succeeded)
+        self.remote_interaction_service.pair_code_changed.connect(dialog.set_remote_pair_code)
+        self.remote_interaction_service.status_changed.connect(dialog.set_remote_status)
+        self.remote_interaction_service.error.connect(dialog.set_status_message)
         dialog.exec()
         updated = dialog.settings
         if (
             updated.nickname != self.settings.nickname
             or updated.lan_interaction_enabled != self.settings.lan_interaction_enabled
+            or updated.remote_interaction_enabled != self.settings.remote_interaction_enabled
         ):
             self.apply_settings(updated)
 
@@ -624,6 +668,7 @@ class PetNest:
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止局域网互动服务", self.lan_service.stop)
+        self._run_shutdown_step("停止远程伙伴服务", self.remote_interaction_service.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
         self._run_shutdown_step("恢复系统鼠标样式", self._restore_cursor_style)
         if not self.settings.mouse_follow_enabled:
@@ -960,6 +1005,13 @@ class PetNest:
                 LOGGER.warning("局域网互动未启用，桌宠仍可正常使用")
         else:
             self.lan_service.stop()
+
+    def _configure_remote_interaction_service(self) -> None:
+        if self.settings.remote_interaction_enabled:
+            if not self.remote_interaction_service.start() and self.remote_interaction_service.is_configured:
+                LOGGER.warning("远程伙伴未启用，桌宠仍可正常使用")
+        else:
+            self.remote_interaction_service.stop()
 
     def _handle_lan_interaction(self, received: object) -> None:
         """把远程安全互动转成宠物旁的提示和本地动效。"""

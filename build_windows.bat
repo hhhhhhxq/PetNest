@@ -7,6 +7,7 @@ if not exist ".venv\Scripts\python.exe" (
 call .venv\Scripts\activate.bat
 set "RESOURCE_DATA=--add-data assets;assets"
 if exist "effects" set "RESOURCE_DATA=%RESOURCE_DATA% --add-data effects;effects"
+if exist "google-services.json" set "RESOURCE_DATA=%RESOURCE_DATA% --add-data google-services.json;."
 pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --icon assets\icons\petnest-app.ico --paths src %RESOURCE_DATA% src\petnest_launcher.py
 if errorlevel 1 exit /b 1
 pyinstaller --noconfirm --clean --onefile --windowed --name PetNestUpdater --paths src src\petnest_updater.py

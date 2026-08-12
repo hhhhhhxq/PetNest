@@ -161,3 +161,16 @@ def test_lan_interaction_preference_round_trips_and_migrates(tmp_path) -> None:
     migrated = manager.load()
     assert migrated.schema_version == Settings.SCHEMA_VERSION
     assert migrated.lan_interaction_enabled is True
+
+
+def test_remote_interaction_preference_round_trips_and_migrates(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(Settings(remote_interaction_enabled=False))
+
+    assert manager.load().remote_interaction_enabled is False
+
+    path.write_text('{"schema_version": 17}', encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.remote_interaction_enabled is True
