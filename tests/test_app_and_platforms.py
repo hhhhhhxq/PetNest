@@ -61,6 +61,28 @@ def test_effect_directories_include_custom_pets_and_installation_resources(tmp_p
         (bundled_root / "effects").resolve(),
     )
 
+
+def test_settings_and_cursor_entries_reuse_one_settings_center(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.show_settings_dialog()
+    first = application._settings_center_dialog
+    assert first is not None
+
+    application.show_cursor_style_dialog()
+
+    assert application._settings_center_dialog is first
+    assert first.section_list.currentRow() == 1
+    first.reject()
+    assert application._settings_center_dialog is None
+    application.shutdown()
+
     def register_startup(self, enabled: bool) -> bool:
         del enabled
         return False
