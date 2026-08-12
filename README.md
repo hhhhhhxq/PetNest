@@ -225,7 +225,7 @@ Windows 安装器会请求管理员权限并创建一条仅绑定 `PetNest.exe` 
 1. 在 Firebase 控制台启用 Authentication 的 Anonymous 登录，并创建 Realtime Database。
 2. 在 `firebase/` 目录先运行 `firebase use --add` 选择项目，再运行 `firebase deploy --only database`，部署仓库提供的 `database.rules.json`。这些规则限制用户只能读取自己的账号节点，并校验配对请求和互动消息。
 3. 在 Firebase 控制台下载原版 `google-services.json`，保持这个文件名不变。确认其中包含 `project_info/firebase_url`；如果没有，请先创建 Realtime Database，再重新下载。
-4. 开发时把 `google-services.json` 放在项目根目录。Windows 和 macOS 打包脚本会自动把它放入安装包；已经安装的版本也可以直接从下列用户配置目录读取它。
+4. 开发时把 `google-services.json` 放在项目根目录。该路径已加入 `.gitignore`，不要使用 `git add -f` 提交。Windows 和 macOS 打包脚本会在本地构建时自动把它放入安装包；已经安装的版本也可以直接从下列用户配置目录读取它。
 
 用户配置目录分别为：
 
@@ -233,7 +233,7 @@ Windows 安装器会请求管理员权限并创建一条仅绑定 `PetNest.exe` 
 - macOS：`~/Library/Application Support/PetNest`
 - Linux：`${XDG_CONFIG_HOME:-~/.config}/PetNest`
 
-开发和自动部署环境也可改用 `PETNEST_FIREBASE_API_KEY` 与 `PETNEST_FIREBASE_DATABASE_URL` 环境变量。普通互动内容只受 HTTPS 传输保护，并非端到端加密；不要通过文字互动发送密码、令牌或其他敏感信息。
+开发和自动部署环境也可在启动进程时提供 `PETNEST_FIREBASE_API_KEY` 与 `PETNEST_FIREBASE_DATABASE_URL` 环境变量。Firebase 客户端 API Key 只标识项目，不负责数据库授权；不要把服务账号、Admin SDK 私钥、FCM 服务端密钥等真正的 Secret 放入客户端或安装包。普通互动内容只受 HTTPS 传输保护，并非端到端加密；不要通过文字互动发送密码、令牌或其他敏感信息。
 
 PetNest 会直接从原版 `google-services.json` 读取 `project_info/firebase_url`、`project_info/project_id` 和首个客户端的 `api_key/current_key`，不依赖 Gradle 插件。原来的简化版 `firebase.json` 仍兼容，可参考 `firebase/firebase.example.json`。配置优先级为：环境变量、用户目录 `firebase.json`、用户目录 `google-services.json`、安装包内或项目根目录的 `google-services.json`。
 

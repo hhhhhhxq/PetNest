@@ -6,6 +6,7 @@ from pathlib import Path
 def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> None:
     contents = Path("installer/PetNest.iss").read_text(encoding="utf-8")
     build_script = Path("build_windows.bat").read_text(encoding="utf-8")
+    ignored = Path(".gitignore").read_text(encoding="utf-8")
 
     assert 'dist\\PetNest\\*' in contents
     assert 'Excludes: "pets\\*"' in contents
@@ -28,6 +29,7 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
     assert "PetNestUpdater" in build_script
     assert "google-services.json;." in build_script
+    assert "/google-services.json" in ignored
     assert "Source: \"..\\dist\\PetNestUpdater.exe\"" in contents
     assert "skipifsilent" in contents
 

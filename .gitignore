@@ -22,3 +22,6 @@ Thumbs.db
 # Local runtime data and logs
 .petnest/
 *.log
+
+# Firebase client config is provisioned locally or by the release build.
+/google-services.json
