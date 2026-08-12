@@ -1,0 +1,192 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100">
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F1EA"/>
+      <stop offset="0.52" stop-color="#EEE4DC"/>
+      <stop offset="1" stop-color="#E7D9D0"/>
+    </linearGradient>
+    <linearGradient id="windowGlow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#F2E6DE" stop-opacity="0.30"/>
+    </linearGradient>
+    <linearGradient id="menuSurface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#FBF4EE" stop-opacity="0.92"/>
+    </linearGradient>
+    <linearGradient id="accentSoft" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFF0E8"/>
+      <stop offset="1" stop-color="#FDE5D9"/>
+    </linearGradient>
+    <filter id="blur40" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="40"/>
+    </filter>
+    <filter id="blur18" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#806456" flood-opacity="0.18"/>
+    </filter>
+    <filter id="smallShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#806456" flood-opacity="0.16"/>
+    </filter>
+    <clipPath id="canvasClip">
+      <rect width="1600" height="1100" rx="34"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#canvasClip)">
+    <rect width="1600" height="1100" fill="url(#backdrop)"/>
+    <circle cx="140" cy="110" r="230" fill="#F6C6AF" opacity="0.30" filter="url(#blur40)"/>
+    <circle cx="1450" cy="210" r="260" fill="#F4D5A5" opacity="0.28" filter="url(#blur40)"/>
+    <circle cx="820" cy="930" r="300" fill="#EFC5BA" opacity="0.22" filter="url(#blur40)"/>
+
+    <!-- Soft desktop-like background panels -->
+    <rect x="76" y="74" width="1448" height="948" rx="30" fill="url(#windowGlow)" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="2"/>
+    <rect x="108" y="112" width="1384" height="54" rx="16" fill="#FFFFFF" fill-opacity="0.34"/>
+    <circle cx="138" cy="139" r="8" fill="#D98663" fill-opacity="0.45"/>
+    <circle cx="166" cy="139" r="8" fill="#D9B27F" fill-opacity="0.42"/>
+    <circle cx="194" cy="139" r="8" fill="#A8B78E" fill-opacity="0.42"/>
+    <rect x="1184" y="130" width="248" height="18" rx="9" fill="#FFFFFF" fill-opacity="0.34"/>
+
+    <rect x="124" y="222" width="620" height="612" rx="26" fill="#FFFFFF" fill-opacity="0.20" filter="url(#blur18)"/>
+    <rect x="858" y="222" width="600" height="612" rx="26" fill="#FFFFFF" fill-opacity="0.22" filter="url(#blur18)"/>
+    <rect x="184" y="286" width="500" height="28" rx="14" fill="#FFFFFF" fill-opacity="0.35"/>
+    <rect x="184" y="342" width="370" height="20" rx="10" fill="#FFFFFF" fill-opacity="0.28"/>
+    <rect x="184" y="400" width="440" height="246" rx="22" fill="#FFFFFF" fill-opacity="0.24"/>
+    <path d="M258 614 C315 520 366 545 420 480 C482 407 554 490 625 418" fill="none" stroke="#D98663" stroke-opacity="0.18" stroke-width="10" stroke-linecap="round"/>
+    <path d="M258 614 C315 520 366 545 420 480 C482 407 554 490 625 418" fill="none" stroke="#FFFFFF" stroke-opacity="0.34" stroke-width="2" stroke-linecap="round"/>
+    <rect x="922" y="286" width="464" height="244" rx="22" fill="#FFFFFF" fill-opacity="0.20"/>
+    <rect x="922" y="572" width="218" height="112" rx="20" fill="#FFFFFF" fill-opacity="0.22"/>
+    <rect x="1168" y="572" width="218" height="112" rx="20" fill="#FFFFFF" fill-opacity="0.22"/>
+
+    <!-- Page title -->
+    <text x="124" y="970" fill="#6E625C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="600" letter-spacing="1">PETNEST · CONTEXT MENU</text>
+    <text x="124" y="1008" fill="#9B8D84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17">托盘右键菜单 · 信息层级与操作入口</text>
+    <text x="1450" y="1008" text-anchor="end" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15">暖色奶油风 · 01 / 11</text>
+
+    <!-- State labels -->
+    <rect x="156" y="186" width="218" height="36" rx="18" fill="#FFFDF9" fill-opacity="0.72" stroke="#FFFFFF" stroke-opacity="0.72"/>
+    <text x="265" y="210" text-anchor="middle" fill="#8B6D5C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600">默认状态</text>
+    <rect x="874" y="186" width="258" height="36" rx="18" fill="#FFFDF9" fill-opacity="0.72" stroke="#FFFFFF" stroke-opacity="0.72"/>
+    <text x="1003" y="210" text-anchor="middle" fill="#8B6D5C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600">展开「宠物库」状态</text>
+
+    <!-- Left tray menu: default -->
+    <g filter="url(#shadow)">
+      <rect x="174" y="254" width="486" height="666" rx="24" fill="url(#menuSurface)" stroke="#FFFFFF" stroke-opacity="0.90" stroke-width="2"/>
+      <rect x="194" y="274" width="446" height="86" rx="18" fill="#FFF8F3" fill-opacity="0.86"/>
+      <!-- brand icon -->
+      <circle cx="232" cy="317" r="24" fill="#D98663"/>
+      <path d="M220 317 C220 309 225 305 230 308 C233 302 239 304 240 310 C247 309 249 316 246 321 C242 328 224 328 220 317Z" fill="#FFFDF9"/>
+      <circle cx="228" cy="316" r="2.1" fill="#D98663"/>
+      <circle cx="239" cy="316" r="2.1" fill="#D98663"/>
+      <text x="270" y="308" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="21" font-weight="700">PetNest</text>
+      <text x="270" y="334" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">当前宠物：小平安</text>
+
+      <!-- rows -->
+      <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" fill="#554C47">
+        <!-- row helper backgrounds -->
+        <rect x="194" y="378" width="446" height="42" rx="11" fill="url(#accentSoft)" fill-opacity="0.48"/>
+        <text x="242" y="405">显示桌宠</text>
+        <text x="610" y="405" text-anchor="end" fill="#C47A5B" font-size="14">⌘</text>
+
+        <text x="242" y="449">暂停动画</text>
+        <text x="610" y="449" text-anchor="end" fill="#A9958A" font-size="14">⌘</text>
+
+        <text x="242" y="493">始终置顶</text>
+        <path d="M600 487 l7 7 l13 -15" fill="none" stroke="#D98663" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <text x="242" y="537">跟随鼠标</text>
+        <path d="M600 531 l7 7 l13 -15" fill="none" stroke="#D98663" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <line x1="218" y1="562" x2="616" y2="562" stroke="#E8DED5" stroke-width="1"/>
+
+        <text x="242" y="607">切换宠物</text>
+        <path d="M608 598 l7 7 l-7 7" fill="none" stroke="#A7978E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <text x="242" y="651">互动…</text>
+
+        <line x1="218" y1="676" x2="616" y2="676" stroke="#E8DED5" stroke-width="1"/>
+
+        <text x="242" y="721">宠物库</text>
+        <path d="M608 712 l7 7 l-7 7" fill="none" stroke="#A7978E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <text x="242" y="765">设置…</text>
+        <text x="242" y="809">鼠标样式…</text>
+        <text x="242" y="853">检查资源更新</text>
+        <circle cx="608" cy="848" r="5" fill="#5A9BE8"/>
+
+        <line x1="218" y1="878" x2="616" y2="878" stroke="#E8DED5" stroke-width="1"/>
+
+        <text x="242" y="907" fill="#C06C60">退出 PetNest</text>
+      </g>
+
+    </g>
+
+    <!-- Right tray menu: library submenu expanded -->
+    <g filter="url(#shadow)">
+      <rect x="876" y="254" width="478" height="666" rx="24" fill="url(#menuSurface)" stroke="#FFFFFF" stroke-opacity="0.90" stroke-width="2"/>
+      <rect x="896" y="274" width="438" height="86" rx="18" fill="#FFF8F3" fill-opacity="0.86"/>
+      <circle cx="934" cy="317" r="24" fill="#D98663"/>
+      <path d="M922 317 C922 309 927 305 932 308 C935 302 941 304 942 310 C949 309 951 316 948 321 C944 328 926 328 922 317Z" fill="#FFFDF9"/>
+      <circle cx="930" cy="316" r="2.1" fill="#D98663"/>
+      <circle cx="941" cy="316" r="2.1" fill="#D98663"/>
+      <text x="972" y="308" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="21" font-weight="700">PetNest</text>
+      <text x="972" y="334" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">当前宠物：小平安</text>
+      <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" fill="#554C47">
+        <rect x="896" y="378" width="438" height="42" rx="11" fill="url(#accentSoft)" fill-opacity="0.48"/>
+        <text x="944" y="405">显示桌宠</text>
+        <text x="1304" y="405" text-anchor="end" fill="#C47A5B" font-size="14">⌘</text>
+        <text x="944" y="449">暂停动画</text>
+        <text x="944" y="493">始终置顶</text>
+        <path d="M1294 487 l7 7 l13 -15" fill="none" stroke="#D98663" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="944" y="537">跟随鼠标</text>
+        <path d="M1294 531 l7 7 l13 -15" fill="none" stroke="#D98663" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="920" y1="562" x2="1310" y2="562" stroke="#E8DED5" stroke-width="1"/>
+        <text x="944" y="607">切换宠物</text>
+        <path d="M1302 598 l7 7 l-7 7" fill="none" stroke="#A7978E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="944" y="651">互动…</text>
+        <line x1="920" y1="676" x2="1310" y2="676" stroke="#E8DED5" stroke-width="1"/>
+        <rect x="896" y="690" width="438" height="42" rx="11" fill="url(#accentSoft)" fill-opacity="0.70"/>
+        <text x="944" y="717" fill="#A85D3E" font-weight="600">宠物库</text>
+        <path d="M1302 708 l7 7 l-7 7" fill="none" stroke="#D98663" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="944" y="761">设置…</text>
+        <text x="944" y="805">鼠标样式…</text>
+        <text x="944" y="849">检查资源更新</text>
+        <circle cx="1302" cy="844" r="5" fill="#5A9BE8"/>
+        <line x1="920" y1="874" x2="1310" y2="874" stroke="#E8DED5" stroke-width="1"/>
+        <text x="944" y="903" fill="#C06C60">退出 PetNest</text>
+      </g>
+
+      <!-- library submenu -->
+      <g filter="url(#smallShadow)">
+        <rect x="1328" y="602" width="230" height="260" rx="20" fill="url(#menuSurface)" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2"/>
+        <text x="1354" y="636" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">宠物库</text>
+        <line x1="1350" y1="651" x2="1536" y2="651" stroke="#E8DED5" stroke-width="1"/>
+        <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#554C47">
+          <rect x="1342" y="665" width="202" height="36" rx="9" fill="#FFF0E8"/>
+          <text x="1360" y="689" fill="#A85D3E" font-weight="600">导入精灵图…</text>
+          <text x="1360" y="729">打开宠物文件夹</text>
+          <text x="1360" y="769">刷新宠物列表</text>
+          <text x="1360" y="809">编辑动画时长…</text>
+          <text x="1360" y="849">重新加载当前宠物</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Callouts -->
+    <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+      <path d="M680 382 C720 382 724 370 760 370" fill="none" stroke="#D98663" stroke-width="1.5" stroke-dasharray="5 5"/>
+      <circle cx="680" cy="382" r="4" fill="#D98663"/>
+      <rect x="730" y="334" width="120" height="54" rx="14" fill="#FFFDF9" fill-opacity="0.78" stroke="#FFFFFF"/>
+      <text x="790" y="356" text-anchor="middle" fill="#8B6D5C" font-size="13" font-weight="600">即时操作</text>
+      <text x="790" y="376" text-anchor="middle" fill="#A7978E" font-size="12">顶部优先</text>
+
+      <path d="M1354 808 C1410 808 1418 786 1450 786" fill="none" stroke="#D98663" stroke-width="1.5" stroke-dasharray="5 5"/>
+      <circle cx="1354" cy="808" r="4" fill="#D98663"/>
+      <rect x="1448" y="744" width="120" height="74" rx="14" fill="#FFFDF9" fill-opacity="0.78" stroke="#FFFFFF"/>
+      <text x="1508" y="768" text-anchor="middle" fill="#8B6D5C" font-size="13" font-weight="600">管理操作</text>
+      <text x="1508" y="789" text-anchor="middle" fill="#A7978E" font-size="12">收进子菜单</text>
+      <text x="1508" y="807" text-anchor="middle" fill="#A7978E" font-size="12">降低干扰</text>
+    </g>
+  </g>
+</svg>
