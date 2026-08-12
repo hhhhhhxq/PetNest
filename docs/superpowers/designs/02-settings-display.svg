@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100">
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F1EA"/>
+      <stop offset="0.48" stop-color="#EEDFD6"/>
+      <stop offset="1" stop-color="#E4D1C8"/>
+    </linearGradient>
+    <linearGradient id="window" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#F7EEE7" stop-opacity="0.86"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#FBF3EC" stop-opacity="0.84"/>
+    </linearGradient>
+    <linearGradient id="previewSurface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFF1E8"/>
+      <stop offset="1" stop-color="#F5DCCE"/>
+    </linearGradient>
+    <linearGradient id="slider" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#D98663"/>
+      <stop offset="1" stop-color="#E8A17F"/>
+    </linearGradient>
+    <filter id="blur45" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#806456" flood-opacity="0.20"/>
+    </filter>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#9A7668" flood-opacity="0.10"/>
+    </filter>
+    <clipPath id="canvasClip"><rect width="1600" height="1100" rx="34"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#canvasClip)">
+    <rect width="1600" height="1100" fill="url(#backdrop)"/>
+    <circle cx="160" cy="170" r="240" fill="#F5BEA7" opacity="0.34" filter="url(#blur45)"/>
+    <circle cx="1430" cy="160" r="250" fill="#F2D4A8" opacity="0.28" filter="url(#blur45)"/>
+    <circle cx="1180" cy="1020" r="330" fill="#EFC6BD" opacity="0.26" filter="url(#blur45)"/>
+
+    <!-- Desktop-like glass backdrop -->
+    <rect x="74" y="64" width="1452" height="968" rx="32" fill="#FFFFFF" fill-opacity="0.20" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="2"/>
+    <rect x="105" y="96" width="1390" height="54" rx="17" fill="#FFFFFF" fill-opacity="0.30"/>
+    <circle cx="138" cy="123" r="8" fill="#E9B69D"/>
+    <circle cx="166" cy="123" r="8" fill="#E8CEA4"/>
+    <circle cx="194" cy="123" r="8" fill="#BBC6A7"/>
+    <rect x="1246" y="114" width="208" height="18" rx="9" fill="#FFFFFF" fill-opacity="0.34"/>
+
+    <!-- Main settings window -->
+    <g filter="url(#shadow)">
+      <rect x="170" y="176" width="1260" height="746" rx="26" fill="url(#window)" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2"/>
+      <rect x="170" y="176" width="1260" height="96" rx="26" fill="#FFFDF9" fill-opacity="0.46"/>
+      <line x1="170" y1="272" x2="1430" y2="272" stroke="#E8DED5" stroke-width="1"/>
+
+      <!-- Header -->
+      <circle cx="214" cy="224" r="22" fill="#D98663"/>
+      <path d="M203 224 C203 217 208 213 212 216 C215 210 221 212 222 217 C228 216 231 222 228 227 C224 233 207 233 203 224Z" fill="#FFFDF9"/>
+      <circle cx="211" cy="223" r="1.8" fill="#D98663"/>
+      <circle cx="220" cy="223" r="1.8" fill="#D98663"/>
+      <text x="252" y="218" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="700">PetNest 设置中心</text>
+      <text x="252" y="242" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">让桌宠更贴合你的桌面与工作节奏</text>
+      <text x="1392" y="226" text-anchor="end" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="24">×</text>
+
+      <!-- Sidebar -->
+      <rect x="192" y="294" width="246" height="592" rx="18" fill="#FBF4EE" fill-opacity="0.70"/>
+      <text x="220" y="334" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" letter-spacing="1.3">偏好设置</text>
+      <g font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16">
+        <rect x="208" y="358" width="214" height="48" rx="13" fill="#FFF0E8"/>
+        <circle cx="230" cy="382" r="4" fill="#D98663"/>
+        <text x="248" y="388" fill="#A85D3E" font-weight="700">显示与窗口</text>
+        <text x="248" y="438" fill="#6A605A">鼠标与行为</text>
+        <text x="248" y="488" fill="#6A605A">系统空闲</text>
+        <text x="248" y="538" fill="#6A605A">工作倒计时</text>
+        <text x="248" y="588" fill="#6A605A">应用与更新</text>
+      </g>
+      <line x1="220" y1="644" x2="410" y2="644" stroke="#E8DED5" stroke-width="1"/>
+      <text x="220" y="680" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700" letter-spacing="1.3">当前状态</text>
+      <rect x="216" y="704" width="198" height="76" rx="15" fill="#FFFFFF" fill-opacity="0.54"/>
+      <circle cx="240" cy="732" r="6" fill="#6D9A7A"/>
+      <text x="258" y="737" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">桌宠在线</text>
+      <text x="234" y="761" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">当前宠物 · 小平安</text>
+
+      <!-- Content header -->
+      <text x="486" y="340" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="28" font-weight="700">显示与窗口</text>
+      <text x="486" y="370" fill="#94867E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">调整桌宠在桌面上的显示方式</text>
+
+      <!-- Display card -->
+      <g filter="url(#cardShadow)">
+        <rect x="486" y="404" width="888" height="296" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.90" stroke-width="1.5"/>
+      </g>
+      <text x="520" y="446" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">桌宠显示</text>
+      <text x="520" y="471" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">显示比例会立即影响当前桌宠大小</text>
+
+      <!-- Preview panel -->
+      <rect x="1062" y="426" width="280" height="242" rx="17" fill="url(#previewSurface)" stroke="#FFFFFF" stroke-opacity="0.68"/>
+      <text x="1090" y="454" fill="#B07962" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">实时预览</text>
+      <ellipse cx="1202" cy="604" rx="94" ry="18" fill="#C8927C" opacity="0.18"/>
+      <!-- simple pet preview, intentionally drawable without extra cutout -->
+      <circle cx="1202" cy="548" r="58" fill="#65B0EF" stroke="#FFFDF9" stroke-width="5"/>
+      <circle cx="1181" cy="540" r="8" fill="#244C7D"/>
+      <circle cx="1223" cy="540" r="8" fill="#244C7D"/>
+      <path d="M1177 568 C1192 584 1212 584 1227 568" fill="none" stroke="#244C7D" stroke-width="5" stroke-linecap="round"/>
+      <text x="1202" y="642" text-anchor="middle" fill="#A87560" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">小平安 · 当前宠物</text>
+
+      <!-- Scale control -->
+      <text x="520" y="523" fill="#5C524D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600">桌宠大小</text>
+      <text x="1018" y="523" text-anchor="end" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="19" font-weight="700">100%</text>
+      <line x1="520" y1="557" x2="1018" y2="557" stroke="#EBDDD4" stroke-width="7" stroke-linecap="round"/>
+      <line x1="520" y1="557" x2="770" y2="557" stroke="url(#slider)" stroke-width="7" stroke-linecap="round"/>
+      <circle cx="770" cy="557" r="12" fill="#FFFDF9" stroke="#D98663" stroke-width="4"/>
+      <text x="520" y="584" fill="#B09E94" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">25%</text>
+      <text x="1018" y="584" text-anchor="end" fill="#B09E94" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">200%</text>
+
+      <!-- Switch rows -->
+      <line x1="520" y1="622" x2="1018" y2="622" stroke="#E8DED5" stroke-width="1"/>
+      <text x="520" y="655" fill="#5C524D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600">始终置顶</text>
+      <text x="520" y="678" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">让桌宠保持在其他窗口上方</text>
+      <rect x="962" y="638" width="56" height="30" rx="15" fill="#D98663"/>
+      <circle cx="1003" cy="653" r="11" fill="#FFFDF9"/>
+
+      <!-- Second card -->
+      <g filter="url(#cardShadow)">
+        <rect x="486" y="730" width="888" height="126" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.90" stroke-width="1.5"/>
+      </g>
+      <text x="520" y="772" fill="#5C524D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" font-weight="600">启用鼠标交互</text>
+      <text x="520" y="798" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">允许拖动、点击和右键操作桌宠</text>
+      <rect x="962" y="756" width="56" height="30" rx="15" fill="#D98663"/>
+      <circle cx="1003" cy="771" r="11" fill="#FFFDF9"/>
+
+      <!-- Footer -->
+      <line x1="462" y1="858" x2="1408" y2="858" stroke="#E8DED5" stroke-width="1"/>
+      <text x="486" y="882" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">修改会在应用并关闭后保存</text>
+      <rect x="1158" y="870" width="112" height="36" rx="12" fill="#FFFDF9" stroke="#E3D4CB"/>
+      <text x="1214" y="893" text-anchor="middle" fill="#85766E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">取消</text>
+      <rect x="1280" y="870" width="128" height="36" rx="12" fill="#D98663"/>
+      <text x="1344" y="893" text-anchor="middle" fill="#FFFDF9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">应用并关闭</text>
+    </g>
+
+    <!-- Callout -->
+    <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+      <path d="M1390 434 C1460 434 1472 400 1500 400" fill="none" stroke="#D98663" stroke-width="1.5" stroke-dasharray="5 5"/>
+      <circle cx="1390" cy="434" r="4" fill="#D98663"/>
+      <rect x="1458" y="350" width="116" height="72" rx="14" fill="#FFFDF9" fill-opacity="0.82" stroke="#FFFFFF"/>
+      <text x="1516" y="374" text-anchor="middle" fill="#8B6D5C" font-size="13" font-weight="600">内容优先</text>
+      <text x="1516" y="395" text-anchor="middle" fill="#A7978E" font-size="12">右侧预览</text>
+      <text x="1516" y="412" text-anchor="middle" fill="#A7978E" font-size="12">减少文字负担</text>
+    </g>
+
+    <!-- Caption -->
+    <text x="110" y="982" fill="#6E625C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="22" font-weight="600" letter-spacing="1">PETNEST · SETTINGS CENTER</text>
+    <text x="110" y="1018" fill="#9B8D84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17">设置中心 · 显示与窗口</text>
+    <text x="1490" y="1018" text-anchor="end" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15">暖色奶油风 · 02 / 10</text>
+  </g>
+</svg>

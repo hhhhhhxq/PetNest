@@ -1,269 +1,248 @@
 # PetNest 设置中心与快捷菜单重设计实现计划
 
-> **面向 AI 代理的工作者：** 必需子技能：使用 `superpowers:executing-plans` 逐任务执行本计划，并在实现前完成全部设计图确认。
+> **执行说明：** 设计图已全部确认，本计划直接进入实现阶段。每个阶段先补失败测试，再实现，再运行针对性测试；所有阶段完成后运行全量验证。
 
-**目标：** 按已确认的 10 张设计图，重做 PetNest 的设置中心、托盘菜单、导入向导和动画编辑器的视觉与窗口入口关系，同时保持宠物右键菜单、互动窗口和现有设置数据行为不变。
+**目标：** 按已确认的 10 张设计图完成设置中心、托盘菜单、导入精灵图向导和动画时长编辑器的统一视觉实现，补充鼠标大小与弹性打卡，并保护互动窗口、宠物右键菜单和倒计时气泡的现有体验。
 
-**架构：** 使用一个共享的 PetNest 视觉令牌与 Qt 样式辅助模块，统一颜色、圆角、间距、按钮和菜单状态；设置中心由一个窗口承载五个分类视图，设置与鼠标样式入口通过分类定位复用该窗口；导入向导和动画编辑器继续保持独立窗口。菜单、窗口和业务层通过现有回调连接，不改变 Settings、宠物包和互动服务的数据接口。
+**架构：** 使用共享视觉令牌和 Qt 样式辅助模块；设置中心由一个窗口承载五个分类视图，设置与鼠标样式入口复用该窗口；导入向导和动画编辑器继续使用独立窗口；弹性打卡使用独立卡片窗口，由工作倒计时控制器管理，不改动 `PetWindow` 的倒计时绘制。
 
-**技术栈：** Python 3.12、PySide6、pytest、pytest-qt、SVG 设计图、现有 PetNest PNG/ICO/光标资源。
+**技术栈：** Python 3.12、PySide6、pytest、pytest-qt、现有 PetNest 资源与 SVG 设计稿。
 
----
-
-## 0. 设计确认门控
+## 1. 收敛规格与已确认设计
 
 **文件：**
-- 创建：`docs/superpowers/designs/01-tray-context-menu.svg`、`02-settings-display.svg` 至 `10-animation-editor-per-frame.svg`
-- 参考：`docs/superpowers/specs/2026-08-13-settings-center-and-context-menus-design.md`
 
-- [ ] **步骤 1：按规格顺序制作设计图**
+- `docs/superpowers/specs/2026-08-13-settings-center-and-context-menus-design.md`
+- `docs/superpowers/designs/01-tray-context-menu.svg`
+- `docs/superpowers/designs/02-settings-display.svg` 至 `10-animation-editor-per-frame.svg`
 
-  先制作托盘菜单、设置中心五个分类、导入向导两个状态、动画编辑器两个状态。宠物右键菜单跳过设计图，保留现有样式、图标和项目。每张图使用固定画布、暖色奶油背景、统一卡片和菜单令牌，并只引用现有图标/宠物/倒计时/光标素材。
+- [x] 记录五分类设置中心、三个实际窗口、托盘菜单职责和宠物菜单保护边界。
+- [x] 删除“动画播放中”、运行状态示例入口、“规律休息/灵活安排 + 例外下班时间”的旧表述。
+- [x] 固化工作日单一选择模块、固定时段/弹性打卡模式、打卡时间钳制规则和独立打卡卡片规则。
+- [x] 确认不需要新增无法绘制的装饰切图；优先复用 Qt 控件与现有资源。
 
-- [ ] **步骤 2：每张图单独获得用户确认**
-
-  每次只展示当前图，说明该图对应的窗口状态、可复用素材和需要确认的重点。用户要求修改时只更新当前图；未获得确认前不制作下一张，也不修改应用代码。
-
-- [ ] **步骤 3：确认切图需求**
-
-  对每张确认图扫描无法由 Qt 控件、文字、现有图标或现有资源表达的装饰元素。只有确有必要时才在 `assets/ui/` 增加透明切图，并记录文件名、像素尺寸、透明边距和使用位置。
-
-## 1. 共享视觉基础
+## 2. 数据模型、迁移与弹性打卡纯逻辑
 
 **文件：**
-- 创建：`src/petnest/ui/theme.py`
-- 测试：`tests/test_ui_theme.py`
-- 参考：`src/petnest/ui/lan_interaction_dialog.py:828-856`、`src/petnest/app.py:1257-1292`
 
-- [ ] **步骤 1：编写视觉令牌测试**
+- 修改：`src/petnest/models/settings.py`
+- 修改：`src/petnest/core/settings_manager.py`
+- 修改：`src/petnest/ui/work_countdown.py`
+- 测试：`tests/test_settings_manager.py`
+- 测试：`tests/test_work_countdown.py`
 
-  测试 `theme.py` 导出的颜色令牌包含 `window_background`、`surface`、`surface_alt`、`accent`、`accent_soft`、`text`、`muted_text`、`border`、`success` 和 `error`；测试主题样式函数返回非空字符串并包含 `QPushButton`、`QLineEdit`、`QComboBox`、`QCheckBox` 和 `QGroupBox` 的规则。
+- [ ] **步骤 1：补写失败测试**
+
+  覆盖 schema 迁移和新字段默认值；覆盖 `cursor_scale` 的合法节点；覆盖弹性打卡在窗口开始前、窗口内和窗口结束后的钳制；覆盖工作日判断、跨日清理和工作时长计算。固定模式已有测试必须继续保留。
 
 - [ ] **步骤 2：运行测试确认失败**
 
-  运行：`pytest tests/test_ui_theme.py -q`
+  ```powershell
+  pytest tests/test_settings_manager.py tests/test_work_countdown.py -q
+  ```
 
-  预期：因 `petnest.ui.theme` 尚不存在而失败。
+- [ ] **步骤 3：实现模型与迁移**
 
-- [ ] **步骤 3：实现共享令牌与样式函数**
+  将 schema 递增一个版本，加入 `cursor_scale`、`work_schedule_mode`、`clock_in_start_time`、`clock_in_end_time`、`work_duration_minutes`、`clock_in_date`、`clock_in_time`。旧文件按默认值读取；非法模式、比例和负工作时长回退到安全默认值。
 
-  在 `theme.py` 中定义不可变的颜色常量和 `dialog_stylesheet()`、`menu_stylesheet(object_name: str)`、`card_stylesheet()` 辅助函数。样式使用 `#F7F1EA`、`#FFFDF9`、`#D98663`、`#FFF0E8`、`#4B4641`、`#8F8680`、`#E8DED5` 等规格颜色，并通过透明填充和细边框模拟磨砂层，不调用平台专属背景模糊 API。
+- [ ] **步骤 4：实现可测试的弹性打卡计算**
 
-- [ ] **步骤 4：运行测试确认通过**
+  在 `work_countdown.py` 增加时间解析、有效打卡时间钳制、弹性下班时间计算和“达到允许开始时间且当天为工作日”的纯函数。保留原 `countdown_text()` 的固定模式行为和签名兼容性。
 
-  运行：`pytest tests/test_ui_theme.py -q`
-
-  预期：全部通过。
-
-- [ ] **步骤 5：Commit**
+- [ ] **步骤 5：运行针对性测试并提交**
 
   ```powershell
+  pytest tests/test_settings_manager.py tests/test_work_countdown.py -q
+  git diff --check
+  git add src/petnest/models/settings.py src/petnest/core/settings_manager.py src/petnest/ui/work_countdown.py tests/test_settings_manager.py tests/test_work_countdown.py
+  git commit -m "feat(倒计时): 增加弹性打卡数据与时间计算"
+  ```
+
+## 3. 共享视觉基础
+
+**文件：**
+
+- 创建：`src/petnest/ui/theme.py`
+- 测试：`tests/test_ui_theme.py`
+
+- [ ] **步骤 1：补写失败测试**
+
+  断言视觉令牌包含背景、卡片、强调色、文字、边框和状态色；样式函数返回包含 `QPushButton`、`QLineEdit`、`QComboBox`、`QCheckBox`、`QGroupBox` 和菜单规则的非空 QSS。
+
+- [ ] **步骤 2：运行 `pytest tests/test_ui_theme.py -q` 确认失败。**
+
+- [ ] **步骤 3：实现视觉令牌**
+
+  用确认稿中的奶油色、珊瑚色和细边框建立不可变令牌，提供对话框、卡片和托盘菜单样式函数；使用半透明填充和轻阴影模拟磨砂效果，不依赖系统背景模糊。
+
+- [ ] **步骤 4：运行测试并提交。**
+
+  ```powershell
+  pytest tests/test_ui_theme.py -q
   git add src/petnest/ui/theme.py tests/test_ui_theme.py
   git commit -m "style(界面): 添加 PetNest 统一视觉令牌"
   ```
 
-## 2. 设置中心与入口复用
+## 4. 设置中心与鼠标大小
 
 **文件：**
+
 - 创建：`src/petnest/ui/settings_center_dialog.py`
-- 删除：`src/petnest/ui/settings_dialog.py`（完成迁移后）
-- 修改：`src/petnest/models/settings.py`
-- 修改：`src/petnest/core/settings_manager.py`
-- 修改：`src/petnest/ui/cursor_style_dialog.py`
-- 修改：`src/petnest/app.py:498-524`
+- 修改：`src/petnest/ui/settings_dialog.py`（保留兼容导出）
+- 修改：`src/petnest/ui/app_update_dialog.py`（仅在需要时复用视觉令牌）
 - 修改：`src/petnest/ui/__init__.py`
+- 修改：`src/petnest/app.py`
+- 修改：平台光标控制器及其测试
 - 测试：`tests/test_settings_dialog.py`
-- 测试：`tests/test_settings_manager.py`
+- 测试：`tests/test_cursor_style_dialog.py`
 
-- [ ] **步骤 1：扩展失败测试覆盖窗口与分类入口**
+- [ ] **步骤 1：补写失败测试**
 
-  在 `tests/test_settings_dialog.py` 增加以下行为断言：
+  覆盖五个分类、无分类图标、`initial_section="mouse_behavior"`、跟随鼠标联动、空闲时间联动、工作日单一选择、固定/弹性字段保存、弹性模式自动启用打卡语义、应用更新按钮和鼠标滑块四节点吸附。保留旧 `SettingsDialog` 导入和已有兼容属性测试。
 
-  ```python
-  dialog = SettingsCenterDialog(Settings(), initial_section="mouse_behavior")
-  assert dialog.section_list.currentRow() == 1
-  assert dialog.page_title.text() == "鼠标与行为"
-  dialog.follow_mouse_input.setChecked(False)
-  assert not dialog.follow_scale_input.isEnabled()
-  ```
+- [ ] **步骤 2：运行设置相关测试确认失败。**
 
-  增加测试确认“鼠标样式”入口不再实例化 `CursorStyleDialog`，而由应用层调用设置中心并传入 `initial_section="mouse_behavior"`。保留现有更新回调、远程伙伴开关和取消语义测试。
+- [ ] **步骤 3：实现设置中心**
 
-- [ ] **步骤 2：运行针对性测试确认失败**
+  使用 `QListWidget + QStackedWidget` 构建一个窗口和五个页面。工作倒计时页先放唯一的工作日选择，再放固定/弹性模式：固定模式编辑统一上下班时间；弹性模式编辑允许打卡时间窗口和工作时长。移除例外下班时间、运行状态示例和自动校验说明。倒计时皮肤、间距、最小宽度和卡片高度放入高级设置。
 
-  运行：`pytest tests/test_settings_dialog.py -q`
+- [ ] **步骤 4：实现鼠标大小**
 
-  预期：因 `SettingsCenterDialog` 和 `initial_section` 入口尚未实现而失败。
+  用水平滑块支持自由拖动，释放时吸附到 `80/100/125/150%`，显示当前百分比；自定义鼠标样式关闭时禁用样式、预览和滑块。应用层把比例传递给平台光标控制器，Windows 使用目标尺寸加载光标，其他平台保持安全兼容。
 
-- [ ] **步骤 3：实现设置中心窗口**
+- [ ] **步骤 5：接入入口与单实例激活**
 
-  将现有设置表单拆成一个 `QDialog` 和五个页面构建函数：`_build_display_page()`、`_build_mouse_behavior_page()`、`_build_idle_page()`、`_build_countdown_page()`、`_build_app_update_page()`。窗口左侧使用 `QListWidget` 分类导航，右侧使用 `QStackedWidget`，底部使用“取消”和“应用并关闭”。所有控件仍使用现有属性名或兼容属性名，以减少业务层和测试改动。
+  `设置…`定位默认分类，`鼠标样式…`定位到鼠标与行为；二者复用设置中心实例。保留旧模块和旧类名的兼容导出，避免破坏外部导入和现有测试。
 
-  设置编辑副本继续通过 `updated_settings()` 返回；将原有每日下班时间、倒计时主题和尺寸字段迁移到工作倒计时页；将光标启用、样式下拉框、预览和角色覆盖说明迁移到鼠标与行为页。使用 `QSignalBlocker` 或统一联动函数避免初始化时触发错误状态。
-
-  在 `Settings` 中加入 `cursor_scale`，默认 `100`，允许值为 `80`、`100`、`125`、`150`；在 `SettingsManager` 中增加兼容迁移，旧设置缺少该字段时按 `100` 读取，并为 `cursor_scale`、系统空闲合法范围、工作倒计时两种编辑模式补充数据层测试。工作倒计时页面只维护统一上班时间、默认下班时间、工作日集合和例外下班时间，不新增每天独立上班时间字段。
-
-- [ ] **步骤 4：迁移鼠标样式入口**
-
-  将 `CursorStyleDialog` 中的光标控件构建逻辑提取为设置中心的页面组件；在 `PetNest.show_cursor_style_dialog()` 中调用设置中心，传入 `initial_section="mouse_behavior"`，确认后调用同一个 `apply_settings()`。删除旧的独立鼠标样式窗口导出，保留光标目录和平台能力判断。
-
-- [ ] **步骤 5：实现单实例窗口复用**
-
-  在 `PetNest` 上保存设置中心、导入向导和动画编辑器的活动窗口引用。入口调用时若引用存在且未销毁，则调用 `showNormal()`、`raise_()`、`activateWindow()`；窗口关闭时清空引用。对话框仍可按现有模态方式运行，但重复入口不能产生重复实例。
-
-- [ ] **步骤 6：运行针对性测试确认通过**
-
-  运行：`pytest tests/test_settings_dialog.py tests/test_cursor_style_dialog.py -q`
-
-  预期：设置分类、联动状态、更新入口、设置保存、`cursor_scale` 兼容读取和工作倒计时编辑语义测试全部通过。
-
-- [ ] **步骤 7：Commit**
+- [ ] **步骤 6：运行针对性测试并提交。**
 
   ```powershell
-  git add src/petnest/ui/settings_center_dialog.py src/petnest/ui/cursor_style_dialog.py src/petnest/ui/__init__.py src/petnest/app.py tests/test_settings_dialog.py tests/test_cursor_style_dialog.py
-  git rm src/petnest/ui/settings_dialog.py
-  git commit -m "feat(设置): 重构分类设置中心与鼠标样式入口"
+  pytest tests/test_settings_dialog.py tests/test_cursor_style_dialog.py tests/test_settings_manager.py -q
+  git diff --check
+  git add src/petnest/ui/settings_center_dialog.py src/petnest/ui/settings_dialog.py src/petnest/ui/__init__.py src/petnest/ui/app_update_dialog.py src/petnest/app.py src/petnest/platforms tests/test_settings_dialog.py tests/test_cursor_style_dialog.py
+  git commit -m "feat(设置): 重构分类设置中心与鼠标大小"
   ```
 
-## 3. 托盘菜单与宠物右键菜单回归
+## 5. 独立打卡卡片与应用状态接线
 
 **文件：**
-- 修改：`src/petnest/ui/tray_icon.py`
-- 修改：`src/petnest/app.py:242-268`
-- 修改：`src/petnest/ui/theme.py`
+
+- 修改：`src/petnest/ui/work_countdown.py`
+- 修改：`src/petnest/app.py`
+- 不修改：`src/petnest/ui/pet_window.py` 的倒计时绘制、尺寸和皮肤逻辑
+- 测试：`tests/test_work_countdown.py`
 - 测试：`tests/test_pet_window.py`
 
-- [ ] **步骤 1：增加菜单结构失败测试**
+- [ ] **步骤 1：补写失败测试**
 
-  测试托盘菜单文本包含“当前宠物：”、不包含“动画播放中”，并能找到“宠物库”子菜单；测试宠物菜单的现有项目、图标和样式对象保持不变，并确认它不包含导入、资源更新和退出。
+  覆盖弹性模式达到开始时间后显示独立卡片、卡片包含独立时间编辑和独立打卡按钮、打卡后隐藏卡片并恢复原倒计时文本、未到开始时间或休息日不显示卡片、卡片不改变 `PetWindow` 倒计时几何属性。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [ ] **步骤 2：运行测试确认失败。**
 
-  运行：`pytest tests/test_pet_window.py -k "tray or context_menu" -q`
+- [ ] **步骤 3：实现独立 `ClockInCard`**
 
-  预期：现有菜单结构与新断言不一致而失败。
+  创建无标题栏的轻量工具窗口，使用奶油白卡片、标题、`QTimeEdit` 下拉箭头和独立“打卡”按钮。默认时间取当前时间，用户修改后保留草稿；卡片位置由工作倒计时控制器放在宠物旁，不使用倒计时背景。
 
-- [ ] **步骤 3：实现托盘菜单分组**
+- [ ] **步骤 4：接入工作倒计时控制器**
 
-  在 `PetTrayIcon` 中增加不可点击的应用标题和当前宠物标题动作；把导入、打开文件夹、刷新、动画编辑和重新加载移动到“宠物库”子菜单；保留互动、设置、鼠标样式、资源更新和退出入口；删除任何“动画播放中”状态动作。当前宠物名称通过 `set_current_pet_name()` 更新，菜单显示时与应用状态同步。
+  固定模式继续沿用原 `PetWindow.set_countdown_text()`；弹性模式无记录时只显示独立卡片，打卡成功后按钳制后的有效时间计算下班时刻并把结果交给原倒计时气泡。应用层持久化当天日期与时间，跨日清理记录。
 
-- [ ] **步骤 4：确认宠物右键菜单保持现状**
-
-  不修改 `pet_context_menu` 的现有样式表、图标、项目、顺序和动态状态同步逻辑；只增加回归断言，确保托盘菜单重组没有影响宠物右键菜单。
-
-- [ ] **步骤 5：运行测试确认通过**
-
-  运行：`pytest tests/test_pet_window.py -k "tray or context_menu" -q`
-
-  预期：菜单结构和既有动态状态测试全部通过。
-
-- [ ] **步骤 6：Commit**
+- [ ] **步骤 5：运行测试、编译并提交。**
 
   ```powershell
-  git add src/petnest/ui/tray_icon.py src/petnest/app.py src/petnest/ui/theme.py tests/test_pet_window.py
-  git commit -m "feat(菜单): 重组托盘与宠物快捷菜单"
+  pytest tests/test_work_countdown.py tests/test_pet_window.py -q
+  python -m compileall -q src
+  git add src/petnest/ui/work_countdown.py src/petnest/app.py tests/test_work_countdown.py tests/test_pet_window.py
+  git commit -m "feat(打卡): 增加独立弹性打卡卡片"
   ```
 
-## 4. 导入向导视觉重做
+## 6. 托盘菜单重组与宠物菜单回归
 
 **文件：**
+
+- 修改：`src/petnest/ui/tray_icon.py`
+- 修改：`src/petnest/app.py`
+- 测试：`tests/test_pet_window.py`
+
+- [ ] **步骤 1：补写失败测试**
+
+  断言托盘菜单包含当前宠物名称、宠物库子菜单、设置和鼠标样式入口，不包含“动画播放中”；断言宠物右键菜单项目、顺序、图标和样式对象与基线一致，且不出现导入、资源更新和退出。
+
+- [ ] **步骤 2：运行托盘相关测试确认失败。**
+
+- [ ] **步骤 3：实现托盘分组**
+
+  增加不可点击的应用标题和当前宠物标题；将导入、文件夹、刷新、动画编辑、重新加载归入宠物库子菜单；保留切换宠物、互动、设置、鼠标样式、资源更新和退出。应用切换宠物时同步更新当前宠物标题。
+
+- [ ] **步骤 4：只做宠物菜单回归保护**
+
+  不修改宠物右键菜单源代码和样式，只增加快照式断言或基线断言。
+
+- [ ] **步骤 5：运行测试并提交。**
+
+  ```powershell
+  pytest tests/test_pet_window.py -k "tray or context_menu" -q
+  git add src/petnest/ui/tray_icon.py src/petnest/app.py tests/test_pet_window.py
+  git commit -m "feat(菜单): 重组托盘菜单并保护宠物菜单"
+  ```
+
+## 7. 导入精灵图向导视觉实现
+
+**文件：**
+
 - 修改：`src/petnest/ui/spritesheet_import_dialog.py`
 - 修改：`src/petnest/ui/theme.py`
-- 修改：`src/petnest/app.py:601-606`
 - 测试：`tests/test_spritesheet_import_dialog.py`
 
-- [ ] **步骤 1：增加导入向导状态测试**
+- [ ] **步骤 1：补写初始、手动和失败状态测试。**
+- [ ] **步骤 2：运行测试确认失败。**
+- [ ] **步骤 3：保留现有导入器和自动识别逻辑，按确认稿重排为步骤标题、文件信息卡、模式选择卡、手动预览区和底部操作区。**
+- [ ] **步骤 4：统一输入框、单选项、缩略图、错误提示和主按钮样式。**
+- [ ] **步骤 5：运行 `pytest tests/test_spritesheet_import_dialog.py -q` 并提交。**
 
-  测试初始状态显示步骤标题、文件选择、宠物 ID、显示名称、自动识别/手动选择选项和导入主按钮；测试有效文件进入手动选择模式后仍能显示动作列表与帧缩略图；测试失败时保留窗口并显示错误状态。
-
-- [ ] **步骤 2：运行测试确认失败**
-
-  运行：`pytest tests/test_spritesheet_import_dialog.py -q`
-
-  预期：新状态对象名称或视觉结构断言失败。
-
-- [ ] **步骤 3：按确认图重排导入向导**
-
-  保留现有 `SpriteSheetImporter`、自动识别和手动列选择逻辑；将窗口重排为顶部步骤指示、文件信息卡、导入模式卡、手动预览区、底部状态与操作区。用共享样式统一 `QLineEdit`、单选按钮、列表、缩略图按钮、错误提示和“导入”主按钮。
-
-- [ ] **步骤 4：运行导入测试确认通过**
-
-  运行：`pytest tests/test_spritesheet_import_dialog.py -q`
-
-  预期：全部通过。
-
-- [ ] **步骤 5：Commit**
-
-  ```powershell
-  git add src/petnest/ui/spritesheet_import_dialog.py src/petnest/ui/theme.py src/petnest/app.py tests/test_spritesheet_import_dialog.py
-  git commit -m "style(导入): 统一精灵图导入向导视觉"
-  ```
-
-## 5. 动画编辑器视觉重做
+## 8. 动画时长编辑器视觉实现
 
 **文件：**
+
 - 修改：`src/petnest/ui/animation_editor_dialog.py`
 - 修改：`src/petnest/ui/theme.py`
-- 修改：`src/petnest/app.py:620-650`
 - 测试：`tests/test_animation_editor_dialog.py`
 
-- [ ] **步骤 1：增加两种编辑状态测试**
+- [ ] **步骤 1：补写总时长、逐帧、未保存和取消语义测试。**
+- [ ] **步骤 2：运行测试确认失败。**
+- [ ] **步骤 3：保留动作列表、总时长/逐帧编辑、实时预览和定时器，按确认稿重排为左侧动作列表、中间编辑区、右侧预览区和底部保存状态。**
+- [ ] **步骤 4：统一卡片、按钮、输入控件和未保存状态样式。**
+- [ ] **步骤 5：运行 `pytest tests/test_animation_editor_dialog.py -q` 并提交。**
 
-  测试动作表首次选中时默认进入总时长编辑，目标总时长控件可用、逐帧列表隐藏；切换逐帧模式后目标总时长控件禁用、逐帧列表和预览可见；修改时显示未保存提示，取消不写入，保存只返回已修改动作。
-
-- [ ] **步骤 2：运行测试确认失败**
-
-  运行：`pytest tests/test_animation_editor_dialog.py -q`
-
-  预期：新布局状态断言失败或测试文件缺少新增用例。
-
-- [ ] **步骤 3：按确认图重排动画编辑器**
-
-  保留现有动作表、总时长/逐帧模式、逐帧输入、实时预览和定时器；将窗口重排为顶部标题说明、左侧动作列表、中间编辑卡、右侧预览卡、底部未保存状态和“保存并重载”主按钮。使用共享样式替换预览区蓝灰色旧样式，并为已修改动作提供明确但低干扰的状态标记。
-
-- [ ] **步骤 4：运行动画编辑器测试确认通过**
-
-  运行：`pytest tests/test_animation_editor_dialog.py -q`
-
-  预期：全部通过。
-
-- [ ] **步骤 5：Commit**
-
-  ```powershell
-  git add src/petnest/ui/animation_editor_dialog.py src/petnest/ui/theme.py src/petnest/app.py tests/test_animation_editor_dialog.py
-  git commit -m "style(动画): 统一动画编辑器视觉与状态"
-  ```
-
-## 6. 互动窗口回归保护与全量验证
+## 9. 全量回归与交付验证
 
 **文件：**
-- 修改：`tests/test_lan_interactions.py`
-- 修改：`tests/test_app_and_platforms.py`
+
 - 参考：`src/petnest/ui/lan_interaction_dialog.py`
+- 测试：现有全部 `tests/`
 
-- [ ] **步骤 1：增加互动窗口不变性断言**
-
-  使用现有互动测试确认 `LanInteractionDialog` 仍包含附近设备/远程伙伴 Tab、快捷互动/文字/动效 Tab、动效预览和发送回调；不修改互动布局实现。
-
-- [ ] **步骤 2：运行互动回归测试**
-
-  运行：`pytest tests/test_lan_interactions.py -q`
-
-  预期：全部通过。
-
-- [ ] **步骤 3：运行全量测试和编译检查**
-
-  运行：`pytest -q`; `python -m compileall -q src tests`; `git diff --check`
-
-  预期：pytest 退出码为 0，compileall 无输出并退出码为 0，git diff --check 无输出并退出码为 0。
-
-- [ ] **步骤 4：执行真实窗口视觉检查**
-
-  在可用桌面环境启动应用，依次打开设置中心五个分类、托盘菜单、宠物菜单、导入向导和动画编辑器；检查窗口尺寸、文字截断、控件联动、托盘菜单层级、按钮可点击区域和暖色视觉令牌。宠物菜单只确认其原布局、样式、图标、项目、顺序和动态状态未被改变；互动窗口打开后仅确认原布局和功能仍在。
-
-- [ ] **步骤 5：Commit**
+- [ ] **步骤 1：运行互动窗口回归测试**
 
   ```powershell
-  git add tests/test_lan_interactions.py tests/test_app_and_platforms.py
-  git commit -m "test(界面): 增加设置与菜单视觉回归验证"
+  pytest tests/test_lan_interactions.py -q
   ```
+
+  只确认互动窗口原有 Tab、预览和发送流程仍在，不修改其布局。
+
+- [ ] **步骤 2：运行全量测试与编译检查**
+
+  ```powershell
+  pytest -q
+  python -m compileall -q src tests
+  git diff --check
+  ```
+
+- [ ] **步骤 3：进行实际窗口或 Qt offscreen 视觉检查**
+
+  依次检查设置中心五个分类、托盘菜单、宠物菜单、导入向导和动画编辑器；重点检查文字截断、控件联动、弹性打卡显示/打卡后状态、窗口单实例和暖色视觉令牌。确认倒计时气泡几何与绘制代码未被改动。
+
+- [ ] **步骤 4：检查变更边界**
+
+  只提交本计划涉及的源码、测试、规格和已确认设计图，不提交用户已有的宠物包、临时预览和其他无关未跟踪文件。
+
+- [ ] **步骤 5：完成最终提交并汇报验证证据。**

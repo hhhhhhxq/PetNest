@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050">
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F1EA"/>
+      <stop offset="0.48" stop-color="#EEDFD6"/>
+      <stop offset="1" stop-color="#E4D1C8"/>
+    </linearGradient>
+    <linearGradient id="window" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#F7EEE7" stop-opacity="0.88"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#FBF3EC" stop-opacity="0.86"/>
+    </linearGradient>
+    <filter id="blur45" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#806456" flood-opacity="0.20"/>
+    </filter>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#9A7668" flood-opacity="0.10"/>
+    </filter>
+    <pattern id="checker" width="22" height="22" patternUnits="userSpaceOnUse">
+      <rect width="22" height="22" fill="#FBF5F0"/>
+      <rect width="11" height="11" fill="#F2E7DF"/>
+      <rect x="11" y="11" width="11" height="11" fill="#F2E7DF"/>
+    </pattern>
+    <clipPath id="canvasClip"><rect width="1600" height="1050" rx="34"/></clipPath>
+    <clipPath id="previewClip"><rect x="1102" y="342" width="316" height="326" rx="20"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#canvasClip)">
+    <rect width="1600" height="1050" fill="url(#backdrop)"/>
+    <circle cx="130" cy="125" r="230" fill="#F5BEA7" opacity="0.34" filter="url(#blur45)"/>
+    <circle cx="1460" cy="880" r="280" fill="#EFC6BD" opacity="0.28" filter="url(#blur45)"/>
+    <circle cx="1350" cy="100" r="180" fill="#F2D4A8" opacity="0.18" filter="url(#blur45)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="100" y="54" width="1400" height="906" rx="30" fill="url(#window)" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2"/>
+      <rect x="100" y="54" width="1400" height="92" rx="30" fill="#FFFDF9" fill-opacity="0.48"/>
+      <line x1="100" y1="146" x2="1500" y2="146" stroke="#E8DED5"/>
+    </g>
+
+    <!-- Header -->
+    <circle cx="148" cy="100" r="22" fill="#D98663"/>
+    <path d="M137 101 C137 94 142 89 146 93 C149 87 155 89 156 94 C162 93 165 99 162 104 C158 110 141 110 137 101Z" fill="#FFFDF9"/>
+    <circle cx="145" cy="100" r="1.8" fill="#D98663"/>
+    <circle cx="154" cy="100" r="1.8" fill="#D98663"/>
+    <text x="186" y="95" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700">编辑动画时长</text>
+    <text x="186" y="120" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">调整动作节奏 · 保存后自动重载当前宠物</text>
+    <rect x="1190" y="78" width="256" height="44" rx="13" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="1214" y="105" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">当前宠物 · dundun&amp;maoqiu2</text>
+    <text x="1458" y="106" text-anchor="end" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25">×</text>
+
+    <!-- Action list -->
+    <g filter="url(#cardShadow)">
+      <rect x="144" y="184" width="314" height="652" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="180" y="229" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">动作</text>
+    <text x="180" y="254" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">选择要编辑的动作</text>
+    <line x1="180" y1="274" x2="422" y2="274" stroke="#E8DED5"/>
+
+    <rect x="172" y="294" width="258" height="58" rx="13" fill="#FFF0E8" stroke="#E8C7B8"/>
+    <circle cx="198" cy="323" r="5" fill="#D98663"/>
+    <text x="220" y="319" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">idle</text>
+    <text x="220" y="339" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">默认待机 · 7 帧 · 1.67 秒</text>
+
+    <rect x="172" y="364" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="387" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">drag</text>
+    <text x="220" y="405" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">拖动宠物时 · 8 帧 · 1.06 秒</text>
+
+    <rect x="172" y="428" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="451" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">codex_running_left</text>
+    <text x="220" y="469" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">外部事件触发 · 8 帧 · 1.06 秒</text>
+
+    <rect x="172" y="492" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="515" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">click</text>
+    <text x="220" y="533" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">鼠标点击时 · 6 帧 · 0.90 秒</text>
+
+    <rect x="172" y="556" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="579" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">drop</text>
+    <text x="220" y="597" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">结束拖动时 · 5 帧 · 0.84 秒</text>
+
+    <rect x="172" y="620" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="643" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">error</text>
+    <text x="220" y="661" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">任务报错时 · 8 帧 · 1.22 秒</text>
+
+    <rect x="172" y="684" width="258" height="52" rx="13" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="220" y="707" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">waiting</text>
+    <text x="220" y="725" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">任务等待时 · 6 帧 · 1.01 秒</text>
+    <text x="180" y="790" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">其余动作可向下滚动查看</text>
+
+    <!-- Per-frame editor -->
+    <g filter="url(#cardShadow)">
+      <rect x="488" y="184" width="540" height="652" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="526" y="229" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">idle · 默认待机</text>
+    <text x="526" y="254" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">共 7 帧 · 每帧单独设置播放时长</text>
+    <line x1="526" y1="274" x2="990" y2="274" stroke="#E8DED5"/>
+
+    <rect x="526" y="296" width="464" height="48" rx="13" fill="#F5E8DF"/>
+    <text x="642" y="325" text-anchor="middle" fill="#8E8179" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">按总时长</text>
+    <rect x="758" y="300" width="228" height="40" rx="11" fill="#FFFDF9" stroke="#EBD8CD"/>
+    <text x="872" y="325" text-anchor="middle" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">逐帧编辑</text>
+
+    <rect x="526" y="370" width="464" height="64" rx="15" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <text x="552" y="398" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">编辑方式</text>
+    <text x="552" y="420" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">每一帧独立控制，不会自动缩放其他帧</text>
+    <circle cx="946" cy="402" r="13" fill="#FFF0E8"/>
+    <path d="M940 402 l5 5 l8 -10" fill="none" stroke="#D98663" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Frame rows -->
+    <rect x="526" y="458" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="462" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/001.png" x="540" y="462" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="484" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 1 帧</text>
+    <rect x="836" y="464" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="484" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">380</text><text x="932" y="484" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 474 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="505" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="509" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/002.png" x="540" y="509" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="531" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 2 帧</text>
+    <rect x="836" y="511" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="531" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">210</text><text x="932" y="531" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 521 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="552" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="556" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/003.png" x="540" y="556" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="578" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 3 帧</text>
+    <rect x="836" y="558" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="578" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">310</text><text x="932" y="578" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 568 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="599" width="464" height="42" rx="11" fill="#FFF0E8" stroke="#D98663" stroke-width="2"/>
+    <rect x="540" y="603" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/004.png" x="540" y="603" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <circle cx="580" cy="606" r="6" fill="#D98663"/><path d="M577 606 l3 3 l5 -6" fill="none" stroke="#FFFDF9" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="596" y="625" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700">第 4 帧</text>
+    <rect x="836" y="605" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#D98663" stroke-width="2"/>
+    <text x="858" y="625" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="700">180</text><text x="932" y="625" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 615 l5 5 l5 -5" fill="none" stroke="#A85D3E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="646" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="650" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/005.png" x="540" y="650" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="672" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 5 帧</text>
+    <rect x="836" y="652" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="672" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">140</text><text x="932" y="672" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 662 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="693" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="697" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/006.png" x="540" y="697" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="719" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 6 帧</text>
+    <rect x="836" y="699" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="719" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">220</text><text x="932" y="719" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 709 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="740" width="464" height="42" rx="11" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <rect x="540" y="744" width="34" height="34" rx="7" fill="url(#checker)"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/007.png" x="540" y="744" width="34" height="34" preserveAspectRatio="xMidYMid meet"/>
+    <text x="596" y="766" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">第 7 帧</text>
+    <rect x="836" y="746" width="140" height="30" rx="9" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="858" y="766" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">225</text><text x="932" y="766" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">ms</text><path d="M958 756 l5 5 l5 -5" fill="none" stroke="#A7978E" stroke-width="1.5" stroke-linecap="round"/>
+
+    <rect x="526" y="800" width="464" height="20" rx="9" fill="#FFF0E8"/>
+    <text x="544" y="814" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="10" font-weight="600">第 4 帧已修改 · 点击任意缩略图可定位预览</text>
+
+    <!-- Preview -->
+    <g filter="url(#cardShadow)">
+      <rect x="1058" y="184" width="384" height="652" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="1096" y="229" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">实时动作预览</text>
+    <text x="1096" y="254" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">点击帧缩略图可暂停并定位到该帧</text>
+    <line x1="1096" y1="274" x2="1404" y2="274" stroke="#E8DED5"/>
+    <rect x="1102" y="342" width="316" height="326" rx="20" fill="url(#checker)" stroke="#E3D4CB" stroke-width="2"/>
+    <image href="../../../pets/dundunmaoqiu2/animations/idle/004.png" x="1102" y="342" width="316" height="326" preserveAspectRatio="xMidYMid meet" clip-path="url(#previewClip)"/>
+    <text x="1260" y="706" text-anchor="middle" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">第 4 / 7 帧 · 已暂停</text>
+    <rect x="1138" y="744" width="244" height="42" rx="12" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <path d="M1207 756 l0 18 l13 -9 z" fill="#D98663"/>
+    <text x="1268" y="770" text-anchor="middle" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">播放预览</text>
+
+    <!-- Footer -->
+    <line x1="144" y1="864" x2="1456" y2="864" stroke="#E8DED5"/>
+    <circle cx="176" cy="898" r="5" fill="#D98663"/>
+    <text x="192" y="903" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" font-weight="600">未保存的修改 · idle 第 4 帧 180 ms · 当前总时长 1.67 秒</text>
+    <rect x="1190" y="878" width="104" height="40" rx="12" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="1242" y="903" text-anchor="middle" fill="#85766E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">取消</text>
+    <rect x="1308" y="878" width="136" height="40" rx="12" fill="#D98663"/>
+    <text x="1376" y="903" text-anchor="middle" fill="#FFFDF9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">保存并重载</text>
+
+    <text x="110" y="1000" fill="#6E625C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="600" letter-spacing="1">PETNEST · ANIMATION EDITOR</text>
+    <text x="1490" y="1000" text-anchor="end" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">动画编辑器 · 10 / 10</text>
+  </g>
+</svg>

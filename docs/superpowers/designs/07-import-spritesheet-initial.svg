@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050">
+  <defs>
+    <linearGradient id="backdrop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F8F1EA"/>
+      <stop offset="0.48" stop-color="#EEDFD6"/>
+      <stop offset="1" stop-color="#E4D1C8"/>
+    </linearGradient>
+    <linearGradient id="window" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.94"/>
+      <stop offset="1" stop-color="#F7EEE7" stop-opacity="0.88"/>
+    </linearGradient>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF9" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#FBF3EC" stop-opacity="0.86"/>
+    </linearGradient>
+    <filter id="blur45" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="45"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="26" flood-color="#806456" flood-opacity="0.20"/>
+    </filter>
+    <filter id="cardShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="15" flood-color="#9A7668" flood-opacity="0.10"/>
+    </filter>
+    <clipPath id="canvasClip"><rect width="1600" height="1050" rx="34"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#canvasClip)">
+    <rect width="1600" height="1050" fill="url(#backdrop)"/>
+    <circle cx="130" cy="125" r="230" fill="#F5BEA7" opacity="0.34" filter="url(#blur45)"/>
+    <circle cx="1450" cy="880" r="280" fill="#EFC6BD" opacity="0.28" filter="url(#blur45)"/>
+    <circle cx="1360" cy="120" r="180" fill="#F2D4A8" opacity="0.18" filter="url(#blur45)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="150" y="72" width="1300" height="888" rx="30" fill="url(#window)" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="2"/>
+      <rect x="150" y="72" width="1300" height="92" rx="30" fill="#FFFDF9" fill-opacity="0.48"/>
+      <line x1="150" y1="164" x2="1450" y2="164" stroke="#E8DED5"/>
+    </g>
+
+    <!-- Window header -->
+    <circle cx="198" cy="118" r="22" fill="#D98663"/>
+    <path d="M187 119 C187 112 192 107 196 111 C199 105 205 107 206 112 C212 111 215 117 212 122 C208 128 191 128 187 119Z" fill="#FFFDF9"/>
+    <circle cx="195" cy="118" r="1.8" fill="#D98663"/>
+    <circle cx="204" cy="118" r="1.8" fill="#D98663"/>
+    <text x="236" y="113" fill="#4B4641" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700">导入 Codex 精灵图</text>
+    <text x="236" y="138" fill="#9A8B82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">将标准精灵图转换为 PetNest 宠物包</text>
+    <text x="1408" y="124" text-anchor="end" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25">×</text>
+
+    <!-- Step indicator -->
+    <rect x="194" y="190" width="1212" height="68" rx="17" fill="#FFFDF9" fill-opacity="0.58" stroke="#FFFFFF" stroke-opacity="0.76"/>
+    <circle cx="250" cy="224" r="16" fill="#D98663"/>
+    <text x="250" y="229" text-anchor="middle" fill="#FFFDF9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">1</text>
+    <text x="280" y="229" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">选择文件</text>
+    <line x1="398" y1="224" x2="675" y2="224" stroke="#E3D4CB" stroke-width="2"/>
+    <circle cx="726" cy="224" r="16" fill="#F3E8E0" stroke="#E3D4CB"/>
+    <text x="726" y="229" text-anchor="middle" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">2</text>
+    <text x="756" y="229" fill="#9B8D84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">确认动作帧</text>
+    <line x1="886" y1="224" x2="1163" y2="224" stroke="#E3D4CB" stroke-width="2"/>
+    <circle cx="1214" cy="224" r="16" fill="#F3E8E0" stroke="#E3D4CB"/>
+    <text x="1214" y="229" text-anchor="middle" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">3</text>
+    <text x="1244" y="229" fill="#9B8D84" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">完成导入</text>
+
+    <!-- Source card -->
+    <g filter="url(#cardShadow)">
+      <rect x="194" y="286" width="724" height="330" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="232" y="332" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">选择精灵图</text>
+    <text x="232" y="357" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">从本机选择一张透明 PNG 文件</text>
+    <rect x="232" y="380" width="648" height="154" rx="17" fill="#FBF5F0" stroke="#E3D4CB" stroke-width="2" stroke-dasharray="7 7"/>
+    <!-- Subtle 8×9 format glyph, not a separate asset -->
+    <g transform="translate(477 401)" fill="none" stroke="#D9C7BD" stroke-width="2" opacity="0.82">
+      <rect x="0" y="0" width="108" height="108" rx="6"/>
+      <path d="M13.5 0 V108 M27 0 V108 M40.5 0 V108 M54 0 V108 M67.5 0 V108 M81 0 V108 M94.5 0 V108"/>
+      <path d="M0 12 V96 M0 24 H108 M0 36 H108 M0 48 H108 M0 60 H108 M0 72 H108 M0 84 H108 M0 96 H108"/>
+    </g>
+    <text x="612" y="430" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">还没有选择文件</text>
+    <rect x="568" y="452" width="144" height="38" rx="12" fill="#D98663"/>
+    <text x="640" y="476" text-anchor="middle" fill="#FFFDF9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">选择文件…</text>
+    <text x="556" y="515" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">仅读取本机文件，不上传或联网</text>
+
+    <!-- Pet information card -->
+    <g filter="url(#cardShadow)">
+      <rect x="948" y="286" width="458" height="330" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="986" y="332" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">宠物信息</text>
+    <text x="986" y="357" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">导入后会出现在宠物库中</text>
+    <text x="986" y="402" fill="#5C524D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">宠物 ID</text>
+    <rect x="986" y="414" width="382" height="42" rx="11" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="1008" y="440" fill="#B4A69D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">例如 codex_cat</text>
+    <text x="986" y="489" fill="#5C524D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">显示名称 <tspan fill="#B09F95" font-weight="400">（可选）</tspan></text>
+    <rect x="986" y="501" width="382" height="42" rx="11" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="1008" y="527" fill="#B4A69D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">默认使用宠物 ID</text>
+    <rect x="986" y="570" width="382" height="26" rx="10" fill="#FFF0E8"/>
+    <text x="1008" y="588" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="11">宠物 ID 只能包含字母、数字、下划线或短横线</text>
+
+    <!-- Import mode card -->
+    <g filter="url(#cardShadow)">
+      <rect x="194" y="646" width="1212" height="190" rx="20" fill="url(#surface)" stroke="#FFFFFF" stroke-opacity="0.92"/>
+    </g>
+    <text x="232" y="689" fill="#6B5B54" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700">导入方式</text>
+    <text x="232" y="714" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">自动识别适合大多数标准精灵图；需要保留透明停顿帧时可手动选择</text>
+
+    <rect x="232" y="742" width="520" height="66" rx="15" fill="#FFF0E8" stroke="#E8C7B8" stroke-width="2"/>
+    <circle cx="264" cy="775" r="10" fill="#D98663"/>
+    <circle cx="264" cy="775" r="4" fill="#FFFDF9"/>
+    <text x="290" y="771" fill="#A85D3E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">自动识别</text>
+    <text x="290" y="793" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">扫描透明像素，跳过无内容格位</text>
+
+    <rect x="776" y="742" width="590" height="66" rx="15" fill="#FBF5F0" stroke="#E3D4CB"/>
+    <circle cx="808" cy="775" r="10" fill="#FFFDF9" stroke="#CBBAB0" stroke-width="2"/>
+    <text x="834" y="771" fill="#6B625D" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" font-weight="700">手动选择</text>
+    <text x="834" y="793" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">逐个动作确认需要保留的帧</text>
+
+    <!-- Status and actions -->
+    <line x1="194" y1="864" x2="1406" y2="864" stroke="#E8DED5"/>
+    <circle cx="226" cy="898" r="5" fill="#CBBAB0"/>
+    <text x="242" y="903" fill="#A7978E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">选择文件后会检测图集尺寸与透明格位</text>
+    <rect x="1152" y="878" width="104" height="40" rx="12" fill="#FFFDF9" stroke="#E3D4CB"/>
+    <text x="1204" y="903" text-anchor="middle" fill="#85766E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="600">取消</text>
+    <rect x="1270" y="878" width="136" height="40" rx="12" fill="#E6D8D0"/>
+    <text x="1338" y="903" text-anchor="middle" fill="#B7A79E" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" font-weight="700">导入</text>
+
+    <text x="160" y="1000" fill="#6E625C" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="20" font-weight="600" letter-spacing="1">PETNEST · IMPORT WIZARD</text>
+    <text x="1440" y="1000" text-anchor="end" fill="#B09F95" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">导入精灵图 · 07 / 10</text>
+  </g>
+</svg>
