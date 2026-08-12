@@ -1,8 +1,8 @@
-"""跨平台应用安装包更新协议与 Windows 下载实现。
+"""跨平台应用安装包更新协议与下载实现。
 
 该模块只负责网络元数据、版本和文件完整性校验，不直接操作 Qt。UI 可以在
-后台线程调用 :class:`AppUpdateClient`，macOS 也可以安全导入它；平台不匹配
-时检查结果为空，不会启动 Windows 安装器。
+后台线程调用 :class:`AppUpdateClient`；平台不匹配时检查结果为空，安装动作
+由各平台独立的 updater 完成。
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from urllib.request import Request, urlopen
 from petnest import __version__
 
 DEFAULT_APP_UPDATE_MANIFEST_URL = (
-    "https://github.com/qinxiaohui-qq/PetNest/releases/latest/download/app-update.json"
+    "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json"
 )
 APP_UPDATE_SCHEMA_VERSION = 1
 MAX_MANIFEST_BYTES = 1 * 1024 * 1024
@@ -145,11 +145,15 @@ def parse_update_manifest(
         "windows",
         "darwin",
         "macos",
+        "macos-x64",
+        "macos-arm64",
     }:
         raise AppUpdateError("更新元数据平台无效")
     if platform_name == "win32" and target_platform not in {"windows-x64", "windows"}:
         return None
-    if platform_name is not None and platform_name != "win32":
+    if platform_name == "darwin" and target_platform not in {"darwin", "macos", "macos-x64", "macos-arm64"}:
+        return None
+    if platform_name is not None and platform_name not in {"win32", "darwin"}:
         return None
     version = document.get("version")
     current = _version_tuple(current_version)
@@ -221,7 +225,7 @@ class AppUpdateClient:
         self._opener = opener or urlopen
 
     def check(self) -> AppUpdateInfo | None:
-        if self.platform_name != "win32":
+        if self.platform_name not in {"win32", "darwin"}:
             return None
         request = Request(
             self.manifest_url,

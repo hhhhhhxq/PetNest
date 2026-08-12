@@ -26,7 +26,7 @@ def _manifest(
     *,
     version: str = "0.2.0",
     platform: str = "windows-x64",
-    url: str = "https://github.com/qinxiaohui-qq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe",
+    url: str = "https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe",
     size: int = 4,
     sha256: str = "0" * 64,
 ) -> bytes:
@@ -48,6 +48,20 @@ def test_parse_manifest_accepts_new_windows_release() -> None:
     assert result.version == "0.2.0"
     assert result.asset.size == 4
     assert result.release_notes == "修复若干问题"
+
+
+def test_parse_manifest_accepts_new_macos_release() -> None:
+    result = parse_update_manifest(
+        _manifest(
+            platform="macos-x64",
+            url="https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/PetNest-macOS-x64-0.2.0.zip",
+        ),
+        current_version="0.1.0",
+        platform_name="darwin",
+    )
+
+    assert isinstance(result, AppUpdateInfo)
+    assert result.platform == "macos-x64"
 
 
 @pytest.mark.parametrize(
@@ -95,7 +109,7 @@ class _Response:
         self._stream.close()
 
     def geturl(self) -> str:
-        return "https://github.com/qinxiaohui-qq/PetNest/releases/latest/download/app-update.json"
+        return "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json"
 
 
 class _BrokenResponse(_Response):
@@ -118,7 +132,7 @@ def test_client_checks_manifest_without_blocking_contract() -> None:
         return _Response(payload)
 
     client = AppUpdateClient(
-        manifest_url="https://github.com/qinxiaohui-qq/PetNest/releases/latest/download/app-update.json",
+        manifest_url="https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json",
         current_version="0.1.0",
         platform_name="win32",
         opener=opener,
@@ -138,11 +152,11 @@ def test_client_rejects_redirect_outside_github_release_hosts() -> None:
         client.check()
 
 
-def test_non_windows_client_is_a_noop_and_does_not_open_network() -> None:
+def test_unsupported_platform_client_is_a_noop_and_does_not_open_network() -> None:
     def fail_opener(*args: object, **kwargs: object) -> object:
-        raise AssertionError("macOS 不应请求 Windows Release")
+        raise AssertionError("不支持的平台不应请求 Release")
 
-    client = AppUpdateClient(platform_name="darwin", opener=fail_opener)
+    client = AppUpdateClient(platform_name="linux", opener=fail_opener)
 
     assert client.check() is None
 
@@ -264,6 +278,7 @@ def test_run_installer_delegates_to_elevated_launcher(
     installer = tmp_path / "PetNest-Setup.exe"
     installer.write_bytes(b"installer")
     launched: list[Path] = []
+    monkeypatch.setattr("petnest.core.windows_updater.sys.platform", "win32")
     monkeypatch.setattr("petnest.core.windows_updater.wait_for_process_exit", lambda _pid: True)
     monkeypatch.setattr(
         "petnest.core.windows_updater._run_elevated_installer",

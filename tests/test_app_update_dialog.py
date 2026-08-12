@@ -16,7 +16,7 @@ def _info() -> AppUpdateInfo:
     return AppUpdateInfo(
         version="0.2.0",
         platform="windows-x64",
-        asset=AppUpdateAsset("https://github.com/qinxiaohui-qq/PetNest/releases/download/v0.2.0/a.exe", 4, "0" * 64),
+        asset=AppUpdateAsset("https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/a.exe", 4, "0" * 64),
         release_notes="更稳定的更新流程",
     )
 

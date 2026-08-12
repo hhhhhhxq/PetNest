@@ -55,3 +55,4 @@ def test_release_manifest_generator_is_checked_in() -> None:
     assert "sha256" in contents
     assert "schema_version" in contents
     assert "app-update.json" in contents
+    assert "macos-x64" in contents

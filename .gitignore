@@ -10,7 +10,7 @@ htmlcov/
 venv/
 build/
 dist/
-PetNest.spec
+*.spec
 *.egg-info/
 
 # IDE and OS files

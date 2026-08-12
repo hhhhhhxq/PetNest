@@ -8,3 +8,8 @@ def test_macos_build_includes_google_services_when_present() -> None:
 
     assert '[ -f "google-services.json" ]' in contents
     assert "--add-data google-services.json:." in contents
+    assert "pets/sample_pet:pets/sample_pet" in contents
+    assert "PetNestUpdater" in contents
+    assert "src/petnest_launcher.py" in contents
+    assert "codesign --force --deep --sign -" in contents
+    assert "PetNest-macOS-x64-$VERSION.zip" in contents

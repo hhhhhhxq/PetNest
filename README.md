@@ -269,13 +269,13 @@ Windows 使用 PyInstaller `--onedir` 生成应用目录，再用 Inno Setup 生
 .\build_windows.bat
 ```
 
-完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。
+完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。Windows 和 macOS 都可以在设置页通过“检查程序更新…”下载并安装 GitHub Release 中的新版本。
 
 ```bash
 ./build_macos.sh
 ```
 
-macOS 正式分发还需要签名和公证；本项目第一阶段产物不保证已签名。
+macOS 构建会生成 `dist/release/PetNest-macOS-x64-<version>.zip` 并做 ad-hoc 签名。面向陌生用户免提示分发仍需要 Apple Developer ID 签名和公证。
 
 ## 隐私与日志
 

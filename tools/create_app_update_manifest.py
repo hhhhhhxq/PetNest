@@ -1,10 +1,10 @@
-"""从已构建的 Windows 安装包生成 GitHub Release 更新元数据。
+"""从已构建的安装包生成 GitHub Release 更新元数据。
 
 示例：
     python tools/create_app_update_manifest.py \
       --version 0.2.0 \
       --installer dist/installer/PetNest-Setup.exe \
-      --url https://github.com/qinxiaohui-qq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe
+      --url https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe
 """
 
 from __future__ import annotations
@@ -25,12 +25,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", required=True)
     parser.add_argument("--installer", type=Path, required=True)
     parser.add_argument("--url", required=True)
+    parser.add_argument(
+        "--platform",
+        choices=("windows-x64", "macos-x64", "macos-arm64"),
+        default="windows-x64",
+    )
     parser.add_argument("--output", type=Path, default=Path("app-update.json"))
     parser.add_argument("--notes", default="")
     return parser
 
 
-def create_manifest(*, version: str, installer: Path, url: str, notes: str = "") -> dict[str, object]:
+def create_manifest(
+    *,
+    version: str,
+    installer: Path,
+    url: str,
+    platform: str = "windows-x64",
+    notes: str = "",
+) -> dict[str, object]:
     if VERSION_RE.fullmatch(version) is None:
         raise ValueError(f"版本号格式无效：{version}")
     installer = installer.expanduser().resolve()
@@ -49,7 +61,7 @@ def create_manifest(*, version: str, installer: Path, url: str, notes: str = "")
     return {
         "schema_version": 1,
         "version": version,
-        "platform": "windows-x64",
+        "platform": platform,
         "asset": {"url": url, "size": size, "sha256": digest.hexdigest()},
         "release_notes": notes,
     }
@@ -62,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             version=args.version,
             installer=args.installer,
             url=args.url,
+            platform=args.platform,
             notes=args.notes,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)

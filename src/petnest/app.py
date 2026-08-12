@@ -71,7 +71,11 @@ REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS = 200
 APP_UPDATE_RESULT_POLL_INTERVAL_MS = 200
 APP_UPDATE_STARTUP_DELAY_MS = 2_500
 APP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
-APP_UPDATE_MANIFEST_URL = "https://github.com/qinxiaohui-qq/PetNest/releases/latest/download/app-update.json"
+APP_UPDATE_MANIFEST_URLS = {
+    "win32": "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json",
+    "darwin": "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update-macos.json",
+}
+APP_UPDATE_PLATFORMS = frozenset(APP_UPDATE_MANIFEST_URLS)
 _CURSOR_STYLE_ROLES = (
     "arrow",
     "busy",
@@ -174,7 +178,7 @@ class PetNest:
         self._resource_results: Queue[tuple[str, bool, object]] = Queue()
         self._resource_worker: Thread | None = None
         self.app_update_client = AppUpdateClient(
-            manifest_url=APP_UPDATE_MANIFEST_URL,
+            manifest_url=APP_UPDATE_MANIFEST_URLS.get(sys.platform, APP_UPDATE_MANIFEST_URLS["win32"]),
             current_version=__version__,
             platform_name=sys.platform,
         )
@@ -348,7 +352,7 @@ class PetNest:
             self.tray.set_resource_update_available(self.remote_resource_update.update_available)
         self.resource_result_timer.start()
         self.resource_update_timer.start()
-        if sys.platform == "win32":
+        if sys.platform in APP_UPDATE_PLATFORMS:
             self.app_update_result_timer.start()
             self.app_update_check_timer.start()
             QTimer.singleShot(APP_UPDATE_STARTUP_DELAY_MS, self._schedule_app_update_check)
@@ -496,7 +500,7 @@ class PetNest:
         dialog = SettingsDialog(
             self.settings,
             self.window,
-            on_check_app_update=self._show_app_update_dialog if sys.platform == "win32" else None,
+            on_check_app_update=self._show_app_update_dialog if sys.platform in APP_UPDATE_PLATFORMS else None,
         )
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
@@ -831,7 +835,7 @@ class PetNest:
 
     def _show_app_update_dialog(self) -> None:
         """从设置页打开应用更新入口；托盘菜单不暴露此动作。"""
-        if sys.platform != "win32" or self._shutdown:
+        if sys.platform not in APP_UPDATE_PLATFORMS or self._shutdown:
             return
         if self._app_update_dialog is None:
             dialog = AppUpdateDialog(
@@ -855,7 +859,7 @@ class PetNest:
 
     def _schedule_app_update_check(self, force: bool = False) -> None:
         """后台检查应用安装包；手动入口传 ``force=True`` 绕过 24 小时节流。"""
-        if sys.platform != "win32" or self._shutdown:
+        if sys.platform not in APP_UPDATE_PLATFORMS or self._shutdown:
             return
         if self._app_update_worker is not None and self._app_update_worker.is_alive():
             return
@@ -879,7 +883,7 @@ class PetNest:
         self._app_update_results.put(("check", result))
 
     def _schedule_app_update_download(self, info: AppUpdateInfo) -> None:
-        if sys.platform != "win32" or self._shutdown:
+        if sys.platform not in APP_UPDATE_PLATFORMS or self._shutdown:
             return
         if self._app_update_worker is not None and self._app_update_worker.is_alive():
             return
@@ -913,15 +917,21 @@ class PetNest:
     @staticmethod
     def _app_update_download_path(info: AppUpdateInfo) -> Path:
         safe_version = re.sub(r"[^0-9A-Za-z._-]+", "_", info.version)
-        return Path(tempfile.gettempdir()) / "PetNest" / f"PetNest-Setup-{safe_version}.exe"
+        filename = (
+            f"PetNest-macOS-x64-{safe_version}.zip"
+            if info.platform in {"darwin", "macos", "macos-x64", "macos-arm64"}
+            else f"PetNest-Setup-{safe_version}.exe"
+        )
+        return Path(tempfile.gettempdir()) / "PetNest" / filename
 
     @staticmethod
     def _cleanup_old_app_update_downloads(destination: Path) -> None:
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            for candidate in destination.parent.glob("PetNest-Setup-*.exe"):
-                if candidate != destination:
-                    candidate.unlink(missing_ok=True)
+            for pattern in ("PetNest-Setup-*.exe", "PetNest-macOS-*.zip"):
+                for candidate in destination.parent.glob(pattern):
+                    if candidate != destination:
+                        candidate.unlink(missing_ok=True)
         except OSError:
             LOGGER.warning("无法清理旧的程序更新安装包", exc_info=True)
 
@@ -942,6 +952,32 @@ class PetNest:
             restart_path=Path(sys.executable),
         )
         subprocess.Popen(command, cwd=str(updater.parent), close_fds=True)
+
+    def _launch_macos_installer(self, archive: Path) -> None:
+        if sys.platform != "darwin":
+            raise AppUpdateError("当前平台不支持 macOS 更新器")
+        if not getattr(sys, "frozen", False):
+            raise AppUpdateError("开发模式未打包 PetNestUpdater，无法自动安装")
+        executable = Path(sys.executable).absolute()
+        target_app = next((parent for parent in executable.parents if parent.suffix == ".app"), None)
+        if target_app is None:
+            raise AppUpdateError("无法定位当前 PetNest.app")
+        updater = executable.with_name("PetNestUpdater")
+        if not updater.is_file():
+            raise AppUpdateError("应用包缺少 PetNestUpdater")
+        from petnest.core.macos_updater import build_macos_updater_command
+
+        command = build_macos_updater_command(updater, archive, target_app, os.getpid())
+        subprocess.Popen(command, cwd=str(updater.parent), close_fds=True)
+
+    def _launch_app_installer(self, installer: Path) -> None:
+        if sys.platform == "win32":
+            self._launch_windows_installer(installer)
+            return
+        if sys.platform == "darwin":
+            self._launch_macos_installer(installer)
+            return
+        raise AppUpdateError("当前平台不支持程序自动更新")
 
     def _drain_app_update_results(self) -> None:
         while True:
@@ -974,7 +1010,7 @@ class PetNest:
                 self._app_update_worker = None
                 _info, installer = payload
                 try:
-                    self._launch_windows_installer(Path(installer))
+                    self._launch_app_installer(Path(installer))
                 except Exception as error:  # noqa: BLE001 - current install remains untouched.
                     LOGGER.exception("无法启动 PetNest 更新安装器")
                     if self._app_update_dialog is not None:

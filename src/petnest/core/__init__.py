@@ -1,55 +1,50 @@
-"""PetNest 的独立核心逻辑。"""
+"""PetNest 的独立核心逻辑。
 
-from .package_loader import PackageLoader
-from .package_validator import PackageValidationError, PackageValidator
-from .event_bus import EventBus
-from .animation_player import AnimationPlayer
-from .fallback_resolver import FallbackResolver
-from .settings_manager import SettingsManager
-from .state_machine import PetStateMachine
-from .spritesheet_importer import SpriteSheetImporter
-from .lottie_effects import (
-    EffectCatalog,
-    EffectImportError,
-    EffectImportResult,
-    EffectManifest,
-    LottieEffectImporter,
-    LottieEffectInfo,
-)
-from .lan_interaction import LanPacketCodec, LanProtocolError, ReceivedInteraction
-from .lan_service import LanInteractionService
-from .remote_interaction_service import FirebaseConfig, FirebaseRemoteInteractionService
-from .animation_action_synchronizer import (
-    AnimationActionSyncError,
-    AnimationActionSyncResult,
-    AnimationActionSynchronizer,
-    SyncedAction,
-)
+公开名称按需导入，避免只使用更新器等轻量模块时加载 Qt、Pillow 和动画库。
+"""
 
-__all__ = [
-    "AnimationActionSyncError",
-    "AnimationActionSyncResult",
-    "AnimationActionSynchronizer",
-    "AnimationPlayer",
-    "EffectCatalog",
-    "EffectImportError",
-    "EffectImportResult",
-    "EffectManifest",
-    "EventBus",
-    "FirebaseConfig",
-    "FirebaseRemoteInteractionService",
-    "FallbackResolver",
-    "LottieEffectImporter",
-    "LottieEffectInfo",
-    "LanInteractionService",
-    "LanPacketCodec",
-    "LanProtocolError",
-    "PackageLoader",
-    "PackageValidationError",
-    "PackageValidator",
-    "PetStateMachine",
-    "SettingsManager",
-    "SpriteSheetImporter",
-    "SyncedAction",
-    "ReceivedInteraction",
-]
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORTS = {
+    "AnimationActionSyncError": ("animation_action_synchronizer", "AnimationActionSyncError"),
+    "AnimationActionSyncResult": ("animation_action_synchronizer", "AnimationActionSyncResult"),
+    "AnimationActionSynchronizer": ("animation_action_synchronizer", "AnimationActionSynchronizer"),
+    "AnimationPlayer": ("animation_player", "AnimationPlayer"),
+    "EffectCatalog": ("lottie_effects", "EffectCatalog"),
+    "EffectImportError": ("lottie_effects", "EffectImportError"),
+    "EffectImportResult": ("lottie_effects", "EffectImportResult"),
+    "EffectManifest": ("lottie_effects", "EffectManifest"),
+    "EventBus": ("event_bus", "EventBus"),
+    "FirebaseConfig": ("remote_interaction_service", "FirebaseConfig"),
+    "FirebaseRemoteInteractionService": ("remote_interaction_service", "FirebaseRemoteInteractionService"),
+    "FallbackResolver": ("fallback_resolver", "FallbackResolver"),
+    "LottieEffectImporter": ("lottie_effects", "LottieEffectImporter"),
+    "LottieEffectInfo": ("lottie_effects", "LottieEffectInfo"),
+    "LanInteractionService": ("lan_service", "LanInteractionService"),
+    "LanPacketCodec": ("lan_interaction", "LanPacketCodec"),
+    "LanProtocolError": ("lan_interaction", "LanProtocolError"),
+    "PackageLoader": ("package_loader", "PackageLoader"),
+    "PackageValidationError": ("package_validator", "PackageValidationError"),
+    "PackageValidator": ("package_validator", "PackageValidator"),
+    "PetStateMachine": ("state_machine", "PetStateMachine"),
+    "ReceivedInteraction": ("lan_interaction", "ReceivedInteraction"),
+    "SettingsManager": ("settings_manager", "SettingsManager"),
+    "SpriteSheetImporter": ("spritesheet_importer", "SpriteSheetImporter"),
+    "SyncedAction": ("animation_action_synchronizer", "SyncedAction"),
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as error:
+        raise AttributeError(name) from error
+    value = getattr(import_module(f"{__name__}.{module_name}"), attribute)
+    globals()[name] = value
+    return value
