@@ -258,6 +258,7 @@ class AnimationEditorDialog(QDialog):
         main_row.addWidget(self.editor_card, 5)
         main_row.addWidget(self.preview_card, 3)
         shell_layout.addLayout(main_row, 1)
+        self._sync_responsive_preview()
         self.duration_table = self.frame_list
 
         self.apply_hint_label = QLabel("时长会随宠物文件夹一起分享。", window_shell)
@@ -277,6 +278,15 @@ class AnimationEditorDialog(QDialog):
         self._populate_action_table()
         if self.action_table.rowCount():
             self.action_table.selectRow(0)
+
+    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature.
+        super().resizeEvent(event)  # type: ignore[arg-type]
+        self._sync_responsive_preview()
+
+    def _sync_responsive_preview(self) -> None:
+        """在窄窗口隐藏预览，优先保证动作列表和编辑控件完整可用。"""
+        compact = self.width() < 1180
+        self.preview_card.setVisible(not compact)
 
     def updated_frame_durations(self) -> dict[str, tuple[int, ...]]:
         """仅返回本次编辑实际修改过的动作，避免无谓重写其余配置。"""

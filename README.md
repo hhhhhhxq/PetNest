@@ -263,13 +263,13 @@ PetNest 默认启用「系统空闲动作」，每秒通过系统接口读取最
 
 ## 打包
 
-Windows 使用 PyInstaller `--onedir` 生成应用目录，再用 Inno Setup 生成 `PetNest-Setup.exe`。构建机需要先安装 Inno Setup 6；Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
+Windows 使用 PyInstaller `--onedir` 生成应用目录，再用 Inno Setup 生成带版本号的 `PetNest-Setup-<version>.exe`。构建机需要先安装 Inno Setup 6；Windows 必须在 Windows 上构建，macOS 必须在 macOS 上构建；PyInstaller 不支持可靠的跨平台交叉打包。
 
 ```powershell
 .\build_windows.bat
 ```
 
-完成后安装包位于 `dist\installer\PetNest-Setup.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。Windows 和 macOS 都可以在设置页通过“检查程序更新…”下载并安装 GitHub Release 中的新版本。
+完成后安装包位于 `dist\installer\PetNest-Setup-<version>.exe`。安装向导可选择程序安装目录，并提供“将宠物库保存到自定义位置”的可选高级项；默认宠物库位于 `%LOCALAPPDATA%\PetNest\pets`。Windows 和 macOS 都可以在设置页通过“检查程序更新…”下载并安装 GitHub Release 中的新版本。
 
 ```bash
 ./build_macos.sh

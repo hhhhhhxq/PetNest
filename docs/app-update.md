@@ -44,7 +44,7 @@
 
 - `dist/PetNest/`：主程序 onedir 包；
 - `dist/PetNestUpdater.exe`：不依赖 Qt 的独立等待/启动程序；
-- `dist/installer/PetNest-Setup.exe`：Inno Setup 安装包。
+- `dist/installer/PetNest-Setup-<version>.exe`：Inno Setup 安装包。
 
 发布前应计算安装包 SHA-256，将大小和摘要写入 `app-update.json`，再把两个文件一起上传到同一个 GitHub Release。安装器升级使用相同的 `AppId`，因此会覆盖程序文件但不会删除用户宠物库。
 
@@ -53,7 +53,7 @@
 ```powershell
 python tools/create_app_update_manifest.py `
   --version 0.2.0 `
-  --installer dist/installer/PetNest-Setup.exe `
+  --installer dist/installer/PetNest-Setup-0.2.0.exe `
   --url https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe `
   --notes "本版本修复了……"
 ```

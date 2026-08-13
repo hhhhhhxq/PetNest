@@ -1,7 +1,7 @@
 ; PetNest Windows 安装包。先由根目录 build_windows.bat 生成 dist\PetNest。
 
 #ifndef AppVersion
-#define AppVersion "0.1.3"
+#define AppVersion "0.1.4"
 #endif
 
 [Setup]
@@ -15,7 +15,7 @@ DefaultGroupName=PetNest
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\dist\installer
-OutputBaseFilename=PetNest-Setup
+OutputBaseFilename=PetNest-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

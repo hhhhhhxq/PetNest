@@ -101,6 +101,16 @@ def test_dialog_initial_height_respects_available_screen_height(qtbot: object, t
     assert dialog.height() <= max(dialog.minimumHeight(), 720 - 40)
 
 
+def test_dialog_initial_height_fits_a_short_screen(qtbot: object, tmp_path: Path) -> None:
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+
+    dialog._fit_initial_height(available_height=600)
+
+    assert dialog.height() <= 560
+    assert dialog.minimumHeight() <= 560
+
+
 def test_dialog_accepts_a_local_png_dropped_on_the_source_zone(qtbot: object, tmp_path: Path) -> None:
     source = _spritesheet(tmp_path / "dropped.png")
     dialog = SpriteSheetImportDialog(tmp_path / "pets")

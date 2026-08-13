@@ -71,6 +71,25 @@ def test_action_list_description_column_expands_with_the_dialog(qtbot: object, t
     assert dialog.action_table.columnWidth(1) > 180
 
 
+def test_editor_minimum_size_keeps_all_columns_and_frame_list_inside_their_cards(
+    qtbot: object, tmp_path: Path
+) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.resize(dialog.minimumSize())
+    dialog.show()
+    __import__("PySide6").QtWidgets.QApplication.processEvents()
+
+    assert dialog.minimumWidth() == 1080
+    assert dialog.preview_card.isHidden()
+    assert dialog.action_card.geometry().right() < dialog.editor_card.geometry().left()
+
+    dialog.per_frame_radio.click()
+    __import__("PySide6").QtWidgets.QApplication.processEvents()
+
+    assert dialog.frame_list.geometry().right() <= dialog.editor_card.rect().right()
+
+
 def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tmp_path: Path) -> None:
     dialog = AnimationEditorDialog(_package(tmp_path))
     qtbot.addWidget(dialog)

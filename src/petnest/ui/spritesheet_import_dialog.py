@@ -118,6 +118,7 @@ class SpriteSheetImportDialog(QDialog):
         self.setWindowTitle("导入 Codex 精灵图")
         self.resize(1180, 760)
         self.setMinimumSize(1000, 680)
+        self._preferred_minimum_height = 680
         self.setStyleSheet(dialog_stylesheet())
         self._pets_root = pets_root
         self._importer = SpriteSheetImporter()
@@ -369,6 +370,8 @@ class SpriteSheetImportDialog(QDialog):
                 return
             available_height = screen.availableGeometry().height()
 
+        available_height = max(1, int(available_height))
+        self.setMinimumHeight(min(self._preferred_minimum_height, available_height - 40))
         content_height = self.content_container.sizeHint().height()
         chrome_height = self.layout().sizeHint().height() - self.content_scroll.sizeHint().height()
         natural_height = max(self.minimumHeight(), content_height + max(0, chrome_height))

@@ -23,6 +23,7 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "CreateInputOptionPage" in contents
     assert "FirewallPage" in contents
     assert "PrivilegesRequired=admin" in contents
+    assert "OutputBaseFilename=PetNest-Setup-{#AppVersion}" in contents
     assert "--set-pets-root" in contents
     assert 'pets\\sample_pet;pets\\sample_pet' not in build_script
     assert "src\\petnest_launcher.py" in build_script

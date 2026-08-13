@@ -3,7 +3,7 @@
 示例：
     python tools/create_app_update_manifest.py \
       --version 0.2.0 \
-      --installer dist/installer/PetNest-Setup.exe \
+      --installer dist/installer/PetNest-Setup-0.2.0.exe \
       --url https://github.com/hhhhhhxq/PetNest/releases/download/v0.2.0/PetNest-Setup-0.2.0.exe
 """
 
