@@ -113,6 +113,9 @@ class LanPacketCodec:
             "requests": _sync_counter(snapshot.requests),
             "fast_uses": _sync_counter(snapshot.fast_uses),
             "standard_uses": _sync_counter(snapshot.standard_uses),
+            "files_scanned": _sync_counter(snapshot.files_scanned),
+            "files_skipped": _sync_counter(snapshot.files_skipped),
+            "scan_status": _sync_scan_status(snapshot.scan_status),
             "models": [
                 {
                     "model": _bounded_text(item.model, "Codex 模型名称", 80),
@@ -290,6 +293,9 @@ class LanPacketCodec:
             account_used_percent=_sync_percent(raw.get("account_used_percent")),
             fast_uses=_sync_counter(usage.get("fast_uses", 0)),
             standard_uses=_sync_counter(usage.get("standard_uses", 0)),
+            files_scanned=_sync_counter(usage.get("files_scanned", 0)),
+            files_skipped=_sync_counter(usage.get("files_skipped", 0)),
+            scan_status=_sync_scan_status(usage.get("scan_status")),
         )
         return ReceivedCodexUsageSync(
             kind=str(raw["kind"]),
@@ -442,6 +448,19 @@ def _sync_percent(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
         raise LanProtocolError("Codex 额度百分比无效")
     return float(value)
+
+
+def _sync_scan_status(value: object) -> str:
+    normalized = str(value or "unknown")
+    if normalized not in {
+        "unknown",
+        "matched",
+        "no_matching_events",
+        "unreadable_files",
+        "no_session_files",
+    }:
+        raise LanProtocolError("Codex 日志扫描状态无效")
+    return normalized
 
 
 def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:

@@ -106,6 +106,16 @@ class LocalCodexUsage:
     files_skipped: int = 0
 
     @property
+    def scan_status(self) -> str:
+        if self.tokens.requests > 0 or self.tokens.total_tokens > 0:
+            return "matched"
+        if self.files_scanned > 0:
+            return "no_matching_events"
+        if self.files_skipped > 0:
+            return "unreadable_files"
+        return "no_session_files"
+
+    @property
     def observed_quota_change(self) -> float | None:
         if self.observed_start_used_percent is None or self.observed_end_used_percent is None:
             return None
@@ -155,11 +165,31 @@ class CodexUsageClient:
         timeout: float = 20.0,
         transport: RpcTransport | None = None,
     ) -> None:
-        self.executable = executable or discover_codex_executable()
+        self._executables = (executable,) if executable is not None else discover_codex_executables()
+        self.executable = self._executables[0]
         self.timeout = timeout
         self._transport = transport or _stdio_rpc_transport
 
     def fetch_report(self) -> CodexUsageReport:
+        failures: list[tuple[Path, str]] = []
+        candidates = (self.executable,) + tuple(
+            candidate for candidate in self._executables if candidate != self.executable
+        )
+        for executable in candidates:
+            try:
+                report = self._fetch_report(executable)
+            except CodexUsageError as error:
+                failures.append((executable, str(error)))
+                continue
+            self.executable = executable
+            return report
+        if len(failures) == 1:
+            raise CodexUsageError(failures[0][1])
+        attempted = "、".join(path.name for path, _message in failures)
+        detail = failures[-1][1] if failures else "未找到可启动文件"
+        raise CodexUsageError(f"无法启动可用的 Codex（已尝试 {attempted}）：{detail}")
+
+    def _fetch_report(self, executable: Path) -> CodexUsageReport:
         requests = [
             {
                 "id": 1,
@@ -179,7 +209,7 @@ class CodexUsageClient:
             {"id": 4, "method": "account/usage/read"},
         ]
         responses = self._transport(
-            self.executable,
+            executable,
             requests,
             frozenset({1, 2, 3, 4}),
             self.timeout,
@@ -207,7 +237,12 @@ class CodexUsageClient:
 
 
 def discover_codex_executable() -> Path:
-    """Find the app-bundled Codex binary before falling back to ``PATH``."""
+    """Return the first discovered Codex executable for compatibility."""
+    return discover_codex_executables()[0]
+
+
+def discover_codex_executables() -> tuple[Path, ...]:
+    """Find all plausible Codex launchers in fallback order."""
     candidates: list[Path] = []
     for name in ("PETNEST_CODEX_EXECUTABLE", "CODEX_BIN"):
         value = os.environ.get(name)
@@ -231,12 +266,22 @@ def discover_codex_executable() -> Path:
                 local_app_data / "Programs/Codex/resources/codex.exe",
             )
         )
-    path_match = shutil.which("codex.exe" if sys.platform == "win32" else "codex")
-    if path_match:
-        candidates.append(Path(path_match))
+    executable_names = ("codex.exe", "codex.cmd", "codex") if sys.platform == "win32" else ("codex",)
+    for executable_name in executable_names:
+        path_match = shutil.which(executable_name)
+        if path_match:
+            candidates.append(Path(path_match))
+    discovered: list[Path] = []
+    seen: set[str] = set()
     for candidate in candidates:
+        normalized = str(candidate.absolute()).casefold() if sys.platform == "win32" else str(candidate.absolute())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
         if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
-            return candidate
+            discovered.append(candidate)
+    if discovered:
+        return tuple(discovered)
     raise CodexUsageError("未找到 Codex。请先安装或更新 ChatGPT/Codex 桌面应用。")
 
 
@@ -348,6 +393,9 @@ class CodexAccountSnapshot:
     local_model_usage: tuple[CodexModelUsage, ...] = ()
     local_fast_uses: int = 0
     local_standard_uses: int = 0
+    local_files_scanned: int = 0
+    local_files_skipped: int = 0
+    local_scan_status: str = "unknown"
     finalized: bool = False
 
     @classmethod
@@ -375,6 +423,9 @@ class CodexAccountSnapshot:
             local_model_usage=report.local_usage.model_usage,
             local_fast_uses=report.local_usage.fast_uses,
             local_standard_uses=report.local_usage.standard_uses,
+            local_files_scanned=report.local_usage.files_scanned,
+            local_files_skipped=report.local_usage.files_skipped,
+            local_scan_status=report.local_usage.scan_status,
             finalized=False,
         )
 
@@ -448,7 +499,7 @@ class CodexUsageHistoryStore:
             reverse=True,
         )[:200]
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "cycles": {_account_cycle_key(item): asdict(item) for item in ordered},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -521,6 +572,9 @@ class CodexUsageHistoryStore:
                     local_model_usage=local_usage.model_usage,
                     local_fast_uses=local_usage.fast_uses,
                     local_standard_uses=local_usage.standard_uses,
+                    local_files_scanned=local_usage.files_scanned,
+                    local_files_skipped=local_usage.files_skipped,
+                    local_scan_status=local_usage.scan_status,
                     finalized=True,
                 )
             )
@@ -555,6 +609,9 @@ class CodexDeviceUsageSnapshot:
     account_used_percent: float | None = None
     fast_uses: int = 0
     standard_uses: int = 0
+    files_scanned: int = 0
+    files_skipped: int = 0
+    scan_status: str = "unknown"
 
     @property
     def tokens(self) -> CodexTokenUsage:
@@ -606,6 +663,9 @@ class CodexDeviceUsageSnapshot:
             account_used_percent=(window.used_percent if window is not None else None),
             fast_uses=report.local_usage.fast_uses,
             standard_uses=report.local_usage.standard_uses,
+            files_scanned=report.local_usage.files_scanned,
+            files_skipped=report.local_usage.files_skipped,
+            scan_status=report.local_usage.scan_status,
         )
 
 
@@ -650,7 +710,7 @@ class CodexDeviceUsageStore:
             reverse=True,
         )[:500]
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "devices": {
                 _device_cycle_key(item): asdict(item)
                 for item in ordered
@@ -752,9 +812,13 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
         snapshot.requests,
         snapshot.fast_uses,
         snapshot.standard_uses,
+        snapshot.files_scanned,
+        snapshot.files_skipped,
     )
     return (
         all(isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10**18 for value in counters)
+        and snapshot.scan_status
+        in {"unknown", "matched", "no_matching_events", "unreadable_files", "no_session_files"}
         and snapshot.model_usage == _parse_model_usage(snapshot.model_usage)
     )
 
@@ -768,7 +832,7 @@ def _stdio_rpc_transport(
     creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
         process = subprocess.Popen(
-            [str(executable), "app-server", "--stdio"],
+            _codex_app_server_command(executable),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -848,6 +912,14 @@ def _stdio_rpc_transport(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
+
+
+def _codex_app_server_command(executable: Path) -> list[str]:
+    arguments = [str(executable), "app-server", "--stdio"]
+    if sys.platform != "win32" or executable.suffix.casefold() not in {".cmd", ".bat"}:
+        return arguments
+    command_processor = os.environ.get("COMSPEC", "cmd.exe")
+    return [command_processor, "/d", "/s", "/c", subprocess.list2cmdline(arguments)]
 
 
 def _parse_account(account_payload: dict[str, Any], rate_payload: dict[str, Any]) -> CodexAccount:
@@ -1176,6 +1248,7 @@ __all__ = [
     "DailyTokenUsage",
     "LocalCodexUsage",
     "discover_codex_executable",
+    "discover_codex_executables",
     "scan_local_codex_usage",
     "codex_device_usage_path",
 ]

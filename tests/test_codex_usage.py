@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import petnest.core.codex_usage as codex_usage_module
 from petnest.core.codex_usage import (
     CodexAccount,
     CodexDeviceUsageSnapshot,
@@ -16,6 +17,7 @@ from petnest.core.codex_usage import (
     CodexRateWindow,
     CodexTokenUsage,
     CodexUsageClient,
+    CodexUsageError,
     CodexUsageHistoryStore,
     LocalCodexUsage,
 )
@@ -226,7 +228,58 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     )
     assert report.local_usage.fast_uses == 1
     assert report.local_usage.standard_uses == 1
+    assert report.local_usage.scan_status == "matched"
+    assert report.local_usage.files_scanned == 1
     assert report.local_usage.observed_quota_change == 2.5
+
+
+def test_client_distinguishes_no_local_session_files_from_zero_usage(tmp_path: Path) -> None:
+    responses, _reset = _responses(tmp_path)
+
+    report = CodexUsageClient(
+        Path("/fake/codex"),
+        transport=lambda *_args: responses,
+    ).fetch_report()
+
+    assert report.local_usage.tokens.total_tokens == 0
+    assert report.local_usage.scan_status == "no_session_files"
+
+
+def test_client_falls_back_to_next_discovered_codex_launcher(tmp_path: Path, monkeypatch) -> None:
+    responses, _reset = _responses(tmp_path)
+    protected = tmp_path / "WindowsApps" / "codex.exe"
+    npm_launcher = tmp_path / "npm" / "codex.cmd"
+    attempted: list[Path] = []
+    monkeypatch.setattr(
+        codex_usage_module,
+        "discover_codex_executables",
+        lambda: (protected, npm_launcher),
+    )
+
+    def transport(executable, *_args):
+        attempted.append(executable)
+        if executable == protected:
+            raise CodexUsageError("WinError 5 拒绝访问")
+        return responses
+
+    client = CodexUsageClient(transport=transport)
+    report = client.fetch_report()
+
+    assert report.account.label == "pe*****@example.com"
+    assert attempted == [protected, npm_launcher]
+    assert client.executable == npm_launcher
+
+
+def test_windows_cmd_launcher_uses_command_processor(tmp_path: Path, monkeypatch) -> None:
+    launcher = tmp_path / "Codex CLI" / "codex.cmd"
+    monkeypatch.setattr(codex_usage_module.sys, "platform", "win32")
+    monkeypatch.setenv("COMSPEC", "C:/Windows/System32/cmd.exe")
+
+    command = codex_usage_module._codex_app_server_command(launcher)
+
+    assert command[:4] == ["C:/Windows/System32/cmd.exe", "/d", "/s", "/c"]
+    assert "codex.cmd" in command[4]
+    assert "app-server --stdio" in command[4]
 
 
 def test_history_keeps_distinct_masked_snapshots_for_switched_accounts(tmp_path: Path) -> None:

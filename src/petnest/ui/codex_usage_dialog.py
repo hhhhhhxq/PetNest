@@ -193,7 +193,7 @@ class CodexUsageDialog(QDialog):
 
         local_card, local_layout = self._card(
             "当前电脑 · 本周期",
-            "按本机 token_count 事件的账号额度窗口匹配，不混入普通账号切换后的记录。",
+            "按本机 token_count 的额度重置时间关联账号周期；日志不含账号 ID，极近重置时间可能存在歧义。",
         )
         self.local_total_label = self._metric("Token  —", local_card)
         self.local_breakdown_label = QLabel("输入 / 输出 / 缓存  —", local_card)
@@ -210,6 +210,9 @@ class CodexUsageDialog(QDialog):
             "按本额度周期内实际产生 Token 的模型回合统计：极快对应 priority，"
             "标准对应 default。"
         )
+        self.local_scan_label = QLabel("日志匹配  —", local_card)
+        self.local_scan_label.setObjectName("mutedLabel")
+        self.local_scan_label.setWordWrap(True)
         self.local_quota_change_label = QLabel("账号额度变化  —", local_card)
         self.local_quota_change_label.setObjectName("mutedLabel")
         self.local_quota_change_label.setWordWrap(True)
@@ -223,11 +226,14 @@ class CodexUsageDialog(QDialog):
         self.all_devices_total_label = QLabel("多电脑合计  —", local_card)
         self.all_devices_total_label.setStyleSheet("font-weight: 700; color: #4B4641;")
         self.all_devices_total_label.setWordWrap(True)
+        self.quota_attribution_label = QLabel("额度归属  —", local_card)
+        self.quota_attribution_label.setObjectName("mutedLabel")
+        self.quota_attribution_label.setWordWrap(True)
         self.device_ranking_title = QLabel("同账号设备用量排名（预估）", local_card)
         self.device_ranking_title.setStyleSheet("font-weight: 700; color: #4B4641;")
         self.device_ranking_hint = QLabel(
-            "设备额度占用 = 设备 Token ÷ 已同步设备 Token 合计 × 账号已用额度；"
-            "仅为当前已同步设备的动态估算。",
+            "设备额度占用按已同步设备 Token 比例折算；未同步设备和无匹配日志的占用无法判断，"
+            "不会当作官方单机归因。",
             local_card,
         )
         self.device_ranking_hint.setObjectName("mutedLabel")
@@ -238,7 +244,7 @@ class CodexUsageDialog(QDialog):
         self.device_ranking_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.device_ranking_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.device_ranking_list.setMinimumHeight(52)
-        self.device_ranking_list.setMaximumHeight(274)
+        self.device_ranking_list.setMaximumHeight(338)
         self.device_ranking_list.setStyleSheet(
             "QListWidget#deviceRankingList {"
             "background: #FBF7F2; color: #4B4641; border: 1px solid #E8DED5;"
@@ -253,9 +259,11 @@ class CodexUsageDialog(QDialog):
         local_layout.addWidget(self.local_requests_label)
         local_layout.addWidget(self.local_models_label)
         local_layout.addWidget(self.local_speed_label)
+        local_layout.addWidget(self.local_scan_label)
         local_layout.addWidget(self.local_quota_change_label)
         local_layout.addWidget(self.synced_devices_label)
         local_layout.addWidget(self.all_devices_total_label)
+        local_layout.addWidget(self.quota_attribution_label)
         local_layout.addWidget(self.device_ranking_title)
         local_layout.addWidget(self.device_ranking_hint)
         local_layout.addWidget(self.device_ranking_list)
@@ -517,7 +525,11 @@ class CodexUsageDialog(QDialog):
         )
         local = report.local_usage
         tokens = local.tokens
-        self.local_total_label.setText(f"Token  {_number(tokens.total_tokens)}")
+        self.local_total_label.setText(
+            f"Token  {_number(tokens.total_tokens)}"
+            if _has_device_usage(local.scan_status, tokens.total_tokens, tokens.requests)
+            else "Token  —（未发现当前账号/周期匹配记录）"
+        )
         self.local_breakdown_label.setText(
             "输入 / 输出 / 缓存  "
             f"{_number(tokens.input_tokens)} / {_number(tokens.output_tokens)} / "
@@ -527,6 +539,10 @@ class CodexUsageDialog(QDialog):
         self.local_models_label.setText(_model_usage_label(local.model_usage))
         self.local_speed_label.setText(
             "速度占比  " + _speed_usage_label(local.fast_uses, local.standard_uses)
+        )
+        self.local_scan_label.setText(
+            "日志匹配  "
+            + _scan_status_label(local.scan_status, local.files_scanned, local.files_skipped)
         )
         change = local.observed_quota_change
         if change is None:
@@ -545,6 +561,9 @@ class CodexUsageDialog(QDialog):
             local_models=local.model_usage,
             local_fast_uses=local.fast_uses,
             local_standard_uses=local.standard_uses,
+            local_scan_status=local.scan_status,
+            local_files_scanned=local.files_scanned,
+            local_files_skipped=local.files_skipped,
             account_used_percent=(window.used_percent if window is not None else None),
         )
 
@@ -566,7 +585,15 @@ class CodexUsageDialog(QDialog):
         )
         self.account_recent_label.setText(f"最后更新  {_format_snapshot_date(snapshot.updated_at)}")
         self.account_streak_label.setText("切换回该账号后可刷新最新数据")
-        self.local_total_label.setText(f"Token  {_number(snapshot.local_tokens)}")
+        self.local_total_label.setText(
+            f"Token  {_number(snapshot.local_tokens)}"
+            if _has_device_usage(
+                snapshot.local_scan_status,
+                snapshot.local_tokens,
+                snapshot.local_requests,
+            )
+            else "Token  —（无可确认的匹配记录）"
+        )
         self.local_breakdown_label.setText(
             "输入 / 输出 / 缓存  "
             f"{_number(snapshot.local_input_tokens)} / {_number(snapshot.local_output_tokens)} / "
@@ -577,6 +604,16 @@ class CodexUsageDialog(QDialog):
         self.local_speed_label.setText(
             "速度占比  "
             + _speed_usage_label(snapshot.local_fast_uses, snapshot.local_standard_uses)
+        )
+        self.local_scan_label.setText(
+            "日志匹配  "
+            + _scan_status_label(
+                snapshot.local_scan_status,
+                snapshot.local_files_scanned,
+                snapshot.local_files_skipped,
+                tokens=snapshot.local_tokens,
+                requests=snapshot.local_requests,
+            )
         )
         if snapshot.observed_quota_change is None:
             self.local_quota_change_label.setText("本机记录期间的账号整体额度变化  —")
@@ -598,6 +635,9 @@ class CodexUsageDialog(QDialog):
             local_models=snapshot.local_model_usage,
             local_fast_uses=snapshot.local_fast_uses,
             local_standard_uses=snapshot.local_standard_uses,
+            local_scan_status=snapshot.local_scan_status,
+            local_files_scanned=snapshot.local_files_scanned,
+            local_files_skipped=snapshot.local_files_skipped,
             account_used_percent=snapshot.used_percent,
         )
 
@@ -630,19 +670,30 @@ class CodexUsageDialog(QDialog):
         self.local_requests_label.setText("模型请求  —")
         self.local_models_label.setText("常用模型  —")
         self.local_speed_label.setText("速度占比  —")
+        self.local_scan_label.setText("日志匹配  本机未登录该账号")
         self.local_quota_change_label.setText("账号额度来自最近一次局域网同步")
-        total_tokens = sum(item.total_tokens for item in devices)
-        total_requests = sum(item.requests for item in devices)
+        known_devices = tuple(
+            item
+            for item in devices
+            if _has_device_usage(item.scan_status, item.total_tokens, item.requests)
+        )
+        total_tokens = sum(item.total_tokens for item in known_devices)
+        total_requests = sum(item.requests for item in known_devices)
         self.synced_devices_label.setText(f"局域网同步  已同步 {len(devices)} 台设备")
         self.synced_devices_label.setToolTip("、".join(item.device_label for item in devices))
         self.all_devices_total_label.setText(
-            f"多电脑合计  {_number(total_tokens)} Token · {_number(total_requests)} 次模型请求"
+            f"已知设备合计  {_number(total_tokens)} Token · {_number(total_requests)} 次模型请求"
+            if known_devices
+            else "已知设备合计  —（无可确认 Token）"
         )
         self._show_device_ranking(
             local_tokens=CodexTokenUsage(),
             local_models=(),
             local_fast_uses=0,
             local_standard_uses=0,
+            local_scan_status="unknown",
+            local_files_scanned=0,
+            local_files_skipped=0,
             devices=devices,
             account_used_percent=used_percent,
             include_local=False,
@@ -675,11 +726,15 @@ class CodexUsageDialog(QDialog):
         local_models: tuple[CodexModelUsage, ...],
         local_fast_uses: int,
         local_standard_uses: int,
+        local_scan_status: str,
+        local_files_scanned: int,
+        local_files_skipped: int,
         account_used_percent: float | None,
     ) -> None:
         if reset_epoch is None:
             self.synced_devices_label.setText("局域网同步  当前额度周期未知")
             self.all_devices_total_label.setText("多电脑合计  —")
+            self.quota_attribution_label.setText("额度归属  当前额度周期未知")
             self._set_device_ranking_lines(("当前额度周期未知，无法生成排名",))
             return
         devices = self._device_history.load(
@@ -690,7 +745,13 @@ class CodexUsageDialog(QDialog):
         if not devices:
             self.synced_devices_label.setText("局域网同步  尚未同步其他电脑")
             self.all_devices_total_label.setText(
-                f"多电脑合计  {_number(local_tokens.total_tokens)} Token（仅本机）"
+                f"已知设备合计  {_number(local_tokens.total_tokens)} Token（仅本机）"
+                if _has_device_usage(
+                    local_scan_status,
+                    local_tokens.total_tokens,
+                    local_tokens.requests,
+                )
+                else "已知设备合计  —（本机无可确认 Token）"
             )
             self.synced_devices_label.setToolTip("点击“连接电脑”并输入对方局域网 IPv4")
             self._show_device_ranking(
@@ -698,25 +759,41 @@ class CodexUsageDialog(QDialog):
                 local_models=local_models,
                 local_fast_uses=local_fast_uses,
                 local_standard_uses=local_standard_uses,
+                local_scan_status=local_scan_status,
+                local_files_scanned=local_files_scanned,
+                local_files_skipped=local_files_skipped,
                 devices=(),
                 account_used_percent=account_used_percent,
             )
             return
-        combined = local_tokens
+        combined = CodexTokenUsage()
+        known_count = 0
+        if _has_device_usage(local_scan_status, local_tokens.total_tokens, local_tokens.requests):
+            combined += local_tokens
+            known_count += 1
         for device in devices:
-            combined += device.tokens
+            if _has_device_usage(device.scan_status, device.total_tokens, device.requests):
+                combined += device.tokens
+                known_count += 1
         labels = "、".join(device.device_label for device in devices)
         self.synced_devices_label.setText(f"局域网同步  已同步 {len(devices)} 台其他电脑")
         self.synced_devices_label.setToolTip(labels)
         self.all_devices_total_label.setText(
-            f"多电脑合计  {_number(combined.total_tokens)} Token · "
-            f"{_number(combined.requests)} 次模型请求"
+            (
+                f"已知设备合计  {_number(combined.total_tokens)} Token · "
+                f"{_number(combined.requests)} 次模型请求"
+            )
+            if known_count
+            else "已知设备合计  —（无可确认 Token）"
         )
         self._show_device_ranking(
             local_tokens=local_tokens,
             local_models=local_models,
             local_fast_uses=local_fast_uses,
             local_standard_uses=local_standard_uses,
+            local_scan_status=local_scan_status,
+            local_files_scanned=local_files_scanned,
+            local_files_skipped=local_files_skipped,
             devices=devices,
             account_used_percent=account_used_percent,
         )
@@ -728,6 +805,9 @@ class CodexUsageDialog(QDialog):
         local_models: tuple[CodexModelUsage, ...],
         local_fast_uses: int,
         local_standard_uses: int,
+        local_scan_status: str,
+        local_files_scanned: int,
+        local_files_skipped: int,
         devices: tuple[CodexDeviceUsageSnapshot, ...],
         account_used_percent: float | None,
         include_local: bool = True,
@@ -742,6 +822,9 @@ class CodexUsageDialog(QDialog):
                     local_models,
                     local_fast_uses,
                     local_standard_uses,
+                    local_scan_status,
+                    local_files_scanned,
+                    local_files_skipped,
                 )
             )
         entries.extend(
@@ -752,13 +835,38 @@ class CodexUsageDialog(QDialog):
                 device.model_usage,
                 device.fast_uses,
                 device.standard_uses,
+                device.scan_status,
+                device.files_scanned,
+                device.files_skipped,
             )
             for device in devices
         )
-        entries.sort(key=lambda item: (-item[1], item[0].casefold()))
+        entries.sort(
+            key=lambda item: (
+                not _has_device_usage(item[6], item[1], item[2]),
+                -item[1],
+                item[0].casefold(),
+            )
+        )
         lines: list[str] = []
-        known_total = sum(item[1] for item in entries)
-        for rank, (label, tokens, requests, models, fast_uses, standard_uses) in enumerate(
+        known_total = sum(
+            item[1] for item in entries if _has_device_usage(item[6], item[1], item[2])
+        )
+        incomplete = any(not _has_device_usage(item[6], item[1], item[2]) for item in entries)
+        self.quota_attribution_label.setText(
+            _quota_attribution_label(account_used_percent, known_total, incomplete)
+        )
+        for rank, (
+            label,
+            tokens,
+            requests,
+            models,
+            fast_uses,
+            standard_uses,
+            scan_status,
+            files_scanned,
+            files_skipped,
+        ) in enumerate(
             entries[:8],
             1,
         ):
@@ -774,12 +882,29 @@ class CodexUsageDialog(QDialog):
                 if model is not None
                 else "常用模型 —"
             )
-            quota_suffix = f"约 {estimate} 额度" if estimate != "—" else "预估额度 —"
-            lines.append(
-                f"{medal} {label}  {_number(tokens)} Token · {quota_suffix}\n"
+            has_usage = _has_device_usage(scan_status, tokens, requests)
+            quota_suffix = (
+                f"按已知设备折算约 {estimate} 额度" if estimate != "—" and has_usage else "预估额度 —"
+            )
+            token_summary = (
+                f"{_number(tokens)} Token"
+                if has_usage
+                else f"Token —（{_scan_status_short(scan_status)}）"
+            )
+            line = (
+                f"{medal} {label}  {token_summary} · {quota_suffix}\n"
                 f"    {_number(requests)} 次模型请求 · {model_suffix}\n"
                 f"    速度 {_speed_usage_label(fast_uses, standard_uses)}"
             )
+            if not has_usage:
+                line += "\n    日志 " + _scan_status_label(
+                    scan_status,
+                    files_scanned,
+                    files_skipped,
+                    tokens=tokens,
+                    requests=requests,
+                )
+            lines.append(line)
         if len(entries) > 8:
             lines.append(f"…还有 {len(entries) - 8} 台设备")
         self._set_device_ranking_lines(tuple(lines))
@@ -788,9 +913,9 @@ class CodexUsageDialog(QDialog):
         self.device_ranking_list.clear()
         for line in lines:
             item = QListWidgetItem(line, self.device_ranking_list)
-            item.setSizeHint(QSize(0, 64 if "\n" in line else 30))
+            item.setSizeHint(QSize(0, 80 if line.count("\n") >= 3 else 64 if "\n" in line else 30))
         visible_rows = max(1, min(len(lines), 4))
-        self.device_ranking_list.setFixedHeight(min(274, 10 + visible_rows * 66))
+        self.device_ranking_list.setFixedHeight(min(338, 10 + visible_rows * 82))
 
     def _connect_device(self) -> None:
         if self._on_connect_device is not None:
@@ -921,6 +1046,56 @@ def _estimated_quota_share(
         return "—"
     share = max(0.0, account_used_percent) * max(0, device_tokens) / known_tokens
     return f"{_percent(share)}%"
+
+
+def _has_device_usage(scan_status: str, tokens: int, requests: int) -> bool:
+    return scan_status == "matched" or tokens > 0 or requests > 0
+
+
+def _scan_status_short(scan_status: str) -> str:
+    return {
+        "no_matching_events": "当前账号/周期无匹配记录",
+        "unreadable_files": "会话日志不可读取",
+        "no_session_files": "未发现本机会话日志",
+        "unknown": "旧版快照无扫描状态",
+    }.get(scan_status, "无可确认的匹配记录")
+
+
+def _scan_status_label(
+    scan_status: str,
+    files_scanned: int,
+    files_skipped: int,
+    *,
+    tokens: int = 0,
+    requests: int = 0,
+) -> str:
+    if _has_device_usage(scan_status, tokens, requests) or scan_status == "matched":
+        detail = f"已扫描 {_number(files_scanned)} 个会话文件"
+        if files_skipped:
+            detail += f"，{_number(files_skipped)} 个无法读取"
+        return f"已匹配 · {detail}"
+    if scan_status == "no_matching_events":
+        return f"已扫描 {_number(files_scanned)} 个会话文件，但当前账号/周期无匹配事件"
+    if scan_status == "unreadable_files":
+        return f"{_number(files_skipped)} 个会话文件无法读取"
+    if scan_status == "no_session_files":
+        return "未发现本机 Codex 会话日志"
+    return "旧版设备未提供扫描诊断；重新同步后更新"
+
+
+def _quota_attribution_label(
+    account_used_percent: float | None,
+    known_tokens: int,
+    incomplete: bool,
+) -> str:
+    if account_used_percent is None:
+        return "额度归属  账号已用额度未知"
+    used = f"{_percent(account_used_percent)}%"
+    if known_tokens <= 0:
+        return f"额度归属  账号已用 {used}；已同步设备没有可确认的 Token，无法分配"
+    if incomplete:
+        return f"额度归属  账号已用 {used}；部分设备记录缺失，未归属额度无法判断"
+    return f"额度归属  账号已用 {used}；仅按已同步设备折算，未同步设备占用无法判断"
 
 
 def _speed_usage_label(fast_uses: int, standard_uses: int) -> str:

@@ -232,6 +232,46 @@ def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot,
     assert "速度 极快 50% · 标准 50%" in ranking
 
 
+def test_remote_zero_snapshot_shows_scan_reason_instead_of_confirmed_zero(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history.json"
+    reset = datetime.now(UTC) + timedelta(days=5)
+    CodexDeviceUsageStore(codex_device_usage_path(history_path)).save(
+        CodexDeviceUsageSnapshot(
+            account_key="d" * 24,
+            device_id="office-pc",
+            device_label="Office PC",
+            window_resets_at=int(reset.timestamp()),
+            window_duration_minutes=10_080,
+            updated_at=datetime.now(UTC).isoformat(),
+            input_tokens=0,
+            cached_input_tokens=0,
+            cache_write_input_tokens=0,
+            output_tokens=0,
+            reasoning_output_tokens=0,
+            total_tokens=0,
+            requests=0,
+            account_label="ze*****@example.com",
+            plan_type="pro",
+            account_used_percent=7.0,
+            files_scanned=14,
+            scan_status="no_matching_events",
+        )
+    )
+
+    dialog = CodexUsageDialog(history_path, auto_refresh=False)
+    qtbot.addWidget(dialog)
+
+    ranking = dialog.device_ranking_list.item(0).text()
+    assert "0 Token" not in ranking
+    assert "Token —（当前账号/周期无匹配记录）" in ranking
+    assert "已扫描 14 个会话文件" in ranking
+    assert "已同步设备没有可确认的 Token" in dialog.quota_attribution_label.text()
+    assert dialog.all_devices_total_label.text() == "已知设备合计  —（无可确认 Token）"
+
+
 def test_device_ranking_switches_with_multiple_accounts(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     first = _report(tmp_path)
     second = replace(

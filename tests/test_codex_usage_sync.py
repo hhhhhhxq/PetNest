@@ -84,6 +84,9 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         account_used_percent=12.5,
         fast_uses=7,
         standard_uses=3,
+        files_scanned=12,
+        files_skipped=1,
+        scan_status="matched",
     )
     packet = LanPacketCodec.codex_usage_sync(
         kind="codex_usage_sync_request",
@@ -102,6 +105,13 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
 
     packet["usage"]["total_tokens"] = -1
     with pytest.raises(LanProtocolError, match="Token"):
+        LanPacketCodec.decode_codex_usage_sync(
+            LanPacketCodec.encode(packet),
+            local_device_id="receiver",
+        )
+    packet["usage"]["total_tokens"] = 1_000
+    packet["usage"]["scan_status"] = "invented"
+    with pytest.raises(LanProtocolError, match="扫描状态"):
         LanPacketCodec.decode_codex_usage_sync(
             LanPacketCodec.encode(packet),
             local_device_id="receiver",
