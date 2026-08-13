@@ -87,6 +87,10 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         files_scanned=12,
         files_skipped=1,
         scan_status="matched",
+        weighted_credits=1.25,
+        weighted_complete=True,
+        pending_tokens=250,
+        anomaly_tokens=1_000,
     )
     packet = LanPacketCodec.codex_usage_sync(
         kind="codex_usage_sync_request",
@@ -143,6 +147,32 @@ def test_first_discovered_lan_peer_triggers_sync_once(qtbot, tmp_path, monkeypat
     service.peer_changed.emit(peer)
 
     assert started == [("initiate", ("peer-device",))]
+    assert coordinator._periodic_timer.isActive()
+    coordinator.stop()
+
+
+def test_periodic_check_observes_account_without_lan_peers(qtbot, tmp_path, monkeypatch) -> None:
+    service = LanInteractionService(
+        device_id="local-device",
+        display_name="Local Mac",
+        pet_name="Pet",
+        port=0,
+    )
+    coordinator = CodexUsageSyncCoordinator(
+        service,
+        CodexDeviceUsageStore(tmp_path / "devices.json"),
+        device_label=lambda: "Local Mac",
+    )
+    started: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        coordinator,
+        "_start_fetch",
+        lambda action, context: started.append((action, context)),
+    )
+
+    coordinator.sync_now()
+
+    assert started == [("observe", ())]
     assert coordinator._periodic_timer.isActive()
     coordinator.stop()
 

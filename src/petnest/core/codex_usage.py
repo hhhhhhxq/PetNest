@@ -18,9 +18,10 @@ import re
 import shutil
 import subprocess
 import sys
-from threading import Thread
+from threading import RLock, Thread
 from time import monotonic
 from typing import Any, Callable, Iterable, TextIO
+import uuid
 
 
 class CodexUsageError(RuntimeError):
@@ -92,12 +93,21 @@ class CodexModelUsage:
     model: str
     uses: int = 0
     total_tokens: int = 0
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    weighted_credits: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class LocalCodexUsage:
     tokens: CodexTokenUsage = CodexTokenUsage()
     model_usage: tuple[CodexModelUsage, ...] = ()
+    weighted_credits: float | None = None
+    weighted_complete: bool = True
+    pending_tokens: CodexTokenUsage = CodexTokenUsage()
+    anomaly_tokens: CodexTokenUsage = CodexTokenUsage()
+    duplicate_events: int = 0
     fast_uses: int = 0
     standard_uses: int = 0
     observed_start_used_percent: float | None = None
@@ -149,6 +159,138 @@ class CodexUsageReport:
     codex_home: Path
 
 
+@dataclass(frozen=True, slots=True)
+class CodexAccountInterval:
+    """A period during which PetNest directly observed one signed-in account."""
+
+    account_key: str
+    started_at: datetime
+    last_seen_at: datetime
+    ended_at: datetime | None = None
+    observer_id: str = ""
+
+
+class CodexAccountObservationStore:
+    """Persist non-secret account observation intervals for local attribution."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = RLock()
+        self._observer_id = uuid.uuid4().hex
+
+    def load(self) -> tuple[CodexAccountInterval, ...]:
+        with self._lock:
+            if not self.path.exists():
+                return ()
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return ()
+        values = raw.get("intervals") if isinstance(raw, dict) else None
+        if not isinstance(values, list):
+            return ()
+        intervals: list[CodexAccountInterval] = []
+        for value in values[-500:]:
+            if not isinstance(value, dict):
+                continue
+            account_key = str(value.get("account_key") or "")
+            started_at = _timestamp(value.get("started_at"))
+            last_seen_at = _timestamp(value.get("last_seen_at"))
+            ended_at = _timestamp(value.get("ended_at")) if value.get("ended_at") else None
+            observer_id = str(value.get("observer_id") or "")
+            if (
+                not re.fullmatch(r"[0-9a-f]{24}", account_key)
+                or started_at is None
+                or last_seen_at is None
+                or last_seen_at < started_at
+                or (ended_at is not None and ended_at < started_at)
+                or len(observer_id) > 64
+            ):
+                continue
+            intervals.append(
+                CodexAccountInterval(
+                    account_key=account_key,
+                    started_at=started_at,
+                    last_seen_at=last_seen_at,
+                    ended_at=ended_at,
+                    observer_id=observer_id,
+                )
+            )
+        intervals.sort(key=lambda item: item.started_at)
+        return tuple(intervals)
+
+    def observe(
+        self,
+        account_key: str | None,
+        observed_at: datetime,
+        *,
+        inferred_started_at: datetime | None = None,
+    ) -> tuple[CodexAccountInterval, ...]:
+        with self._lock:
+            observed = _aware_utc(observed_at)
+            inferred = _aware_utc(inferred_started_at) if inferred_started_at is not None else None
+            intervals = list(self.load())
+            open_index = next(
+                (
+                    index
+                    for index in range(len(intervals) - 1, -1, -1)
+                    if intervals[index].ended_at is None
+                    and intervals[index].observer_id == self._observer_id
+                ),
+                None,
+            )
+            current = intervals[open_index] if open_index is not None else None
+            if account_key is not None and not re.fullmatch(r"[0-9a-f]{24}", account_key):
+                raise ValueError("Codex 账号匿名键无效")
+            if current is not None and current.account_key == account_key:
+                intervals[open_index] = replace(
+                    current,
+                    last_seen_at=max(current.last_seen_at, observed),
+                )
+            else:
+                if current is not None and open_index is not None:
+                    intervals[open_index] = replace(current, ended_at=current.last_seen_at)
+                if account_key is not None:
+                    start = observed
+                    if not intervals and inferred is not None:
+                        start = min(observed, inferred)
+                    intervals.append(
+                        CodexAccountInterval(
+                            account_key=account_key,
+                            started_at=start,
+                            last_seen_at=observed,
+                            observer_id=self._observer_id,
+                        )
+                    )
+            self._save(intervals)
+            return tuple(intervals)
+
+    def _save(self, intervals: list[CodexAccountInterval]) -> None:
+        payload = {
+            "schema_version": 1,
+            "intervals": [
+                {
+                    "account_key": item.account_key,
+                    "started_at": item.started_at.isoformat(),
+                    "last_seen_at": item.last_seen_at.isoformat(),
+                    "ended_at": item.ended_at.isoformat() if item.ended_at is not None else None,
+                    "observer_id": item.observer_id,
+                }
+                for item in intervals[-500:]
+            ],
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(self.path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
 RpcTransport = Callable[
     [Path, list[dict[str, Any]], frozenset[int], float],
     dict[int, dict[str, Any]],
@@ -164,11 +306,53 @@ class CodexUsageClient:
         *,
         timeout: float = 20.0,
         transport: RpcTransport | None = None,
+        observation_store: CodexAccountObservationStore | None = None,
     ) -> None:
         self._executables = (executable,) if executable is not None else discover_codex_executables()
         self.executable = self._executables[0]
         self.timeout = timeout
         self._transport = transport or _stdio_rpc_transport
+        self._observation_store = observation_store
+
+    def observe_account(self) -> CodexAccount | None:
+        """Record the current login without fetching quota or scanning logs."""
+        responses = self._transport(
+            self.executable,
+            [
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "petnest", "version": "0.1.0"},
+                        "capabilities": {"experimentalApi": True},
+                    },
+                },
+                {"method": "initialized"},
+                {
+                    "id": 2,
+                    "method": "account/read",
+                    "params": {"refreshToken": False},
+                },
+            ],
+            frozenset({1, 2}),
+            self.timeout,
+        )
+        observed_at = datetime.now(UTC)
+        try:
+            account = _parse_account(responses[2], {})
+        except CodexUsageError:
+            if self._observation_store is not None:
+                self._observation_store.observe(None, observed_at)
+            return None
+        if self._observation_store is not None:
+            raw_home = responses[1].get("codexHome")
+            codex_home = Path(raw_home).expanduser() if isinstance(raw_home, str) else Path()
+            self._observation_store.observe(
+                account.key,
+                observed_at,
+                inferred_started_at=_auth_modified_at(codex_home, observed_at),
+            )
+        return account
 
     def fetch_report(self) -> CodexUsageReport:
         failures: list[tuple[Path, str]] = []
@@ -214,8 +398,14 @@ class CodexUsageClient:
             frozenset({1, 2, 3, 4}),
             self.timeout,
         )
+        fetched_at = datetime.now(UTC)
         initialize = responses[1]
-        account = _parse_account(responses[2], responses[3])
+        try:
+            account = _parse_account(responses[2], responses[3])
+        except CodexUsageError:
+            if self._observation_store is not None:
+                self._observation_store.observe(None, fetched_at)
+            raise
         limits = _parse_rate_limits(responses[3])
         primary = next((item for item in limits if item.limit_id == "codex"), limits[0])
         summary, daily = _parse_account_tokens(responses[4])
@@ -223,7 +413,20 @@ class CodexUsageClient:
         if not isinstance(raw_home, str) or not raw_home:
             raise CodexUsageError("Codex app-server 未返回本地数据目录")
         codex_home = Path(raw_home).expanduser()
-        local = scan_local_codex_usage(codex_home, primary)
+        intervals: tuple[CodexAccountInterval, ...] = ()
+        if self._observation_store is not None:
+            intervals = self._observation_store.observe(
+                account.key,
+                fetched_at,
+                inferred_started_at=_inferred_account_start(codex_home, primary, fetched_at),
+            )
+        local = scan_local_codex_usage(
+            codex_home,
+            primary,
+            account_key=account.key,
+            account_intervals=intervals,
+            now=fetched_at,
+        )
         return CodexUsageReport(
             account=account,
             rate_limits=limits,
@@ -231,7 +434,7 @@ class CodexUsageClient:
             account_tokens=summary,
             daily_usage=daily,
             local_usage=local,
-            fetched_at=datetime.now(UTC),
+            fetched_at=fetched_at,
             codex_home=codex_home,
         )
 
@@ -259,6 +462,17 @@ def discover_codex_executables() -> tuple[Path, ...]:
         )
     elif sys.platform == "win32":
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+        user_codex_root = local_app_data / "OpenAI/Codex/bin"
+        if user_codex_root.is_dir():
+            try:
+                user_binaries = sorted(
+                    user_codex_root.glob("*/codex.exe"),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                user_binaries = []
+            candidates.extend(user_binaries)
         candidates.extend(
             (
                 local_app_data / "Programs/ChatGPT/resources/codex.exe",
@@ -285,27 +499,66 @@ def discover_codex_executables() -> tuple[Path, ...]:
     raise CodexUsageError("未找到 Codex。请先安装或更新 ChatGPT/Codex 桌面应用。")
 
 
-def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> LocalCodexUsage:
-    """Sum local token events belonging to the current account's quota window.
+def _inferred_account_start(
+    codex_home: Path,
+    rate_limit: CodexRateLimit,
+    observed_at: datetime,
+) -> datetime:
+    window_start = rate_limit.primary.starts_at if rate_limit.primary is not None else None
+    inferred = _auth_modified_at(codex_home, observed_at)
+    if window_start is not None:
+        inferred = max(window_start, inferred)
+    return inferred
 
-    Token events include the backend quota reset timestamp. Matching that value
-    prevents ordinary account switches from mixing two accounts' local usage.
+
+def _auth_modified_at(codex_home: Path, observed_at: datetime) -> datetime:
+    try:
+        modified = datetime.fromtimestamp((codex_home / "auth.json").stat().st_mtime, UTC)
+    except OSError:
+        return observed_at
+    return min(observed_at, modified)
+
+
+def scan_local_codex_usage(
+    codex_home: Path,
+    rate_limit: CodexRateLimit,
+    *,
+    account_key: str | None = None,
+    account_intervals: Iterable[CodexAccountInterval] = (),
+    now: datetime | None = None,
+) -> LocalCodexUsage:
+    """Sum local token events attributable to an account's current quota window.
+
+    The enclosing ``turn_context.model`` is the source of truth for the model.
+    Embedded rate-limit data is supporting evidence because Codex can attach a
+    Spark/Bengalfox limit snapshot to an ordinary model token event.
     """
     window = rate_limit.primary
     if window is None or window.resets_at is None or window.starts_at is None:
         return LocalCodexUsage()
     reset_epoch = int(window.resets_at.timestamp())
     start = window.starts_at
-    end = datetime.now(UTC) + timedelta(minutes=1)
+    end = min(
+        _aware_utc(now or datetime.now(UTC)) + timedelta(minutes=1),
+        window.resets_at,
+    )
+    intervals = tuple(account_intervals)
     total = CodexTokenUsage()
-    model_totals: dict[str, list[int]] = {}
+    pending = CodexTokenUsage()
+    anomalies = CodexTokenUsage()
+    model_totals: dict[str, dict[str, int | float | bool]] = {}
+    weighted_total = 0.0
+    weighted_complete = True
     fast_uses = 0
     standard_uses = 0
     observations: list[tuple[datetime, float]] = []
     scanned = 0
     skipped = 0
-    seen_events: set[tuple[str, str, int]] = set()
-    for path in _session_files(codex_home, start):
+    paths = tuple(_session_files(codex_home, start))
+    fingerprint_paths = _session_ancestry_files(codex_home, paths)
+    first_occurrence, duplicates = _token_fingerprint_index(fingerprint_paths, end)
+    processed_events: set[str] = set()
+    for path in paths:
         try:
             stream = path.open("r", encoding="utf-8")
         except OSError:
@@ -313,9 +566,11 @@ def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> Loca
             continue
         scanned += 1
         current_model: str | None = None
+        current_turn_id: str | None = None
         current_speed = "default"
         current_turn_speed = "default"
         current_model_use_counted = False
+        previous_cumulative_total: int | None = None
         with stream:
             for line in stream:
                 raw = _json_line(line)
@@ -327,43 +582,109 @@ def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> Loca
                     continue
                 context = _local_model_context(raw, end)
                 if context is not None:
-                    current_model = context
+                    current_model, current_turn_id = context
                     current_turn_speed = current_speed
                     current_model_use_counted = False
                     continue
-                event = _local_token_event(raw, rate_limit.limit_id, reset_epoch, start, end)
+                event = _local_token_event(raw, end, turn_id=current_turn_id)
                 if event is None:
                     continue
-                timestamp, usage, used_percent = event
-                signature = (path.stem[-36:], timestamp.isoformat(), usage.total_tokens)
-                if signature in seen_events:
+                repeats_cumulative_total = (
+                    event.cumulative_total_tokens is not None
+                    and previous_cumulative_total is not None
+                    and event.cumulative_total_tokens == previous_cumulative_total
+                )
+                if event.cumulative_total_tokens is not None:
+                    previous_cumulative_total = event.cumulative_total_tokens
+                if repeats_cumulative_total and _has_total_without_breakdown(event):
                     continue
-                seen_events.add(signature)
-                total += usage
-                observations.append((timestamp, used_percent))
+                if (
+                    event.timestamp < start
+                    or event.timestamp >= window.resets_at
+                    or first_occurrence.get(event.fingerprint) != event.timestamp
+                    or event.fingerprint in processed_events
+                ):
+                    continue
+                processed_events.add(event.fingerprint)
+                attribution, anomalous = _event_attribution(
+                    event,
+                    current_model,
+                    reset_epoch,
+                    account_key,
+                    intervals,
+                )
+                if attribution != "current":
+                    pending += event.usage
+                    continue
+                total += event.usage
+                if anomalous:
+                    anomalies += event.usage
+                if (
+                    event.used_percent is not None
+                    and event.limit_id == rate_limit.limit_id
+                    and event.reset_epoch is not None
+                    and abs(event.reset_epoch - reset_epoch) <= 10
+                ):
+                    observations.append((event.timestamp, event.used_percent))
                 if current_model is not None:
-                    counters = model_totals.setdefault(current_model, [0, 0])
+                    counters = model_totals.setdefault(
+                        current_model,
+                        {
+                            "uses": 0,
+                            "total": 0,
+                            "input": 0,
+                            "cached": 0,
+                            "output": 0,
+                            "weighted": 0.0,
+                            "complete": True,
+                        },
+                    )
                     if not current_model_use_counted:
-                        counters[0] += 1
-                        if current_turn_speed == "priority":
+                        counters["uses"] = int(counters["uses"]) + 1
+                        if current_turn_speed in {"fast", "priority"}:
                             fast_uses += 1
                         else:
                             standard_uses += 1
                         current_model_use_counted = True
-                    counters[1] += usage.total_tokens
+                    counters["total"] = int(counters["total"]) + event.usage.total_tokens
+                    counters["input"] = int(counters["input"]) + event.usage.input_tokens
+                    counters["cached"] = int(counters["cached"]) + event.usage.cached_input_tokens
+                    counters["output"] = int(counters["output"]) + event.usage.output_tokens
+                    weighted = _weighted_credits(current_model, event.usage, current_turn_speed)
+                    if weighted is None:
+                        weighted_complete = False
+                        counters["complete"] = False
+                    else:
+                        weighted_total += weighted
+                        counters["weighted"] = float(counters["weighted"]) + weighted
+                else:
+                    weighted_complete = False
     observations.sort(key=lambda item: item[0])
     observed_start = observations[0][1] if observations else None
     observed_end = window.used_percent if observations else None
     models = tuple(
-        CodexModelUsage(model=model, uses=values[0], total_tokens=values[1])
+        CodexModelUsage(
+            model=model,
+            uses=int(values["uses"]),
+            total_tokens=int(values["total"]),
+            input_tokens=int(values["input"]),
+            cached_input_tokens=int(values["cached"]),
+            output_tokens=int(values["output"]),
+            weighted_credits=(float(values["weighted"]) if values["complete"] else None),
+        )
         for model, values in sorted(
             model_totals.items(),
-            key=lambda item: (-item[1][0], -item[1][1], item[0].casefold()),
+            key=lambda item: (-int(item[1]["uses"]), -int(item[1]["total"]), item[0].casefold()),
         )[:20]
     )
     return LocalCodexUsage(
         tokens=total,
         model_usage=models,
+        weighted_credits=weighted_total,
+        weighted_complete=weighted_complete,
+        pending_tokens=pending,
+        anomaly_tokens=anomalies,
+        duplicate_events=duplicates,
         fast_uses=fast_uses,
         standard_uses=standard_uses,
         observed_start_used_percent=observed_start,
@@ -396,6 +717,10 @@ class CodexAccountSnapshot:
     local_files_scanned: int = 0
     local_files_skipped: int = 0
     local_scan_status: str = "unknown"
+    local_weighted_credits: float | None = None
+    local_weighted_complete: bool = True
+    local_pending_tokens: int = 0
+    local_anomaly_tokens: int = 0
     finalized: bool = False
 
     @classmethod
@@ -426,6 +751,10 @@ class CodexAccountSnapshot:
             local_files_scanned=report.local_usage.files_scanned,
             local_files_skipped=report.local_usage.files_skipped,
             local_scan_status=report.local_usage.scan_status,
+            local_weighted_credits=report.local_usage.weighted_credits,
+            local_weighted_complete=report.local_usage.weighted_complete,
+            local_pending_tokens=report.local_usage.pending_tokens.total_tokens,
+            local_anomaly_tokens=report.local_usage.anomaly_tokens.total_tokens,
             finalized=False,
         )
 
@@ -490,6 +819,11 @@ class CodexUsageHistoryStore:
     def save_report(self, report: CodexUsageReport) -> CodexAccountSnapshot:
         snapshot = CodexAccountSnapshot.from_report(report)
         cycles = self._finalize_expired_cycles(self._load_all(), report)
+        cycles = [
+            item
+            for item in cycles
+            if not _same_account_cycle(item, snapshot)
+        ]
         by_cycle = {_account_cycle_key(item): item for item in cycles}
         by_cycle[_account_cycle_key(snapshot)] = snapshot
         # Keep enough weekly cycles for several accounts without unbounded state.
@@ -521,8 +855,8 @@ class CodexUsageHistoryStore:
                 temporary.unlink()
         return snapshot
 
-    @staticmethod
     def _finalize_expired_cycles(
+        self,
         snapshots: list[CodexAccountSnapshot],
         report: CodexUsageReport,
     ) -> list[CodexAccountSnapshot]:
@@ -556,7 +890,15 @@ class CodexUsageHistoryStore:
                 has_credits=False,
                 unlimited_credits=False,
             )
-            local_usage = scan_local_codex_usage(report.codex_home, historical_limit)
+            local_usage = scan_local_codex_usage(
+                report.codex_home,
+                historical_limit,
+                account_key=report.account.key,
+                account_intervals=CodexAccountObservationStore(
+                    codex_account_observation_path(self.path)
+                ).load(),
+                now=report.fetched_at,
+            )
             local = local_usage.tokens
             if local.total_tokens <= 0 and snapshot.local_tokens > 0:
                 finalized.append(replace(snapshot, finalized=True))
@@ -575,6 +917,10 @@ class CodexUsageHistoryStore:
                     local_files_scanned=local_usage.files_scanned,
                     local_files_skipped=local_usage.files_skipped,
                     local_scan_status=local_usage.scan_status,
+                    local_weighted_credits=local_usage.weighted_credits,
+                    local_weighted_complete=local_usage.weighted_complete,
+                    local_pending_tokens=local_usage.pending_tokens.total_tokens,
+                    local_anomaly_tokens=local_usage.anomaly_tokens.total_tokens,
                     finalized=True,
                 )
             )
@@ -584,6 +930,16 @@ class CodexUsageHistoryStore:
 def _account_cycle_key(snapshot: CodexAccountSnapshot) -> str:
     reset = snapshot.resets_at or snapshot.updated_at
     return f"{snapshot.account_key}:{reset}"
+
+
+def _same_account_cycle(first: CodexAccountSnapshot, second: CodexAccountSnapshot) -> bool:
+    if first.account_key != second.account_key:
+        return False
+    first_reset = _timestamp(first.resets_at)
+    second_reset = _timestamp(second.resets_at)
+    if first_reset is None or second_reset is None:
+        return first.resets_at == second.resets_at
+    return abs((first_reset - second_reset).total_seconds()) <= 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -612,6 +968,10 @@ class CodexDeviceUsageSnapshot:
     files_scanned: int = 0
     files_skipped: int = 0
     scan_status: str = "unknown"
+    weighted_credits: float | None = None
+    weighted_complete: bool = True
+    pending_tokens: int = 0
+    anomaly_tokens: int = 0
 
     @property
     def tokens(self) -> CodexTokenUsage:
@@ -666,6 +1026,10 @@ class CodexDeviceUsageSnapshot:
             files_scanned=report.local_usage.files_scanned,
             files_skipped=report.local_usage.files_skipped,
             scan_status=report.local_usage.scan_status,
+            weighted_credits=report.local_usage.weighted_credits,
+            weighted_complete=report.local_usage.weighted_complete,
+            pending_tokens=report.local_usage.pending_tokens.total_tokens,
+            anomaly_tokens=report.local_usage.anomaly_tokens.total_tokens,
         )
 
 
@@ -699,9 +1063,18 @@ class CodexDeviceUsageStore:
     def save(self, snapshot: CodexDeviceUsageSnapshot) -> None:
         if not _valid_device_snapshot(snapshot):
             raise ValueError("Codex 设备用量快照无效")
+        existing = [
+            item
+            for item in self._load_all()
+            if not (
+                item.account_key == snapshot.account_key
+                and item.device_id == snapshot.device_id
+                and abs(item.window_resets_at - snapshot.window_resets_at) <= 10
+            )
+        ]
         snapshots = {
             _device_cycle_key(item): item
-            for item in self._load_all()
+            for item in existing
         }
         snapshots[_device_cycle_key(snapshot)] = snapshot
         ordered = sorted(
@@ -766,6 +1139,13 @@ def codex_device_usage_path(account_history_path: Path) -> Path:
     return account_history_path.with_name(f"{stem}-devices{suffix}")
 
 
+def codex_account_observation_path(account_history_path: Path) -> Path:
+    """Derive a sibling non-secret account-observation file."""
+    suffix = account_history_path.suffix or ".json"
+    stem = account_history_path.stem if account_history_path.suffix else account_history_path.name
+    return account_history_path.with_name(f"{stem}-accounts{suffix}")
+
+
 def _device_cycle_key(snapshot: CodexDeviceUsageSnapshot) -> str:
     return f"{snapshot.account_key}:{snapshot.window_resets_at}:{snapshot.device_id}"
 
@@ -814,9 +1194,20 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
         snapshot.standard_uses,
         snapshot.files_scanned,
         snapshot.files_skipped,
+        snapshot.pending_tokens,
+        snapshot.anomaly_tokens,
     )
     return (
         all(isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10**18 for value in counters)
+        and (
+            snapshot.weighted_credits is None
+            or (
+                isinstance(snapshot.weighted_credits, (int, float))
+                and not isinstance(snapshot.weighted_credits, bool)
+                and 0 <= snapshot.weighted_credits <= 10**18
+            )
+        )
+        and isinstance(snapshot.weighted_complete, bool)
         and snapshot.scan_status
         in {"unknown", "matched", "no_matching_events", "unreadable_files", "no_session_files"}
         and snapshot.model_usage == _parse_model_usage(snapshot.model_usage)
@@ -1064,6 +1455,68 @@ def _session_files(codex_home: Path, start: datetime) -> Iterable[Path]:
     return tuple(sorted(chosen.values()))
 
 
+def _all_session_paths(codex_home: Path) -> dict[str, Path]:
+    chosen: dict[str, Path] = {}
+    for root_name in ("sessions", "archived_sessions"):
+        root = codex_home / root_name
+        if not root.is_dir():
+            continue
+        try:
+            for path in root.rglob("*.jsonl"):
+                session_id = path.stem[-36:]
+                existing = chosen.get(session_id)
+                if existing is None:
+                    chosen[session_id] = path
+                    continue
+                try:
+                    if path.stat().st_mtime > existing.stat().st_mtime:
+                        chosen[session_id] = path
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return chosen
+
+
+def _session_ancestry_files(codex_home: Path, paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Include parent/fork origins so replayed history can be deduplicated cheaply."""
+    by_id = _all_session_paths(codex_home)
+    selected: dict[str, Path] = {path.stem[-36:]: path for path in paths}
+    pending = list(paths)
+    while pending:
+        path = pending.pop()
+        for parent_id in _session_parent_ids(path):
+            if parent_id in selected:
+                continue
+            parent = by_id.get(parent_id)
+            if parent is not None:
+                selected[parent_id] = parent
+                pending.append(parent)
+    return tuple(sorted(selected.values()))
+
+
+def _session_parent_ids(path: Path) -> tuple[str, ...]:
+    try:
+        stream = path.open("r", encoding="utf-8")
+    except OSError:
+        return ()
+    with stream:
+        for line in stream:
+            raw = _json_line(line)
+            if raw is None or raw.get("type") != "session_meta":
+                continue
+            payload = raw.get("payload")
+            if not isinstance(payload, dict):
+                return ()
+            identifiers: list[str] = []
+            for key in ("parent_thread_id", "forked_from_id"):
+                value = str(payload.get(key) or "").strip()
+                if re.fullmatch(r"[0-9a-fA-F-]{36}", value):
+                    identifiers.append(value)
+            return tuple(dict.fromkeys(identifiers))
+    return ()
+
+
 def _json_line(line: str) -> dict[str, Any] | None:
     try:
         raw = json.loads(line)
@@ -1072,7 +1525,7 @@ def _json_line(line: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _local_model_context(raw: dict[str, Any], end: datetime) -> str | None:
+def _local_model_context(raw: dict[str, Any], end: datetime) -> tuple[str, str | None] | None:
     if raw.get("type") != "turn_context":
         return None
     timestamp = _timestamp(raw.get("timestamp"))
@@ -1082,7 +1535,8 @@ def _local_model_context(raw: dict[str, Any], end: datetime) -> str | None:
     model = str(payload.get("model") or "").strip()
     if not _valid_model_name(model):
         return None
-    return model
+    turn_id = str(payload.get("turn_id") or "").strip()
+    return model, turn_id[:80] or None
 
 
 def _local_speed_setting(raw: dict[str, Any], end: datetime) -> str | None:
@@ -1094,32 +1548,37 @@ def _local_speed_setting(raw: dict[str, Any], end: datetime) -> str | None:
     if timestamp is None or timestamp > end or not isinstance(settings, dict):
         return None
     service_tier = settings.get("service_tier")
-    return str(service_tier) if service_tier in {"priority", "default"} else None
+    return str(service_tier) if service_tier in {"fast", "priority", "default"} else None
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalTokenEvent:
+    timestamp: datetime
+    usage: CodexTokenUsage
+    limit_id: str | None
+    reset_epoch: int | None
+    used_percent: float | None
+    cumulative_total_tokens: int | None
+    fingerprint: str
 
 
 def _local_token_event(
     raw: dict[str, Any],
-    limit_id: str,
-    reset_epoch: int,
-    start: datetime,
     end: datetime,
-) -> tuple[datetime, CodexTokenUsage, float] | None:
+    *,
+    turn_id: str | None = None,
+) -> _LocalTokenEvent | None:
     payload = raw.get("payload")
     if not isinstance(payload, dict) or payload.get("type") != "token_count":
         return None
     timestamp = _timestamp(raw.get("timestamp"))
-    if timestamp is None or timestamp < start or timestamp > end:
+    if timestamp is None or timestamp > end:
         return None
     limits = payload.get("rate_limits")
-    if not isinstance(limits, dict) or str(limits.get("limit_id") or "codex") != limit_id:
-        return None
-    primary = limits.get("primary")
-    if not isinstance(primary, dict):
-        return None
-    event_reset = _integer(primary.get("resets_at"))
-    used_percent = _number(primary.get("used_percent"))
-    if event_reset is None or abs(event_reset - reset_epoch) > 10 or used_percent is None:
-        return None
+    limit_id = str(limits.get("limit_id") or "codex") if isinstance(limits, dict) else None
+    primary = limits.get("primary") if isinstance(limits, dict) else None
+    event_reset = _integer(primary.get("resets_at")) if isinstance(primary, dict) else None
+    used_percent = _number(primary.get("used_percent")) if isinstance(primary, dict) else None
     info = payload.get("info")
     last = info.get("last_token_usage") if isinstance(info, dict) else None
     if not isinstance(last, dict):
@@ -1133,7 +1592,163 @@ def _local_token_event(
         total_tokens=_nonnegative_integer(last.get("total_tokens")),
         requests=1,
     )
-    return timestamp, usage, max(0.0, min(100.0, used_percent))
+    cumulative = info.get("total_token_usage") if isinstance(info, dict) else None
+    cumulative_total = _integer(cumulative.get("total_tokens")) if isinstance(cumulative, dict) else None
+    if cumulative_total is not None and cumulative_total < 0:
+        cumulative_total = None
+    fingerprint_source: dict[str, object] = {"last": last}
+    if turn_id:
+        fingerprint_source["turn_id"] = turn_id
+    if isinstance(cumulative, dict):
+        fingerprint_source["total"] = cumulative
+    else:
+        # Old logs without cumulative usage cannot be safely matched across
+        # writes; include their timestamp to avoid collapsing legitimate twins.
+        fingerprint_source["timestamp"] = timestamp.isoformat()
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_source,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return _LocalTokenEvent(
+        timestamp=timestamp,
+        usage=usage,
+        limit_id=limit_id,
+        reset_epoch=event_reset,
+        used_percent=(max(0.0, min(100.0, used_percent)) if used_percent is not None else None),
+        cumulative_total_tokens=cumulative_total,
+        fingerprint=fingerprint,
+    )
+
+
+def _has_total_without_breakdown(event: _LocalTokenEvent) -> bool:
+    usage = event.usage
+    return (
+        usage.total_tokens > 0
+        and not any(
+            (
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.cache_write_input_tokens,
+                usage.output_tokens,
+                usage.reasoning_output_tokens,
+            )
+        )
+    )
+
+
+def _token_fingerprint_index(
+    paths: tuple[Path, ...],
+    end: datetime,
+) -> tuple[dict[str, datetime], int]:
+    first: dict[str, datetime] = {}
+    occurrences = 0
+    for path in paths:
+        try:
+            stream = path.open("r", encoding="utf-8")
+        except OSError:
+            continue
+        with stream:
+            turn_id: str | None = None
+            for line in stream:
+                raw = _json_line(line)
+                if raw is None:
+                    continue
+                context = _local_model_context(raw, end)
+                if context is not None:
+                    _model, turn_id = context
+                    continue
+                event = _local_token_event(raw, end, turn_id=turn_id)
+                if event is None:
+                    continue
+                occurrences += 1
+                earliest = first.get(event.fingerprint)
+                if earliest is None or event.timestamp < earliest:
+                    first[event.fingerprint] = event.timestamp
+    return first, max(0, occurrences - len(first))
+
+
+def _event_attribution(
+    event: _LocalTokenEvent,
+    model: str | None,
+    reset_epoch: int,
+    account_key: str | None,
+    intervals: tuple[CodexAccountInterval, ...],
+) -> tuple[str, bool]:
+    if account_key is not None and intervals and not _inside_account_interval(
+        event.timestamp,
+        account_key,
+        intervals,
+    ):
+        return "pending", False
+    reset_matches = event.reset_epoch is not None and abs(event.reset_epoch - reset_epoch) <= 10
+    if model is None:
+        return ("current", False) if event.limit_id == "codex" and reset_matches else ("pending", False)
+    if event.limit_id == "codex" and event.reset_epoch is not None and not reset_matches:
+        # A normal-Codex snapshot for another reset cycle is strong evidence of
+        # replayed history or another account, so keep it visible but pending.
+        return "pending", False
+    anomalous = event.limit_id not in {None, "codex"}
+    return "current", anomalous
+
+
+def _inside_account_interval(
+    timestamp: datetime,
+    account_key: str,
+    intervals: tuple[CodexAccountInterval, ...],
+) -> bool:
+    for interval in intervals:
+        if interval.account_key != account_key or timestamp < interval.started_at:
+            continue
+        confirmed_end = interval.ended_at or interval.last_seen_at
+        if timestamp <= confirmed_end:
+            return True
+    return False
+
+
+# Relative Codex credit rates per 1M tokens. They are intentionally kept as a
+# local estimate: the server's account percentage remains the authoritative
+# quota value and is only apportioned between devices using these weights.
+_MODEL_CREDIT_RATES: dict[str, tuple[float, float, float]] = {
+    "gpt-5.6-sol": (125.0, 12.5, 750.0),
+    "gpt-5.6-terra": (50.0, 5.0, 300.0),
+    "gpt-5.6-luna": (5.0, 0.5, 30.0),
+    "gpt-5.5": (125.0, 12.5, 750.0),
+    "gpt-5.4": (62.5, 6.25, 375.0),
+    "gpt-5.4-mini": (18.75, 1.875, 113.0),
+    "gpt-5.3-codex": (43.75, 4.375, 350.0),
+}
+
+
+def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float | None:
+    rates = _MODEL_CREDIT_RATES.get(model.strip().casefold())
+    if rates is None:
+        return None
+    if usage.total_tokens > 0 and not any(
+        (usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
+    ):
+        return None
+    input_rate, cached_rate, output_rate = rates
+    noncached_input = max(0, usage.input_tokens - usage.cached_input_tokens)
+    weighted = (
+        noncached_input * input_rate
+        + usage.cached_input_tokens * cached_rate
+        + usage.output_tokens * output_rate
+    ) / 1_000_000
+    if speed in {"fast", "priority"}:
+        normalized = model.strip().casefold()
+        factors = {
+            "gpt-5.6-sol": 2.5,
+            "gpt-5.6-terra": 2.5,
+            "gpt-5.6-luna": 2.5,
+            "gpt-5.5": 2.5,
+            "gpt-5.4": 2.0,
+        }
+        weighted *= factors.get(normalized, 1.0)
+    return weighted
 
 
 def _valid_model_name(value: object) -> bool:
@@ -1168,6 +1783,15 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
                     model=str(raw.get("model") or "").strip(),
                     uses=raw_uses,
                     total_tokens=raw_tokens,
+                    input_tokens=_nonnegative_integer(raw.get("input_tokens")),
+                    cached_input_tokens=_nonnegative_integer(raw.get("cached_input_tokens")),
+                    output_tokens=_nonnegative_integer(raw.get("output_tokens")),
+                    weighted_credits=(
+                        float(raw["weighted_credits"])
+                        if isinstance(raw.get("weighted_credits"), (int, float))
+                        and not isinstance(raw.get("weighted_credits"), bool)
+                        else None
+                    ),
                 )
             except (TypeError, ValueError):
                 continue
@@ -1180,6 +1804,10 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
             or isinstance(item.total_tokens, bool)
             or not 0 <= item.uses <= 10**12
             or not 0 <= item.total_tokens <= 10**18
+            or not 0 <= item.input_tokens <= 10**18
+            or not 0 <= item.cached_input_tokens <= 10**18
+            or not 0 <= item.output_tokens <= 10**18
+            or (item.weighted_credits is not None and not 0 <= item.weighted_credits <= 10**18)
         ):
             continue
         seen.add(item.model)
@@ -1198,6 +1826,12 @@ def _timestamp(value: object) -> datetime | None:
     if result.tzinfo is None:
         result = result.replace(tzinfo=UTC)
     return result.astimezone(UTC)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _mask_email(email: str) -> str:
@@ -1234,6 +1868,8 @@ def _nonnegative_integer(value: object) -> int:
 __all__ = [
     "AccountTokenSummary",
     "CodexAccount",
+    "CodexAccountInterval",
+    "CodexAccountObservationStore",
     "CodexAccountSnapshot",
     "CodexDeviceUsageSnapshot",
     "CodexDeviceUsageStore",
@@ -1250,5 +1886,6 @@ __all__ = [
     "discover_codex_executable",
     "discover_codex_executables",
     "scan_local_codex_usage",
+    "codex_account_observation_path",
     "codex_device_usage_path",
 ]

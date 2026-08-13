@@ -67,6 +67,12 @@ class CodexUsageSyncCoordinator(QObject):
         self._periodic_timer = QTimer(self)
         self._periodic_timer.setInterval(5 * 60 * 1000)
         self._periodic_timer.timeout.connect(self.sync_now)
+        self._periodic_timer.start()
+        self._startup_timer = QTimer(self)
+        self._startup_timer.setSingleShot(True)
+        self._startup_timer.setInterval(15_000)
+        self._startup_timer.timeout.connect(self.sync_now)
+        self._startup_timer.start()
 
         if auto_sync_discovered:
             service.peer_changed.connect(self._lan_peer_connected)
@@ -79,6 +85,7 @@ class CodexUsageSyncCoordinator(QObject):
     def stop(self) -> None:
         self._poll_timer.stop()
         self._periodic_timer.stop()
+        self._startup_timer.stop()
         self._trusted_peer_ids.clear()
         self._pending.clear()
 
@@ -88,8 +95,7 @@ class CodexUsageSyncCoordinator(QObject):
             for peer_id in self._trusted_peer_ids
             if any(peer.device_id == peer_id for peer in self.service.peers())
         )
-        if peer_ids:
-            self._start_fetch("initiate", peer_ids)
+        self._start_fetch("initiate" if peer_ids else "observe", peer_ids)
 
     def sync_report(self, report: CodexUsageReport) -> None:
         """Reuse a report already fetched by the usage dialog."""
@@ -113,8 +119,6 @@ class CodexUsageSyncCoordinator(QObject):
 
     def _peer_removed(self, device_id: str) -> None:
         self._trusted_peer_ids.discard(device_id)
-        if not self._trusted_peer_ids:
-            self._periodic_timer.stop()
 
     def _sync_requested(self, received: ReceivedCodexUsageSync) -> None:
         self._save_incoming_snapshot(received.snapshot)
@@ -155,7 +159,12 @@ class CodexUsageSyncCoordinator(QObject):
 
     def _fetch_worker(self, action: str, context: object) -> None:
         try:
-            report: object = self._client_factory().fetch_report()
+            client = self._client_factory()
+            report: object = (
+                client.observe_account()
+                if action == "observe"
+                else client.fetch_report()
+            )
         except Exception as error:  # noqa: BLE001 - delivered safely to the Qt thread.
             report = error
         self._results.put((action, context, report))
@@ -174,11 +183,15 @@ class CodexUsageSyncCoordinator(QObject):
             except Empty:
                 return
             if not isinstance(result, CodexUsageReport):
+                if action == "observe":
+                    continue
                 message = str(result) or result.__class__.__name__
                 self.status_changed.emit(f"Codex 用量同步失败：{message}")
                 continue
             if action == "respond" and isinstance(context, ReceivedCodexUsageSync):
                 self._respond_with_report(result, context)
+                continue
+            if action == "observe":
                 continue
             if action == "initiate" and isinstance(context, tuple):
                 self._send_report(result, tuple(str(item) for item in context))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 import logging
 import os
 from pathlib import Path
@@ -31,7 +31,13 @@ from petnest.core.app_update import (
     AppUpdateInfo,
 )
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
-from petnest.core.codex_usage import CodexDeviceUsageStore, codex_device_usage_path
+from petnest.core.codex_usage import (
+    CodexAccountObservationStore,
+    CodexDeviceUsageStore,
+    CodexUsageClient,
+    codex_account_observation_path,
+    codex_device_usage_path,
+)
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
@@ -195,6 +201,12 @@ class PetNest:
         self._settings_center_dialog: SettingsDialog | None = None
         self._codex_usage_dialog: CodexUsageDialog | None = None
         self._codex_usage_history_path = self.settings_manager.path.parent / "codex-usage-history.json"
+        self._codex_account_observations = CodexAccountObservationStore(
+            codex_account_observation_path(self._codex_usage_history_path)
+        )
+        self._codex_client_factory = lambda: CodexUsageClient(
+            observation_store=self._codex_account_observations
+        )
         self._pending_app_update: AppUpdateInfo | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
         cursor_root = (
@@ -241,6 +253,7 @@ class PetNest:
             self.lan_service,
             CodexDeviceUsageStore(codex_device_usage_path(self._codex_usage_history_path)),
             device_label=lambda: display_name_for(self.settings),
+            client_factory=self._codex_client_factory,
             parent=self.window,
         )
         self.codex_usage_sync.snapshots_changed.connect(self._codex_sync_snapshots_changed)
@@ -564,6 +577,7 @@ class PetNest:
             device_label=display_name_for(self.settings),
             on_connect_device=self.show_lan_interaction_dialog,
             on_report=self.codex_usage_sync.sync_report,
+            client_factory=self._codex_client_factory,
         )
         self._codex_usage_dialog = dialog
         dialog.finished.connect(lambda _result: self._clear_codex_usage_dialog(dialog))
@@ -796,6 +810,10 @@ class PetNest:
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
+        self._run_shutdown_step(
+            "记录 Codex 账号观察结束",
+            lambda: self._codex_account_observations.observe(None, datetime.now(UTC)),
+        )
         self._run_shutdown_step("停止局域网互动服务", self.lan_service.stop)
         self._run_shutdown_step("停止远程伙伴服务", self.remote_interaction_service.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)

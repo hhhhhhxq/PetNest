@@ -116,11 +116,19 @@ class LanPacketCodec:
             "files_scanned": _sync_counter(snapshot.files_scanned),
             "files_skipped": _sync_counter(snapshot.files_skipped),
             "scan_status": _sync_scan_status(snapshot.scan_status),
+            "weighted_credits": _sync_nonnegative_number(snapshot.weighted_credits),
+            "weighted_complete": snapshot.weighted_complete,
+            "pending_tokens": _sync_counter(snapshot.pending_tokens),
+            "anomaly_tokens": _sync_counter(snapshot.anomaly_tokens),
             "models": [
                 {
                     "model": _bounded_text(item.model, "Codex 模型名称", 80),
                     "uses": _sync_counter(item.uses),
                     "total_tokens": _sync_counter(item.total_tokens),
+                    "input_tokens": _sync_counter(item.input_tokens),
+                    "cached_input_tokens": _sync_counter(item.cached_input_tokens),
+                    "output_tokens": _sync_counter(item.output_tokens),
+                    "weighted_credits": _sync_nonnegative_number(item.weighted_credits),
                 }
                 for item in snapshot.model_usage[:20]
             ],
@@ -296,6 +304,10 @@ class LanPacketCodec:
             files_scanned=_sync_counter(usage.get("files_scanned", 0)),
             files_skipped=_sync_counter(usage.get("files_skipped", 0)),
             scan_status=_sync_scan_status(usage.get("scan_status")),
+            weighted_credits=_sync_nonnegative_number(usage.get("weighted_credits")),
+            weighted_complete=_sync_bool(usage.get("weighted_complete", False)),
+            pending_tokens=_sync_counter(usage.get("pending_tokens", 0)),
+            anomaly_tokens=_sync_counter(usage.get("anomaly_tokens", 0)),
         )
         return ReceivedCodexUsageSync(
             kind=str(raw["kind"]),
@@ -463,6 +475,20 @@ def _sync_scan_status(value: object) -> str:
     return normalized
 
 
+def _sync_nonnegative_number(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10**18:
+        raise LanProtocolError("Codex 加权用量无效")
+    return float(value)
+
+
+def _sync_bool(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise LanProtocolError("Codex 加权状态无效")
+    return value
+
+
 def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
     if value is None:
         return ()
@@ -482,6 +508,10 @@ def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
                 model=model,
                 uses=_sync_counter(raw.get("uses")),
                 total_tokens=_sync_counter(raw.get("total_tokens")),
+                input_tokens=_sync_counter(raw.get("input_tokens", 0)),
+                cached_input_tokens=_sync_counter(raw.get("cached_input_tokens", 0)),
+                output_tokens=_sync_counter(raw.get("output_tokens", 0)),
+                weighted_credits=_sync_nonnegative_number(raw.get("weighted_credits")),
             )
         )
     models.sort(key=lambda item: (-item.uses, -item.total_tokens, item.model.casefold()))
