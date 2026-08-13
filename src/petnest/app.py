@@ -1112,7 +1112,6 @@ class PetNest:
     def _configure_work_countdown(self) -> None:
         self.work_countdown.configure(
             enabled=self.settings.work_countdown_enabled,
-            start_time=self.settings.work_start_time,
             end_time=self.settings.work_end_time,
             daily_end_times=self.settings.daily_work_end_times,
             gap=self.settings.countdown_gap,

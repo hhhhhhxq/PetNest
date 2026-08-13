@@ -46,3 +46,10 @@ def test_application_update_entry_is_absent_without_platform_support(qtbot) -> N
     qtbot.addWidget(dialog)
 
     assert not hasattr(dialog, "app_update_button")
+
+
+def test_settings_dialog_has_no_work_start_time_control(qtbot) -> None:
+    dialog = SettingsDialog(Settings())
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "work_start_input")

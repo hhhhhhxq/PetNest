@@ -74,12 +74,20 @@ def test_custom_pets_root_round_trips(tmp_path) -> None:
 
 def test_work_countdown_settings_round_trip(tmp_path) -> None:
     path = tmp_path / "settings.json"
-    SettingsManager(path).save(
-        Settings(work_countdown_enabled=False, work_start_time="10:00", work_end_time="19:30")
-    )
+    SettingsManager(path).save(Settings(work_countdown_enabled=False, work_end_time="19:30"))
 
     loaded = SettingsManager(path).load()
-    assert (loaded.work_countdown_enabled, loaded.work_start_time, loaded.work_end_time) == (False, "10:00", "19:30")
+    assert (loaded.work_countdown_enabled, loaded.work_end_time) == (False, "19:30")
+
+
+def test_version_15_removes_legacy_work_start_time(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 15, "work_start_time": "10:00"}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert not hasattr(loaded, "work_start_time")
+    assert "work_start_time" not in json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_version_7_countdown_migrates_to_weekday_schedule(tmp_path) -> None:

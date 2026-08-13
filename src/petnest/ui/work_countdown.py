@@ -1,4 +1,4 @@
-"""显示在桌宠旁边的上下班倒计时提示。"""
+"""显示在桌宠旁边的下班倒计时提示。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ from PySide6.QtWidgets import QWidget
 
 def countdown_text(
     now: datetime,
-    start_text: str,
     end_text: str,
     daily_end_times: dict[str, str | None] | None = None,
 ) -> str:
-    """根据本地时间生成工作日状态文字。"""
+    """根据本地时间生成下班倒计时或休息状态文字。"""
     if daily_end_times is not None:
         scheduled_end = daily_end_times.get(str(now.weekday()))
         if scheduled_end is None:
@@ -22,14 +21,8 @@ def countdown_text(
         end_text = scheduled_end
     elif now.weekday() >= 5:
         return "今天休息 ☕"
-    start = _parse_time(start_text, time(9))
     end = _parse_time(end_text, time(18))
-    start_at = datetime.combine(now.date(), start, tzinfo=now.tzinfo)
     end_at = datetime.combine(now.date(), end, tzinfo=now.tzinfo)
-    if end_at <= start_at:
-        return "上下班时间设置有误"
-    if now < start_at:
-        return f"距离上班 {_duration(start_at - now)}"
     if now < end_at:
         return f"距离下班 {_duration(end_at - now)}"
     return "下班啦 🎉"
@@ -50,13 +43,12 @@ def _duration(delta: timedelta) -> str:
 
 
 class WorkCountdownWindow(QObject):
-    """上下班倒计时控制器；文字由宠物窗口统一绘制，不创建独立窗口。"""
+    """下班倒计时控制器；文字由宠物窗口统一绘制，不创建独立窗口。"""
 
     def __init__(self, pet_window: QWidget) -> None:
         super().__init__(pet_window)
         self.pet_window: QWidget | None = pet_window
         pet_window.destroyed.connect(self._pet_destroyed)
-        self.start_time = "09:00"
         self.end_time = "18:00"
         self.daily_end_times: dict[str, str | None] | None = None
         self.timer = QTimer(self)
@@ -67,7 +59,6 @@ class WorkCountdownWindow(QObject):
         self,
         *,
         enabled: bool,
-        start_time: str,
         end_time: str,
         daily_end_times: dict[str, str | None] | None,
         gap: int,
@@ -77,7 +68,6 @@ class WorkCountdownWindow(QObject):
         always_on_top: bool,
     ) -> None:
         del always_on_top
-        self.start_time = start_time
         self.end_time = end_time
         self.daily_end_times = daily_end_times
         if self.pet_window is not None:
@@ -92,9 +82,7 @@ class WorkCountdownWindow(QObject):
             self.pet_window.set_countdown_text(None) if self.pet_window is not None else None
 
     def refresh(self, now: datetime | None = None) -> None:
-        text = countdown_text(
-            now or datetime.now().astimezone(), self.start_time, self.end_time, self.daily_end_times
-        )
+        text = countdown_text(now or datetime.now().astimezone(), self.end_time, self.daily_end_times)
         if self.pet_window is not None:
             self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
 

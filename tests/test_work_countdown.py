@@ -1,4 +1,4 @@
-"""上下班倒计时文字与窗口配置。"""
+"""下班倒计时文字与窗口配置。"""
 
 from datetime import datetime
 
@@ -9,22 +9,22 @@ from pytestqt.qtbot import QtBot
 from petnest.ui.work_countdown import WorkCountdownWindow, countdown_text
 
 
-def test_countdown_before_and_during_work() -> None:
+def test_countdown_before_and_during_work_only_shows_time_until_end() -> None:
     monday = datetime(2026, 8, 10, 8, 30, 0)
-    assert countdown_text(monday, "09:00", "18:00") == "距离上班 00:30:00"
-    assert countdown_text(monday.replace(hour=17, minute=0), "09:00", "18:00") == "距离下班 01:00:00"
+    assert countdown_text(monday, "18:00") == "距离下班 09:30:00"
+    assert countdown_text(monday.replace(hour=17, minute=0), "18:00") == "距离下班 01:00:00"
 
 
 def test_countdown_after_work_and_on_weekend() -> None:
     monday = datetime(2026, 8, 10, 18, 0, 0)
     sunday = datetime(2026, 8, 9, 10, 0, 0)
-    assert countdown_text(monday, "09:00", "18:00") == "下班啦 🎉"
-    assert countdown_text(sunday, "09:00", "18:00") == "今天休息 ☕"
+    assert countdown_text(monday, "18:00") == "下班啦 🎉"
+    assert countdown_text(sunday, "18:00") == "今天休息 ☕"
 
 
-def test_invalid_work_period_is_explained() -> None:
+def test_invalid_end_time_uses_default() -> None:
     monday = datetime(2026, 8, 10, 10, 0, 0)
-    assert countdown_text(monday, "18:00", "09:00") == "上下班时间设置有误"
+    assert countdown_text(monday, "invalid") == "距离下班 08:00:00"
 
 
 def test_daily_schedule_uses_each_days_end_time() -> None:
@@ -34,9 +34,9 @@ def test_daily_schedule_uses_each_days_end_time() -> None:
     tuesday = datetime(2026, 8, 11, 16, 30)
     wednesday = datetime(2026, 8, 12, 10, 0)
 
-    assert countdown_text(monday, "09:30", "18:00", schedule) == "距离下班 01:00:00"
-    assert countdown_text(tuesday, "09:30", "18:00", schedule) == "距离下班 00:30:00"
-    assert countdown_text(wednesday, "09:30", "18:00", schedule) == "今天休息 ☕"
+    assert countdown_text(monday, "18:00", schedule) == "距离下班 01:00:00"
+    assert countdown_text(tuesday, "18:00", schedule) == "距离下班 00:30:00"
+    assert countdown_text(wednesday, "18:00", schedule) == "今天休息 ☕"
 
 
 def test_countdown_controller_never_creates_a_second_visible_window(qtbot: QtBot) -> None:
@@ -55,7 +55,6 @@ def test_countdown_controller_never_creates_a_second_visible_window(qtbot: QtBot
     countdown = WorkCountdownWindow(pet)
     countdown.configure(
         enabled=True,
-        start_time="09:00",
         end_time="18:00",
         daily_end_times=None,
         gap=0,

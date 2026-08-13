@@ -71,8 +71,6 @@ class SettingsDialog(QDialog):
         self.system_sleep_input.setValue(settings.system_sleep_seconds)
         self.work_countdown_input = QCheckBox(self)
         self.work_countdown_input.setChecked(settings.work_countdown_enabled)
-        self.work_start_input = QTimeEdit(QTime.fromString(settings.work_start_time, "HH:mm"), self)
-        self.work_start_input.setDisplayFormat("HH:mm")
         self.countdown_gap_input = QSpinBox(self)
         self.countdown_gap_input.setRange(0, 80)
         self.countdown_gap_input.setSuffix(" 像素")
@@ -102,8 +100,7 @@ class SettingsDialog(QDialog):
         layout.addRow("启用系统空闲动作", self.system_idle_input)
         layout.addRow("无操作后无聊", self.system_bored_input)
         layout.addRow("无操作后睡觉", self.system_sleep_input)
-        layout.addRow("显示上下班倒计时", self.work_countdown_input)
-        layout.addRow("上班时间", self.work_start_input)
+        layout.addRow("显示下班倒计时", self.work_countdown_input)
         layout.addRow("倒计时与宠物间距", self.countdown_gap_input)
         layout.addRow("倒计时最小宽度", self.countdown_width_input)
         layout.addRow("倒计时卡片高度", self.countdown_height_input)
@@ -115,7 +112,7 @@ class SettingsDialog(QDialog):
             row = QWidget(self)
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            enabled_input = QCheckBox("上班", row)
+            enabled_input = QCheckBox("启用", row)
             enabled_input.setChecked(configured is not None)
             end_input = QTimeEdit(QTime.fromString(configured or settings.work_end_time, "HH:mm"), row)
             end_input.setDisplayFormat("HH:mm")
@@ -155,7 +152,6 @@ class SettingsDialog(QDialog):
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),
             work_countdown_enabled=self.work_countdown_input.isChecked(),
-            work_start_time=self.work_start_input.time().toString("HH:mm"),
             work_end_time=legacy_end,
             daily_work_end_times=daily_end_times,
             countdown_gap=self.countdown_gap_input.value(),
