@@ -54,18 +54,23 @@ class LanPeer:
 
 @dataclass(frozen=True, slots=True)
 class ChatDraft:
-    """A validated chat payload addressed to one LAN device."""
+    """A validated direct or current-LAN-room chat payload."""
 
     target_device_id: str
     kind: ChatMessageKind
     text: str | None = None
     image_data: bytes | None = None
     image_name: str | None = None
+    is_group: bool = False
 
     def __post_init__(self) -> None:
         target = str(self.target_device_id).strip()
         if not target or len(target) > 64:
             raise ValueError("聊天目标设备无效")
+        if not isinstance(self.is_group, bool):
+            raise ValueError("聊天会话类型无效")
+        if not self.is_group and target == "*":
+            raise ValueError("群聊目标必须使用群聊消息")
         object.__setattr__(self, "target_device_id", target)
         try:
             kind = self.kind if isinstance(self.kind, ChatMessageKind) else ChatMessageKind(self.kind)
@@ -106,6 +111,18 @@ class ChatDraft:
     def image(cls, target_device_id: str, data: bytes, name: str) -> "ChatDraft":
         return cls(target_device_id, ChatMessageKind.IMAGE, image_data=data, image_name=name)
 
+    @classmethod
+    def group_text_message(cls, text: str) -> "ChatDraft":
+        return cls("*", ChatMessageKind.TEXT, text=text, is_group=True)
+
+    @classmethod
+    def group_emoji(cls, emoji: str) -> "ChatDraft":
+        return cls("*", ChatMessageKind.EMOJI, text=emoji, is_group=True)
+
+    @classmethod
+    def group_image(cls, data: bytes, name: str) -> "ChatDraft":
+        return cls("*", ChatMessageKind.IMAGE, image_data=data, image_name=name, is_group=True)
+
     def to_message(self, *, sender_device_id: str, sender_name: str) -> "LanChatMessage":
         return LanChatMessage(
             message_id=uuid.uuid4().hex,
@@ -117,6 +134,7 @@ class ChatDraft:
             text=self.text,
             image_data=self.image_data,
             image_name=self.image_name,
+            is_group=self.is_group,
         )
 
 
@@ -131,8 +149,11 @@ class LanChatMessage:
     text: str | None = None
     image_data: bytes | None = None
     image_name: str | None = None
+    is_group: bool = False
 
     def peer_device_id(self, local_device_id: str) -> str:
+        if self.is_group:
+            return "*"
         return self.target_device_id if self.sender_device_id == local_device_id else self.sender_device_id
 
 

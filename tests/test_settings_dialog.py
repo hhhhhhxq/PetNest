@@ -41,6 +41,13 @@ def test_settings_dialog_persists_remote_partner_toggle(qtbot) -> None:
     assert dialog.updated_settings().remote_interaction_enabled is False
 
 
+def test_settings_dialog_preserves_group_chat_notification_toggle(qtbot) -> None:
+    dialog = SettingsDialog(Settings(lan_group_chat_notifications_enabled=False))
+    qtbot.addWidget(dialog)
+
+    assert dialog.updated_settings().lan_group_chat_notifications_enabled is False
+
+
 def test_mouse_follow_and_cursor_scale_controls_are_linked(qtbot) -> None:
     dialog = SettingsDialog(Settings(mouse_follow_enabled=True, cursor_style_enabled=True))
     qtbot.addWidget(dialog)

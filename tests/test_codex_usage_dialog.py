@@ -18,6 +18,7 @@ from petnest.core.codex_usage import (
     CodexAccount,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
+    CodexModelUsage,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -70,6 +71,11 @@ def _report(tmp_path: Path) -> CodexUsageReport:
                 total_tokens=1_500,
                 requests=1,
             ),
+            model_usage=(
+                CodexModelUsage("gpt-5.6-sol", uses=1, total_tokens=1_500),
+            ),
+            fast_uses=3,
+            standard_uses=1,
             observed_start_used_percent=1.5,
             observed_end_used_percent=4,
         ),
@@ -104,6 +110,7 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert "pe*****@example.com" in dialog.current_account_label.text()
     assert dialog.account_lifetime_label.text() == "累计  9,000,000"
     assert dialog.local_total_label.text() == "Token  1,500"
+    assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
 
@@ -128,6 +135,9 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
         reasoning_output_tokens=0,
         total_tokens=2_000,
         requests=3,
+        model_usage=(CodexModelUsage("gpt-5.5", uses=3, total_tokens=2_000),),
+        fast_uses=1,
+        standard_uses=3,
     )
     store.save(remote)
 
@@ -154,9 +164,72 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     assert "2,000 Token" in ranking[0]
     assert "3 次模型请求" in ranking[0]
     assert "Home Mac（本机）" in ranking[1]
-    assert dialog.device_ranking_title.text() == "同账号设备 Token 排名"
-    assert all("额度" not in line for line in ranking)
+    assert dialog.device_ranking_title.text() == "同账号设备用量排名（预估）"
+    assert "约 2.3% 额度" in ranking[0]
+    assert "常用 gpt-5.5（3 次）" in ranking[0]
+    assert "速度 极快 25% · 标准 75%" in ranking[0]
+    assert "速度 极快 75% · 标准 25%" in ranking[1]
+    assert "常用模型  gpt-5.6-sol（1 次）" in dialog.local_models_label.text()
+    assert all("预估" in line or "约" in line for line in ranking)
     assert "非单机归因" in dialog.local_quota_change_label.text()
+
+    store.save(replace(remote, total_tokens=3_000, updated_at=datetime.now(UTC).isoformat()))
+    dialog.reload_synced_usage(report.account.key)
+    refreshed = dialog.device_ranking_list.item(0).text()
+    assert "3,000 Token" in refreshed
+    assert "约 2.7% 额度" in refreshed
+
+
+def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    history_path = tmp_path / "history.json"
+    reset = datetime.now(UTC) + timedelta(days=5)
+    CodexDeviceUsageStore(codex_device_usage_path(history_path)).save(
+        CodexDeviceUsageSnapshot(
+            account_key="c" * 24,
+            device_id="office-pc",
+            device_label="Office PC",
+            window_resets_at=int(reset.timestamp()),
+            window_duration_minutes=10_080,
+            updated_at=datetime.now(UTC).isoformat(),
+            input_tokens=4_000,
+            cached_input_tokens=0,
+            cache_write_input_tokens=0,
+            output_tokens=1_000,
+            reasoning_output_tokens=0,
+            total_tokens=5_000,
+            requests=5,
+            model_usage=(CodexModelUsage("gpt-5.5", uses=5, total_tokens=5_000),),
+            account_label="ne*****@example.com",
+            plan_type="pro",
+            account_used_percent=12.0,
+            fast_uses=5,
+            standard_uses=5,
+        )
+    )
+
+    dialog = CodexUsageDialog(
+        history_path,
+        auto_refresh=False,
+        device_id="local-device",
+        device_label="Home Mac",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.account_selector.currentData() == "c" * 24
+    assert "ne*****@example.com" in dialog.account_selector.currentText()
+    assert "局域网" in dialog.account_selector.currentText()
+    assert "本机未登录" in dialog.current_account_label.text()
+    remaining = next(
+        item
+        for item in dialog.findChildren(QLabel, "quotaRemainingLabel")
+        if item.text() == "剩余 88%"
+    )
+    assert remaining.text() == "剩余 88%"
+    ranking = dialog.device_ranking_list.item(0).text()
+    assert "Office PC" in ranking
+    assert "约 12% 额度" in ranking
+    assert "常用 gpt-5.5（5 次）" in ranking
+    assert "速度 极快 50% · 标准 50%" in ranking
 
 
 def test_device_ranking_switches_with_multiple_accounts(qtbot: pytest.QtBot, tmp_path: Path) -> None:

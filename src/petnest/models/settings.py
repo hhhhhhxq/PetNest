@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 19
+    SCHEMA_VERSION = 20
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -48,6 +48,7 @@ class Settings:
     external_event_server_enabled: bool = False
     external_event_port: int = 18486
     lan_interaction_enabled: bool = True
+    lan_group_chat_notifications_enabled: bool = True
     remote_interaction_enabled: bool = True
     system_idle_enabled: bool = True
     system_idle_seconds: int = 300

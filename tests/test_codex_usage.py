@@ -12,6 +12,7 @@ from petnest.core.codex_usage import (
     CodexAccount,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
+    CodexModelUsage,
     CodexRateWindow,
     CodexTokenUsage,
     CodexUsageClient,
@@ -110,6 +111,31 @@ def _write_token_event(
     return line
 
 
+def _write_model_context(path: Path, *, timestamp: datetime, model: str) -> None:
+    event = {
+        "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+        "type": "turn_context",
+        "payload": {"model": model},
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event) + "\n")
+
+
+def _write_speed_setting(path: Path, *, timestamp: datetime, service_tier: str) -> None:
+    event = {
+        "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
+        "type": "event_msg",
+        "payload": {
+            "type": "thread_settings_applied",
+            "thread_settings": {"service_tier": service_tier},
+        },
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event) + "\n")
+
+
 def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_path: Path) -> None:
     responses, reset = _responses(tmp_path)
     event_time = datetime.now(UTC) - timedelta(hours=1)
@@ -118,6 +144,11 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
         / "sessions"
         / event_time.strftime("%Y/%m/%d")
         / f"rollout-{event_time:%Y-%m-%dT%H-%M-%S}-11111111-1111-1111-1111-111111111111.jsonl"
+    )
+    _write_model_context(
+        session,
+        timestamp=event_time - timedelta(seconds=1),
+        model="gpt-5.6-sol",
     )
     matching_line = _write_token_event(
         session,
@@ -139,6 +170,25 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
         reset=reset + timedelta(hours=3),
         used_percent=70,
         total_tokens=99_999,
+    )
+    _write_speed_setting(
+        session,
+        timestamp=event_time + timedelta(minutes=2),
+        service_tier="priority",
+    )
+    _write_model_context(
+        session,
+        timestamp=event_time + timedelta(minutes=2, seconds=1),
+        model="gpt-5.6-sol",
+    )
+    _write_token_event(
+        session,
+        timestamp=event_time + timedelta(minutes=2, seconds=2),
+        reset=reset,
+        used_percent=2,
+        total_tokens=500,
+        input_tokens=400,
+        output_tokens=100,
     )
     seen_methods: list[str] = []
 
@@ -166,11 +216,16 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     assert report.primary_limit.primary is not None
     assert report.primary_limit.primary.remaining_percent == 96
     assert report.account_tokens.lifetime_tokens == 9_000_000
-    assert report.local_usage.tokens.total_tokens == 1_500
-    assert report.local_usage.tokens.input_tokens == 1_000
-    assert report.local_usage.tokens.output_tokens == 200
+    assert report.local_usage.tokens.total_tokens == 2_000
+    assert report.local_usage.tokens.input_tokens == 1_400
+    assert report.local_usage.tokens.output_tokens == 300
     assert report.local_usage.tokens.cached_input_tokens == 300
-    assert report.local_usage.tokens.requests == 1
+    assert report.local_usage.tokens.requests == 2
+    assert report.local_usage.model_usage == (
+        CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=2_000),
+    )
+    assert report.local_usage.fast_uses == 1
+    assert report.local_usage.standard_uses == 1
     assert report.local_usage.observed_quota_change == 2.5
 
 
@@ -227,6 +282,7 @@ def test_device_store_separates_accounts_windows_and_replaces_each_device(tmp_pa
         reasoning_output_tokens=0,
         total_tokens=1_000,
         requests=2,
+        model_usage=(CodexModelUsage("gpt-5.5", uses=2, total_tokens=1_000),),
     )
     replacement = replace(first, total_tokens=1_500, requests=3)
     other_account = replace(first, account_key="b" * 24, device_id="laptop-b")
@@ -245,6 +301,7 @@ def test_device_store_separates_accounts_windows_and_replaces_each_device(tmp_pa
     assert matching[0].device_id == "laptop-a"
     assert matching[0].tokens.total_tokens == 1_500
     assert matching[0].tokens.requests == 3
+    assert matching[0].model_usage[0].model == "gpt-5.5"
     assert len(store.load()) == 3
 
 

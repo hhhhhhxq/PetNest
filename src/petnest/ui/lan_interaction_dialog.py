@@ -90,7 +90,7 @@ class ManualPeerDialog(QDialog):
         layout.addWidget(self.ip_input)
         hint = QLabel(
             "端口固定为 18487。连接成功后可局域网聊天，"
-            "也会互换同一 Codex 账号、同一额度周期的 Token 计数；"
+            "也会互换双方当前 Codex 账号的脱敏用量快照；"
             "不传输登录凭据。",
             self,
         )
@@ -153,6 +153,7 @@ class LanInteractionDialog(QDialog):
 
     _PREVIEW_SAMPLE_COUNT = 9
     _DEFAULT_STATUS = "选择一个互动方式后发送"
+    _LAN_GROUP_DEVICE_ID = "*"
 
     def __init__(
         self,
@@ -215,6 +216,9 @@ class LanInteractionDialog(QDialog):
         return replace(
             self._settings,
             lan_interaction_enabled=self.lan_enabled_input.isChecked(),
+            lan_group_chat_notifications_enabled=(
+                self.group_chat_notifications_input.isChecked()
+            ),
             remote_interaction_enabled=self.remote_enabled_input.isChecked(),
         )
 
@@ -270,7 +274,9 @@ class LanInteractionDialog(QDialog):
             self._selected_peer = None
             self._peer_changed(None, None)
             return
-        row = next((index for index, peer in enumerate(self._peers) if peer.device_id == selected_id), 0)
+        row = self._peer_row(selected_id)
+        if row < 0:
+            row = 1
         self.peer_list.setCurrentRow(row)
 
     def update_peer(self, peer: LanPeer) -> None:
@@ -399,6 +405,14 @@ class LanInteractionDialog(QDialog):
         self.lan_enabled_input.setChecked(self._settings.lan_interaction_enabled)
         self.lan_enabled_input.setToolTip("只在局域网内广播昵称和宠物名称，不上传图片或动效文件")
         nearby_layout.addWidget(self.lan_enabled_input)
+        self.group_chat_notifications_input = QCheckBox("群聊消息显示宠物气泡", nearby_page)
+        self.group_chat_notifications_input.setChecked(
+            self._settings.lan_group_chat_notifications_enabled
+        )
+        self.group_chat_notifications_input.setToolTip(
+            "关闭后仍会接收群聊消息并显示在群聊记录中，只是不在桌宠旁弹出"
+        )
+        nearby_layout.addWidget(self.group_chat_notifications_input)
         self.peer_list = QListWidget(nearby_page)
         self.peer_list.setObjectName("peerList")
         self.peer_list.setSpacing(4)
@@ -613,6 +627,13 @@ class LanInteractionDialog(QDialog):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             item.setForeground(QColor("#8f8b86"))
             return
+        group_item = QListWidgetItem(
+            self._peer_avatar("群聊"),
+            f"局域网群聊\n当前 {len(self._peers)} 台设备 · 文字/表情/图片",
+            self.peer_list,
+        )
+        group_item.setData(Qt.ItemDataRole.UserRole, self._LAN_GROUP_DEVICE_ID)
+        group_item.setToolTip("发送给当前已连接的所有局域网设备")
         for peer in self._peers:
             label = peer.display_name.strip() or f"用户-{peer.device_id[-4:].upper()}"
             item = QListWidgetItem(self._peer_avatar(label), label + "\n" + peer.subtitle, self.peer_list)
@@ -667,7 +688,7 @@ class LanInteractionDialog(QDialog):
 
     def _select_initial_values(self) -> None:
         if self._peers:
-            self.peer_list.setCurrentRow(0)
+            self.peer_list.setCurrentRow(1)
         self._update_nickname_button()
         self._mode_changed(0)
 
@@ -678,9 +699,24 @@ class LanInteractionDialog(QDialog):
         self._selected_peer = None
         if current is not None:
             peer_id = current.data(Qt.ItemDataRole.UserRole)
-            self._selected_peer = next((peer for peer in self._peers if peer.device_id == peer_id), None)
+            if peer_id == self._LAN_GROUP_DEVICE_ID and self._peers:
+                self._selected_peer = LanPeer(
+                    device_id=self._LAN_GROUP_DEVICE_ID,
+                    display_name="局域网群聊",
+                    online=True,
+                    transport="lan_group",
+                )
+                self.mode_tabs.setCurrentIndex(3)
+            else:
+                self._selected_peer = next(
+                    (peer for peer in self._peers if peer.device_id == peer_id),
+                    None,
+                )
         label = self._selected_peer.display_name if self._selected_peer else "未选择设备"
-        self.recipient_label.setText(f"发送给：{label}" if self._selected_peer else label)
+        if self._selected_peer is not None and self._selected_peer.transport == "lan_group":
+            self.recipient_label.setText(f"发送给：{label}（{len(self._peers)} 台）")
+        else:
+            self.recipient_label.setText(f"发送给：{label}" if self._selected_peer else label)
         self._refresh_chat_messages()
         self._refresh_send_button()
 
@@ -700,7 +736,7 @@ class LanInteractionDialog(QDialog):
     def _device_tab_changed(self, index: int) -> None:
         if index == 0:
             if self._peers and self.peer_list.currentRow() < 0:
-                self.peer_list.setCurrentRow(0)
+                self.peer_list.setCurrentRow(1)
             self._peer_changed(self.peer_list.currentItem(), None)
         else:
             if self._remote_peers and self.remote_peer_list.currentRow() < 0:
@@ -832,18 +868,27 @@ class LanInteractionDialog(QDialog):
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor("#8f8b86"))
             return
-        if peer.transport != "lan":
+        if peer.transport not in {"lan", "lan_group"}:
             empty = QListWidgetItem("图片聊天暂仅支持局域网附近设备", self.chat_list)
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor("#8f8b86"))
             return
-        messages = [
-            item
-            for item in self._chat_messages
-            if item.peer_device_id(self._settings.device_id) == peer.device_id
-        ]
+        if peer.transport == "lan_group":
+            messages = [item for item in self._chat_messages if item.is_group]
+        else:
+            messages = [
+                item
+                for item in self._chat_messages
+                if not item.is_group
+                and item.peer_device_id(self._settings.device_id) == peer.device_id
+            ]
         if not messages:
-            empty = QListWidgetItem("还没有消息，发个表情打招呼吧", self.chat_list)
+            text = (
+                "还没有群聊消息，发个表情和大家打招呼吧"
+                if peer.transport == "lan_group"
+                else "还没有消息，发个表情打招呼吧"
+            )
+            empty = QListWidgetItem(text, self.chat_list)
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor("#8f8b86"))
             return
@@ -885,6 +930,14 @@ class LanInteractionDialog(QDialog):
             self.send_button.setEnabled(False)
             return
         self.send_button.setEnabled(True)
+        if (
+            self._selected_peer is not None
+            and self._selected_peer.transport == "lan_group"
+            and self.mode_tabs.currentIndex() != 3
+        ):
+            self.send_button.setText("群聊仅支持聊天")
+            self.send_button.setEnabled(False)
+            return
         if self.mode_tabs.currentIndex() == 0:
             self.send_button.setText("发送招呼" if self.greeting_button.isChecked() else "发送爱心")
             return
@@ -894,7 +947,10 @@ class LanInteractionDialog(QDialog):
         if self.mode_tabs.currentIndex() == 2:
             self.send_button.setText("发送动效")
             return
-        local_peer = self._selected_peer is not None and self._selected_peer.transport == "lan"
+        local_peer = self._selected_peer is not None and (
+            self._selected_peer.transport == "lan"
+            or (self._selected_peer.transport == "lan_group" and bool(self._peers))
+        )
         self.send_button.setText("发送消息")
         self.send_button.setEnabled(local_peer and bool(self.chat_input.toPlainText().strip()))
         self.chat_input.setEnabled(local_peer)
@@ -903,7 +959,7 @@ class LanInteractionDialog(QDialog):
             button.setEnabled(local_peer)
 
     def interaction_draft(self) -> InteractionDraft | None:
-        if self._selected_peer is None:
+        if self._selected_peer is None or self._selected_peer.transport == "lan_group":
             return None
         try:
             if self.mode_tabs.currentIndex() == 0:
@@ -956,11 +1012,17 @@ class LanInteractionDialog(QDialog):
             self._show_feedback("发送失败，请稍后重试", timeout_ms=self._failure_feedback_timeout_ms)
 
     def _send_chat_text(self) -> None:
-        if self._selected_peer is None or self._selected_peer.transport != "lan":
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         try:
-            draft = ChatDraft.text_message(self._selected_peer.device_id, self.chat_input.toPlainText())
+            if self._selected_peer.transport == "lan_group":
+                draft = ChatDraft.group_text_message(self.chat_input.toPlainText())
+            else:
+                draft = ChatDraft.text_message(
+                    self._selected_peer.device_id,
+                    self.chat_input.toPlainText(),
+                )
         except ValueError as error:
             self._show_feedback(str(error), timeout_ms=self._failure_feedback_timeout_ms)
             return
@@ -968,18 +1030,21 @@ class LanInteractionDialog(QDialog):
             self.chat_input.clear()
 
     def _send_chat_emoji(self, emoji: str) -> None:
-        if self._selected_peer is None or self._selected_peer.transport != "lan":
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         try:
-            draft = ChatDraft.emoji(self._selected_peer.device_id, emoji)
+            if self._selected_peer.transport == "lan_group":
+                draft = ChatDraft.group_emoji(emoji)
+            else:
+                draft = ChatDraft.emoji(self._selected_peer.device_id, emoji)
         except ValueError as error:
             self._show_feedback(str(error), timeout_ms=self._failure_feedback_timeout_ms)
             return
         self._send_chat_draft(draft)
 
     def _choose_chat_image(self) -> None:
-        if self._selected_peer is None or self._selected_peer.transport != "lan":
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         filename, _filter = QFileDialog.getOpenFileName(
@@ -993,7 +1058,10 @@ class LanInteractionDialog(QDialog):
         self._show_feedback("正在压缩图片…")
         try:
             data, safe_name = prepare_chat_image(Path(filename))
-            draft = ChatDraft.image(self._selected_peer.device_id, data, safe_name)
+            if self._selected_peer.transport == "lan_group":
+                draft = ChatDraft.group_image(data, safe_name)
+            else:
+                draft = ChatDraft.image(self._selected_peer.device_id, data, safe_name)
         except (LanChatImageError, OSError, ValueError) as error:
             self._show_feedback(str(error), timeout_ms=self._failure_feedback_timeout_ms)
             return
@@ -1024,9 +1092,23 @@ class LanInteractionDialog(QDialog):
         self._status_reset_timer.stop()
         if self._pending_send_draft is None:
             if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() == 3:
-                self.status_label.setText("聊天记录仅保留在本次 PetNest 运行中")
+                if (
+                    self._selected_peer is not None
+                    and self._selected_peer.transport == "lan_group"
+                ):
+                    self.status_label.setText(
+                        f"群聊将发送给当前 {len(self._peers)} 台设备；记录仅在本次运行保留"
+                    )
+                else:
+                    self.status_label.setText("聊天记录仅保留在本次 PetNest 运行中")
             else:
                 self.status_label.setText(self._DEFAULT_STATUS)
+
+    def _peer_row(self, device_id: str | None) -> int:
+        for row in range(self.peer_list.count()):
+            if self.peer_list.item(row).data(Qt.ItemDataRole.UserRole) == device_id:
+                return row
+        return -1
 
     def _edit_nickname(self) -> None:
         dialog = NicknameDialog(self._settings.nickname, self)
@@ -1056,6 +1138,7 @@ def _dialog_stylesheet() -> str:
     QTabWidget::pane { border: 1px solid #ebe6df; border-radius: 12px; background: #fff; }
     QTabBar::tab { background: transparent; color: #8f8b86; padding: 8px 18px; border: none; }
     QTabBar::tab:selected { color: #a85d3e; background: #fff0e8; border-radius: 8px; }
+    QCheckBox { color: #4b4641; spacing: 7px; padding: 2px 0; background: transparent; }
     QPushButton#quickCard { background: #fcfbf9; border: 1px solid #ebe6df; border-radius: 14px; color: #4b4641; font-size: 13px; }
     QPushButton#quickCard:checked { background: #fff0e8; border: 1px solid #efbda2; color: #a85d3e; }
     QPushButton#primaryButton { background: #df8f68; color: white; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 600; }

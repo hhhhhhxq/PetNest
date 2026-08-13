@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from io import BytesIO
 import os
 from time import time
@@ -14,7 +15,7 @@ from PySide6.QtCore import QCoreApplication
 from petnest.core.lan_chat import prepare_chat_image
 from petnest.core.lan_interaction import LanPacketCodec, LanProtocolError
 from petnest.core.lan_service import LanInteractionService
-from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, LanPeer
+from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, LanChatMessage, LanPeer
 from petnest.models.settings import Settings
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 
@@ -62,6 +63,25 @@ def test_chat_codec_rejects_a_message_for_another_device() -> None:
         assert "目标设备" in str(error)
     else:
         raise AssertionError("message addressed to another device must be rejected")
+
+
+def test_chat_codec_marks_a_room_message_for_the_receiving_device() -> None:
+    room_message = ChatDraft.group_text_message("大家好").to_message(
+        sender_device_id="sender",
+        sender_name="Sender",
+    )
+    frame = LanPacketCodec.encode_chat_frame(
+        replace(room_message, target_device_id="receiver")
+    )
+
+    decoded = LanPacketCodec.decode_chat_message(
+        frame[4:],
+        local_device_id="receiver",
+    )
+
+    assert decoded.is_group is True
+    assert decoded.peer_device_id("receiver") == "*"
+    assert decoded.text == "大家好"
 
 
 def test_chat_codec_rejects_image_bytes_that_are_not_a_safe_jpeg() -> None:
@@ -138,6 +158,63 @@ def test_services_exchange_text_and_image_over_local_tcp(qtbot) -> None:
         receiver.stop()
 
 
+def test_service_fans_group_chat_out_to_all_current_lan_peers(qtbot) -> None:
+    sender = LanInteractionService(
+        device_id="sender",
+        display_name="发送方",
+        pet_name="平安",
+        port=0,
+    )
+    first = LanInteractionService(
+        device_id="first",
+        display_name="甲",
+        pet_name="橘猫",
+        port=0,
+    )
+    second = LanInteractionService(
+        device_id="second",
+        display_name="乙",
+        pet_name="白猫",
+        port=0,
+    )
+    first_received = []
+    second_received = []
+    first.chat_message_received.connect(first_received.append)
+    second.chat_message_received.connect(second_received.append)
+    try:
+        assert sender.start()
+        assert first.start()
+        assert second.start()
+        assert sender.probe_peer("127.0.0.1", first.port)
+        qtbot.waitUntil(
+            lambda: any(peer.device_id == "first" for peer in sender.peers()),
+            timeout=2_000,
+        )
+        assert sender.probe_peer("127.0.0.1", second.port)
+        qtbot.waitUntil(
+            lambda: any(peer.device_id == "second" for peer in sender.peers())
+            and any(peer.device_id == "sender" for peer in second.peers()),
+            timeout=2_000,
+        )
+
+        assert sender.send_chat(ChatDraft.group_text_message("局域网开会啦"))
+        qtbot.waitUntil(
+            lambda: len(first_received) == 1 and len(second_received) == 1,
+            timeout=2_000,
+        )
+
+        assert first_received[0].is_group is True
+        assert second_received[0].is_group is True
+        assert first_received[0].message_id == second_received[0].message_id
+        assert len(sender.chat_messages("*")) == 1
+        assert len(first.chat_messages("*")) == 1
+        assert len(second.chat_messages("*")) == 1
+    finally:
+        sender.stop()
+        first.stop()
+        second.stop()
+
+
 def test_chat_page_sends_text_and_emoji_to_selected_lan_peer(qtbot) -> None:
     sent: list[ChatDraft] = []
     dialog = LanInteractionDialog(
@@ -158,6 +235,93 @@ def test_chat_page_sends_text_and_emoji_to_selected_lan_peer(qtbot) -> None:
         ChatDraft.emoji("peer", "😊"),
     ]
     assert dialog.chat_input.toPlainText() == ""
+
+
+def test_chat_page_sends_group_text_and_emoji_to_every_visible_peer(qtbot) -> None:
+    sent: list[ChatDraft] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local"),
+        peers=[
+            LanPeer("first", "甲", "橘猫", "192.168.1.20", 18_487),
+            LanPeer("second", "乙", "白猫", "192.168.1.21", 18_487),
+        ],
+        on_chat_send=lambda draft: sent.append(draft) or True,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.peer_list.item(0).text().startswith("局域网群聊")
+    dialog.peer_list.setCurrentRow(0)
+    assert dialog.mode_tabs.currentIndex() == 3
+    assert "2 台" in dialog.recipient_label.text()
+    dialog.chat_input.setPlainText("大家好")
+    dialog.send_button.click()
+    dialog.emoji_buttons[0].click()
+
+    assert sent == [
+        ChatDraft.group_text_message("大家好"),
+        ChatDraft.group_emoji("😊"),
+    ]
+
+
+def test_chat_page_keeps_group_and_private_conversations_separate(qtbot) -> None:
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local"),
+        peers=[LanPeer("peer", "邻居", "橘猫", "192.168.1.20", 18_487)],
+        chat_messages=[
+            LanChatMessage(
+                "private-message",
+                "peer",
+                "邻居",
+                "local",
+                ChatMessageKind.TEXT,
+                1,
+                text="私聊内容",
+            ),
+            LanChatMessage(
+                "group-message",
+                "peer",
+                "邻居",
+                "local",
+                ChatMessageKind.TEXT,
+                2,
+                text="群聊内容",
+                is_group=True,
+            ),
+        ],
+    )
+    qtbot.addWidget(dialog)
+    dialog.mode_tabs.setCurrentIndex(3)
+
+    assert dialog.chat_list.count() == 1
+    assert "私聊内容" in dialog.chat_list.item(0).text()
+
+    dialog.peer_list.setCurrentRow(0)
+
+    assert dialog.chat_list.count() == 1
+    assert "群聊内容" in dialog.chat_list.item(0).text()
+
+
+def test_chat_page_prepares_an_image_for_group_chat(tmp_path, qtbot, monkeypatch) -> None:
+    source = tmp_path / "group.png"
+    Image.new("RGB", (120, 80), (120, 170, 230)).save(source)
+    sent: list[ChatDraft] = []
+    monkeypatch.setattr(
+        "petnest.ui.lan_interaction_dialog.QFileDialog.getOpenFileName",
+        lambda *_args, **_kwargs: (str(source), ""),
+    )
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local"),
+        peers=[LanPeer("peer", "邻居", "橘猫", "192.168.1.20", 18_487)],
+        on_chat_send=lambda draft: sent.append(draft) or True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.peer_list.setCurrentRow(0)
+
+    dialog.chat_image_button.click()
+
+    assert len(sent) == 1
+    assert sent[0].kind is ChatMessageKind.IMAGE
+    assert sent[0].is_group is True
 
 
 def test_chat_page_prepares_and_sends_selected_image(tmp_path, qtbot, monkeypatch) -> None:

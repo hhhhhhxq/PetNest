@@ -86,8 +86,20 @@ class CodexTokenUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexModelUsage:
+    """One model's local usage within a quota window."""
+
+    model: str
+    uses: int = 0
+    total_tokens: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class LocalCodexUsage:
     tokens: CodexTokenUsage = CodexTokenUsage()
+    model_usage: tuple[CodexModelUsage, ...] = ()
+    fast_uses: int = 0
+    standard_uses: int = 0
     observed_start_used_percent: float | None = None
     observed_end_used_percent: float | None = None
     files_scanned: int = 0
@@ -241,6 +253,9 @@ def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> Loca
     start = window.starts_at
     end = datetime.now(UTC) + timedelta(minutes=1)
     total = CodexTokenUsage()
+    model_totals: dict[str, list[int]] = {}
+    fast_uses = 0
+    standard_uses = 0
     observations: list[tuple[datetime, float]] = []
     scanned = 0
     skipped = 0
@@ -252,9 +267,26 @@ def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> Loca
             skipped += 1
             continue
         scanned += 1
+        current_model: str | None = None
+        current_speed = "default"
+        current_turn_speed = "default"
+        current_model_use_counted = False
         with stream:
             for line in stream:
-                event = _local_token_event(line, rate_limit.limit_id, reset_epoch, start, end)
+                raw = _json_line(line)
+                if raw is None:
+                    continue
+                speed = _local_speed_setting(raw, end)
+                if speed is not None:
+                    current_speed = speed
+                    continue
+                context = _local_model_context(raw, end)
+                if context is not None:
+                    current_model = context
+                    current_turn_speed = current_speed
+                    current_model_use_counted = False
+                    continue
+                event = _local_token_event(raw, rate_limit.limit_id, reset_epoch, start, end)
                 if event is None:
                     continue
                 timestamp, usage, used_percent = event
@@ -264,11 +296,31 @@ def scan_local_codex_usage(codex_home: Path, rate_limit: CodexRateLimit) -> Loca
                 seen_events.add(signature)
                 total += usage
                 observations.append((timestamp, used_percent))
+                if current_model is not None:
+                    counters = model_totals.setdefault(current_model, [0, 0])
+                    if not current_model_use_counted:
+                        counters[0] += 1
+                        if current_turn_speed == "priority":
+                            fast_uses += 1
+                        else:
+                            standard_uses += 1
+                        current_model_use_counted = True
+                    counters[1] += usage.total_tokens
     observations.sort(key=lambda item: item[0])
     observed_start = observations[0][1] if observations else None
     observed_end = window.used_percent if observations else None
+    models = tuple(
+        CodexModelUsage(model=model, uses=values[0], total_tokens=values[1])
+        for model, values in sorted(
+            model_totals.items(),
+            key=lambda item: (-item[1][0], -item[1][1], item[0].casefold()),
+        )[:20]
+    )
     return LocalCodexUsage(
         tokens=total,
+        model_usage=models,
+        fast_uses=fast_uses,
+        standard_uses=standard_uses,
         observed_start_used_percent=observed_start,
         observed_end_used_percent=observed_end,
         files_scanned=scanned,
@@ -293,6 +345,9 @@ class CodexAccountSnapshot:
     local_requests: int
     observed_quota_change: float | None
     account_lifetime_tokens: int | None
+    local_model_usage: tuple[CodexModelUsage, ...] = ()
+    local_fast_uses: int = 0
+    local_standard_uses: int = 0
     finalized: bool = False
 
     @classmethod
@@ -317,6 +372,9 @@ class CodexAccountSnapshot:
             local_requests=local.requests,
             observed_quota_change=report.local_usage.observed_quota_change,
             account_lifetime_tokens=report.account_tokens.lifetime_tokens,
+            local_model_usage=report.local_usage.model_usage,
+            local_fast_uses=report.local_usage.fast_uses,
+            local_standard_uses=report.local_usage.standard_uses,
             finalized=False,
         )
 
@@ -365,7 +423,11 @@ class CodexUsageHistoryStore:
                 if not isinstance(value, dict):
                     continue
                 try:
-                    snapshot = CodexAccountSnapshot(**value)
+                    normalized = dict(value)
+                    normalized["local_model_usage"] = _parse_model_usage(
+                        normalized.get("local_model_usage")
+                    )
+                    snapshot = CodexAccountSnapshot(**normalized)
                 except (TypeError, ValueError):
                     continue
                 key = (snapshot.account_key, snapshot.resets_at)
@@ -386,7 +448,7 @@ class CodexUsageHistoryStore:
             reverse=True,
         )[:200]
         payload = {
-            "schema_version": 1,
+            "schema_version": 3,
             "cycles": {_account_cycle_key(item): asdict(item) for item in ordered},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -443,7 +505,8 @@ class CodexUsageHistoryStore:
                 has_credits=False,
                 unlimited_credits=False,
             )
-            local = scan_local_codex_usage(report.codex_home, historical_limit).tokens
+            local_usage = scan_local_codex_usage(report.codex_home, historical_limit)
+            local = local_usage.tokens
             if local.total_tokens <= 0 and snapshot.local_tokens > 0:
                 finalized.append(replace(snapshot, finalized=True))
                 continue
@@ -455,6 +518,9 @@ class CodexUsageHistoryStore:
                     local_cached_input_tokens=local.cached_input_tokens,
                     local_output_tokens=local.output_tokens,
                     local_requests=local.requests,
+                    local_model_usage=local_usage.model_usage,
+                    local_fast_uses=local_usage.fast_uses,
+                    local_standard_uses=local_usage.standard_uses,
                     finalized=True,
                 )
             )
@@ -483,6 +549,12 @@ class CodexDeviceUsageSnapshot:
     reasoning_output_tokens: int
     total_tokens: int
     requests: int
+    model_usage: tuple[CodexModelUsage, ...] = ()
+    account_label: str = ""
+    plan_type: str = ""
+    account_used_percent: float | None = None
+    fast_uses: int = 0
+    standard_uses: int = 0
 
     @property
     def tokens(self) -> CodexTokenUsage:
@@ -528,6 +600,12 @@ class CodexDeviceUsageSnapshot:
             reasoning_output_tokens=tokens.reasoning_output_tokens,
             total_tokens=tokens.total_tokens,
             requests=tokens.requests,
+            model_usage=report.local_usage.model_usage,
+            account_label=report.account.label,
+            plan_type=report.account.plan_type,
+            account_used_percent=(window.used_percent if window is not None else None),
+            fast_uses=report.local_usage.fast_uses,
+            standard_uses=report.local_usage.standard_uses,
         )
 
 
@@ -572,7 +650,7 @@ class CodexDeviceUsageStore:
             reverse=True,
         )[:500]
         payload = {
-            "schema_version": 2,
+            "schema_version": 4,
             "devices": {
                 _device_cycle_key(item): asdict(item)
                 for item in ordered
@@ -609,7 +687,11 @@ class CodexDeviceUsageStore:
             if not isinstance(value, dict):
                 continue
             try:
-                snapshot = CodexDeviceUsageSnapshot(**value)
+                normalized = dict(value)
+                normalized["model_usage"] = _parse_model_usage(
+                    normalized.get("model_usage")
+                )
+                snapshot = CodexDeviceUsageSnapshot(**normalized)
             except (TypeError, ValueError):
                 continue
             if _valid_device_snapshot(snapshot):
@@ -637,6 +719,18 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
         return False
     if not snapshot.device_label or len(snapshot.device_label) > 40:
         return False
+    if len(snapshot.account_label) > 100 or any(
+        char in snapshot.account_label for char in "\r\n\x00"
+    ):
+        return False
+    if len(snapshot.plan_type) > 40 or any(char in snapshot.plan_type for char in "\r\n\x00"):
+        return False
+    if snapshot.account_used_percent is not None and (
+        isinstance(snapshot.account_used_percent, bool)
+        or not isinstance(snapshot.account_used_percent, (int, float))
+        or not 0 <= snapshot.account_used_percent <= 100
+    ):
+        return False
     if not isinstance(snapshot.window_resets_at, int) or snapshot.window_resets_at <= 0:
         return False
     if snapshot.window_duration_minutes is not None and (
@@ -656,8 +750,13 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
         snapshot.reasoning_output_tokens,
         snapshot.total_tokens,
         snapshot.requests,
+        snapshot.fast_uses,
+        snapshot.standard_uses,
     )
-    return all(isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10**18 for value in counters)
+    return (
+        all(isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10**18 for value in counters)
+        and snapshot.model_usage == _parse_model_usage(snapshot.model_usage)
+    )
 
 
 def _stdio_rpc_transport(
@@ -893,19 +992,46 @@ def _session_files(codex_home: Path, start: datetime) -> Iterable[Path]:
     return tuple(sorted(chosen.values()))
 
 
+def _json_line(line: str) -> dict[str, Any] | None:
+    try:
+        raw = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _local_model_context(raw: dict[str, Any], end: datetime) -> str | None:
+    if raw.get("type") != "turn_context":
+        return None
+    timestamp = _timestamp(raw.get("timestamp"))
+    payload = raw.get("payload")
+    if timestamp is None or timestamp > end or not isinstance(payload, dict):
+        return None
+    model = str(payload.get("model") or "").strip()
+    if not _valid_model_name(model):
+        return None
+    return model
+
+
+def _local_speed_setting(raw: dict[str, Any], end: datetime) -> str | None:
+    payload = raw.get("payload")
+    if not isinstance(payload, dict) or payload.get("type") != "thread_settings_applied":
+        return None
+    timestamp = _timestamp(raw.get("timestamp"))
+    settings = payload.get("thread_settings")
+    if timestamp is None or timestamp > end or not isinstance(settings, dict):
+        return None
+    service_tier = settings.get("service_tier")
+    return str(service_tier) if service_tier in {"priority", "default"} else None
+
+
 def _local_token_event(
-    line: str,
+    raw: dict[str, Any],
     limit_id: str,
     reset_epoch: int,
     start: datetime,
     end: datetime,
 ) -> tuple[datetime, CodexTokenUsage, float] | None:
-    try:
-        raw = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(raw, dict):
-        return None
     payload = raw.get("payload")
     if not isinstance(payload, dict) or payload.get("type") != "token_count":
         return None
@@ -936,6 +1062,58 @@ def _local_token_event(
         requests=1,
     )
     return timestamp, usage, max(0.0, min(100.0, used_percent))
+
+
+def _valid_model_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and len(value.strip()) <= 80
+        and not any(char in value for char in "\r\n\x00")
+    )
+
+
+def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    parsed: list[CodexModelUsage] = []
+    seen: set[str] = set()
+    for raw in value[:20]:
+        if isinstance(raw, CodexModelUsage):
+            item = raw
+        elif isinstance(raw, dict):
+            raw_uses = raw.get("uses", 0)
+            raw_tokens = raw.get("total_tokens", 0)
+            if (
+                isinstance(raw_uses, bool)
+                or not isinstance(raw_uses, int)
+                or isinstance(raw_tokens, bool)
+                or not isinstance(raw_tokens, int)
+            ):
+                continue
+            try:
+                item = CodexModelUsage(
+                    model=str(raw.get("model") or "").strip(),
+                    uses=raw_uses,
+                    total_tokens=raw_tokens,
+                )
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+        if (
+            not _valid_model_name(item.model)
+            or item.model in seen
+            or isinstance(item.uses, bool)
+            or isinstance(item.total_tokens, bool)
+            or not 0 <= item.uses <= 10**12
+            or not 0 <= item.total_tokens <= 10**18
+        ):
+            continue
+        seen.add(item.model)
+        parsed.append(item)
+    parsed.sort(key=lambda item: (-item.uses, -item.total_tokens, item.model.casefold()))
+    return tuple(parsed)
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -987,6 +1165,7 @@ __all__ = [
     "CodexAccountSnapshot",
     "CodexDeviceUsageSnapshot",
     "CodexDeviceUsageStore",
+    "CodexModelUsage",
     "CodexRateLimit",
     "CodexRateWindow",
     "CodexTokenUsage",

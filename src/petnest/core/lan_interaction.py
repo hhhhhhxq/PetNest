@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from petnest.core.codex_usage import CodexDeviceUsageSnapshot
+from petnest.core.codex_usage import CodexDeviceUsageSnapshot, CodexModelUsage
 from petnest.core.lan_chat import LanChatImageError, validate_chat_image_data
 from petnest.models.lan_interaction import (
     ChatDraft,
@@ -111,6 +111,16 @@ class LanPacketCodec:
             "reasoning_output_tokens": _sync_counter(snapshot.reasoning_output_tokens),
             "total_tokens": _sync_counter(snapshot.total_tokens),
             "requests": _sync_counter(snapshot.requests),
+            "fast_uses": _sync_counter(snapshot.fast_uses),
+            "standard_uses": _sync_counter(snapshot.standard_uses),
+            "models": [
+                {
+                    "model": _bounded_text(item.model, "Codex 模型名称", 80),
+                    "uses": _sync_counter(item.uses),
+                    "total_tokens": _sync_counter(item.total_tokens),
+                }
+                for item in snapshot.model_usage[:20]
+            ],
         }
         return {
             "version": LAN_PROTOCOL_VERSION,
@@ -120,6 +130,9 @@ class LanPacketCodec:
             "sender_device_id": _identity(snapshot.device_id, "发送方设备 ID"),
             "sender_name": _bounded_text(snapshot.device_label, "发送方名称", MAX_DISPLAY_NAME_LENGTH),
             "account_key": snapshot.account_key,
+            "account_label": _optional_bounded_text(snapshot.account_label, 100),
+            "plan_type": _optional_bounded_text(snapshot.plan_type, 40),
+            "account_used_percent": _sync_percent(snapshot.account_used_percent),
             "window_resets_at": _sync_epoch(snapshot.window_resets_at),
             "window_duration_minutes": duration,
             "updated_at": _sync_epoch(int(updated.timestamp())),
@@ -137,6 +150,7 @@ class LanPacketCodec:
             text=message.text,
             image_data=message.image_data,
             image_name=message.image_name,
+            is_group=message.is_group,
         )
         packet: dict[str, Any] = {
             "version": LAN_PROTOCOL_VERSION,
@@ -146,6 +160,7 @@ class LanPacketCodec:
             "sender_name": sender_name,
             "target_device_id": target,
             "type": draft.kind.value,
+            "scope": "group" if draft.is_group else "direct",
             "created_at": _sync_epoch(message.created_at),
         }
         if draft.kind is ChatMessageKind.IMAGE:
@@ -269,6 +284,12 @@ class LanPacketCodec:
             reasoning_output_tokens=_sync_counter(usage.get("reasoning_output_tokens")),
             total_tokens=_sync_counter(usage.get("total_tokens")),
             requests=_sync_counter(usage.get("requests")),
+            model_usage=_sync_model_usage(usage.get("models")),
+            account_label=_optional_bounded_text(raw.get("account_label"), 100),
+            plan_type=_optional_bounded_text(raw.get("plan_type"), 40),
+            account_used_percent=_sync_percent(raw.get("account_used_percent")),
+            fast_uses=_sync_counter(usage.get("fast_uses", 0)),
+            standard_uses=_sync_counter(usage.get("standard_uses", 0)),
         )
         return ReceivedCodexUsageSync(
             kind=str(raw["kind"]),
@@ -297,6 +318,10 @@ class LanPacketCodec:
             kind = ChatMessageKind(raw.get("type"))
         except (TypeError, ValueError) as error:
             raise LanProtocolError("聊天消息类型无效") from error
+        scope = raw.get("scope", "direct")
+        if scope not in {"direct", "group"}:
+            raise LanProtocolError("聊天会话类型无效")
+        is_group = scope == "group"
         if kind is ChatMessageKind.IMAGE:
             encoded = raw.get("image_data")
             if not isinstance(encoded, str) or len(encoded) > 2_000_000:
@@ -311,11 +336,17 @@ class LanPacketCodec:
                 validate_chat_image_data(image_data)
             except LanChatImageError as error:
                 raise LanProtocolError(str(error)) from error
-            draft = ChatDraft.image(target, image_data, str(raw.get("image_name") or ""))
+            draft = ChatDraft(
+                target,
+                kind,
+                image_data=image_data,
+                image_name=str(raw.get("image_name") or ""),
+                is_group=is_group,
+            )
         elif kind is ChatMessageKind.EMOJI:
-            draft = ChatDraft.emoji(target, str(raw.get("text") or ""))
+            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group)
         else:
-            draft = ChatDraft.text_message(target, str(raw.get("text") or ""))
+            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group)
         return LanChatMessage(
             message_id=message_id,
             sender_device_id=sender_id,
@@ -326,6 +357,7 @@ class LanPacketCodec:
             text=draft.text,
             image_data=draft.image_data,
             image_name=draft.image_name,
+            is_group=draft.is_group,
         )
 
     @classmethod
@@ -371,6 +403,17 @@ def _bounded_text(value: object, label: str, maximum: int) -> str:
     return value
 
 
+def _optional_bounded_text(value: object, maximum: int) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise LanProtocolError("可选文字无效")
+    value = value.strip()
+    if len(value) > maximum or any(char in value for char in "\r\n\x00"):
+        raise LanProtocolError("可选文字无效")
+    return value
+
+
 def _port(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_535:
         raise LanProtocolError("端口无效")
@@ -391,3 +434,36 @@ def _sync_counter(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10**18:
         raise LanProtocolError("Codex Token 计数无效")
     return value
+
+
+def _sync_percent(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
+        raise LanProtocolError("Codex 额度百分比无效")
+    return float(value)
+
+
+def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > 20:
+        raise LanProtocolError("Codex 模型用量无效")
+    models: list[CodexModelUsage] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise LanProtocolError("Codex 模型用量无效")
+        model = _bounded_text(raw.get("model"), "Codex 模型名称", 80)
+        if model in seen:
+            raise LanProtocolError("Codex 模型用量重复")
+        seen.add(model)
+        models.append(
+            CodexModelUsage(
+                model=model,
+                uses=_sync_counter(raw.get("uses")),
+                total_tokens=_sync_counter(raw.get("total_tokens")),
+            )
+        )
+    models.sort(key=lambda item: (-item.uses, -item.total_tokens, item.model.casefold()))
+    return tuple(models)

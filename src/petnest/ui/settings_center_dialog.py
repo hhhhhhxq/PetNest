@@ -265,6 +265,11 @@ class SettingsCenterDialog(QDialog):
         self.lan_interaction_input = QCheckBox(self)
         self.lan_interaction_input.setChecked(settings.lan_interaction_enabled)
         self.lan_interaction_input.setVisible(False)
+        self.lan_group_chat_notifications_input = QCheckBox(self)
+        self.lan_group_chat_notifications_input.setChecked(
+            settings.lan_group_chat_notifications_enabled
+        )
+        self.lan_group_chat_notifications_input.setVisible(False)
         self.remote_interaction_input = QCheckBox(self)
         self.remote_interaction_input.setChecked(settings.remote_interaction_enabled)
         self.remote_interaction_input.setVisible(False)
@@ -1114,6 +1119,9 @@ class SettingsCenterDialog(QDialog):
             mouse_follow_enabled=self.mouse_follow_input.isChecked(),
             mouse_follow_scale=self.mouse_follow_scale_input.value(),
             lan_interaction_enabled=self.lan_interaction_input.isChecked(),
+            lan_group_chat_notifications_enabled=(
+                self.lan_group_chat_notifications_input.isChecked()
+            ),
             remote_interaction_enabled=self.remote_interaction_input.isChecked(),
             cursor_style_enabled=self.cursor_style_enabled_input.isChecked(),
             cursor_style_id=(

@@ -304,10 +304,23 @@ class PetWindow(QWidget):
         )
 
     def set_always_on_top(self, enabled: bool) -> None:
-        """即时切换置顶属性；Qt 需要重新 show 才会应用窗口旗标。"""
+        """即时切换置顶属性，同时保留无边框窗口所在屏幕和坐标。"""
+        position = QPoint(self.pos())
+        was_visible = self.isVisible()
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, enabled)
-        if self.isVisible():
+        if not was_visible:
+            return
+        self.show()
+        self._restore_after_window_flag_change(position)
+        # macOS 会在 NSPanel 层级切换后的下一轮事件循环再次调整窗口位置，
+        # 因此同步恢复一次后还需延迟重放，避免窗口跳到另一块显示器。
+        QTimer.singleShot(0, lambda saved=QPoint(position): self._restore_after_window_flag_change(saved))
+
+    def _restore_after_window_flag_change(self, position: QPoint) -> None:
+        if not self.isVisible():
             self.show()
+        self.move(self.clamp_position(position))
+        self.raise_()
 
     def set_mouse_interaction_enabled(self, enabled: bool) -> None:
         """关闭后忽略宠物鼠标事件，保留窗口显示和动画。"""

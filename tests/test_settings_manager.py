@@ -176,6 +176,19 @@ def test_remote_interaction_preference_round_trips_and_migrates(tmp_path) -> Non
     assert migrated.remote_interaction_enabled is True
 
 
+def test_group_chat_notification_preference_round_trips_and_migrates(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(Settings(lan_group_chat_notifications_enabled=False))
+
+    assert manager.load().lan_group_chat_notifications_enabled is False
+
+    path.write_text('{"schema_version": 19}', encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.lan_group_chat_notifications_enabled is True
+
+
 def test_elastic_clock_in_defaults_are_available_and_round_trip(tmp_path) -> None:
     path = tmp_path / "settings.json"
     manager = SettingsManager(path)

@@ -188,6 +188,10 @@ class SettingsManager:
             migrated.setdefault("work_duration_minutes", 540)
             migrated.setdefault("clock_in_date", None)
             migrated.setdefault("clock_in_time", None)
+            migrated["schema_version"] = 19
+            version = 19
+        if version == 19:
+            migrated.setdefault("lan_group_chat_notifications_enabled", True)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

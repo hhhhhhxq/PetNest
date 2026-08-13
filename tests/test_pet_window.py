@@ -111,6 +111,28 @@ def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: p
     assert window.size().width() == 15
 
 
+def test_toggling_always_on_top_keeps_visible_window_position(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    window.move(120, 140)
+    expected = QPoint(window.pos())
+
+    window.set_always_on_top(False)
+    qtbot.wait(10)
+
+    assert window.isVisible()
+    assert not window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.pos() == expected
+
+    window.set_always_on_top(True)
+    qtbot.wait(10)
+
+    assert window.isVisible()
+    assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+    assert window.pos() == expected
+
+
 def test_remote_interaction_bubble_can_be_shown_and_cleared(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)

@@ -87,11 +87,11 @@ def test_dialog_updates_nearby_devices_without_losing_selected_target(qtbot) -> 
     dialog = LanInteractionDialog(settings=Settings(device_id="local-1"), peers=[first])
     qtbot.addWidget(dialog)
     dialog.set_peers([first, second])
-    dialog.peer_list.setCurrentRow(1)
+    dialog.peer_list.setCurrentRow(2)
 
     dialog.set_peers([first, second])
 
-    assert dialog.peer_list.count() == 2
+    assert dialog.peer_list.count() == 3
     assert dialog.interaction_draft().target_device_id == "peer-2"
 
 
@@ -102,7 +102,7 @@ def test_dialog_peer_rows_keep_avatar_initials_out_of_display_name(qtbot) -> Non
     )
     qtbot.addWidget(dialog)
 
-    item = dialog.peer_list.item(0)
+    item = dialog.peer_list.item(1)
 
     assert item.text().splitlines()[0] == "用户-AB12"
     assert not item.icon().isNull()
@@ -117,6 +117,22 @@ def test_dialog_can_disable_local_lan_presence(qtbot) -> None:
     dialog.lan_enabled_input.setChecked(False)
 
     assert dialog.settings.lan_interaction_enabled is False
+
+
+def test_dialog_can_disable_only_group_chat_pet_bubbles(qtbot) -> None:
+    dialog = LanInteractionDialog(
+        settings=Settings(
+            device_id="local-1",
+            lan_group_chat_notifications_enabled=True,
+        ),
+        peers=[],
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.group_chat_notifications_input.setChecked(False)
+
+    assert dialog.settings.lan_group_chat_notifications_enabled is False
+    assert dialog.settings.lan_interaction_enabled is True
 
 
 def test_dialog_previews_selected_effect_on_local_pet_and_clears_on_close(qtbot) -> None:

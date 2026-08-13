@@ -382,13 +382,26 @@ class PetNest:
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
     def reveal(self) -> None:
-        """供第二次启动请求恢复已隐藏的现有宠物。"""
-        self.window.move(self.window.clamp_position(self.window.pos()))
+        """供第二次启动请求在主显示器中央找回宠物。"""
+        screen = (
+            QGuiApplication.primaryScreen()
+            or QGuiApplication.screenAt(QCursor.pos())
+            or self.window.screen()
+        )
+        target = self.window.pos()
+        if screen is not None:
+            available = screen.availableGeometry()
+            target = QPoint(
+                available.center().x() - self.window.width() // 2,
+                available.center().y() - self.window.height() // 2,
+            )
         self.window.setWindowState(self.window.windowState() & ~Qt.WindowState.WindowMinimized)
         if self.tray is not None:
             self.tray.show()
         self.window.show()
         self._set_pet_visibility(True)
+        self.window.move(self.window.clamp_position(target))
+        self._save_window_position(self.window.pos())
         self.window.raise_()
         self.window.activateWindow()
         LOGGER.info("已响应新的启动请求并显示现有宠物")
@@ -668,6 +681,8 @@ class PetNest:
         if (
             updated.nickname != self.settings.nickname
             or updated.lan_interaction_enabled != self.settings.lan_interaction_enabled
+            or updated.lan_group_chat_notifications_enabled
+            != self.settings.lan_group_chat_notifications_enabled
             or updated.remote_interaction_enabled != self.settings.remote_interaction_enabled
         ):
             self.apply_settings(updated)
@@ -1213,6 +1228,10 @@ class PetNest:
 
     def _handle_lan_chat(self, message: object) -> None:
         """Show a lightweight notification while the full message stays in chat."""
+        is_group = bool(getattr(message, "is_group", False))
+        if is_group and not self.settings.lan_group_chat_notifications_enabled:
+            LOGGER.info("已静默接收局域网群聊消息")
+            return
         sender = str(getattr(message, "sender_name", "附近设备"))
         kind = getattr(message, "kind", None)
         if kind is ChatMessageKind.IMAGE:
@@ -1224,7 +1243,8 @@ class PetNest:
             summary = text if len(text) <= 48 else text[:48] + "…"
         else:
             return
-        self.window.show_interaction_bubble(f"{sender}：{summary}")
+        prefix = f"群聊 · {sender}" if is_group else sender
+        self.window.show_interaction_bubble(f"{prefix}：{summary}")
         LOGGER.info("收到局域网聊天：%s", sender)
 
     def _configure_system_idle_timer(self) -> None:

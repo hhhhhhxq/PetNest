@@ -7,6 +7,7 @@ import hashlib
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -23,6 +24,7 @@ from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
+from petnest.models.lan_interaction import ChatMessageKind
 from petnest.models.settings import Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
@@ -698,7 +700,10 @@ def test_failed_cursor_recovery_keeps_the_pending_marker_for_the_next_start(qtbo
     assert settings_manager.load().cursor_restore_pending is True
 
 
-def test_application_reveal_restores_a_hidden_pet_window(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_application_reveal_restores_a_hidden_pet_window(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
     app = QApplication.instance() or QApplication([])
     del app
     create_sample_pet(tmp_path / "pets" / "sample_pet")
@@ -707,11 +712,21 @@ def test_application_reveal_restores_a_hidden_pet_window(qtbot: pytest.QtBot, tm
     )
     qtbot.addWidget(application.window)
     application.start()
+    screen = QApplication.primaryScreen()
+    assert screen is not None
+    cursor_position = screen.availableGeometry().center()
+    application.window.move(screen.availableGeometry().topLeft())
     application.window.hide()
 
     application.reveal()
 
     assert application.window.isVisible()
+    assert application.window.frameGeometry().contains(cursor_position)
+    saved = application.settings_manager.load()
+    assert (saved.window_x, saved.window_y) == (
+        application.window.pos().x(),
+        application.window.pos().y(),
+    )
 
 
 def test_pet_context_menu_updates_scale_pause_and_always_on_top(
@@ -863,6 +878,59 @@ def test_shutdown_clears_remote_interaction_overlay(qtbot: pytest.QtBot, tmp_pat
     application.shutdown()
 
     assert application.window.interaction_bubble_text is None
+
+
+def test_group_chat_pet_bubble_can_be_disabled_without_silencing_private_chat(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    bubbles: list[str] = []
+    monkeypatch.setattr(application.window, "show_interaction_bubble", bubbles.append)
+    application.settings = replace(
+        application.settings,
+        lan_group_chat_notifications_enabled=False,
+    )
+
+    application._handle_lan_chat(
+        SimpleNamespace(
+            sender_name="小林",
+            kind=ChatMessageKind.TEXT,
+            text="群里见",
+            is_group=True,
+        )
+    )
+    application._handle_lan_chat(
+        SimpleNamespace(
+            sender_name="小林",
+            kind=ChatMessageKind.TEXT,
+            text="私聊仍提醒",
+            is_group=False,
+        )
+    )
+
+    assert bubbles == ["小林：私聊仍提醒"]
+    application.settings = replace(
+        application.settings,
+        lan_group_chat_notifications_enabled=True,
+    )
+    application._handle_lan_chat(
+        SimpleNamespace(
+            sender_name="小林",
+            kind=ChatMessageKind.EMOJI,
+            text="😊",
+            is_group=True,
+        )
+    )
+    assert bubbles[-1] == "群聊 · 小林：😊"
+    application.shutdown()
 
 
 def test_frozen_application_bootstraps_the_configured_writable_pets_root(

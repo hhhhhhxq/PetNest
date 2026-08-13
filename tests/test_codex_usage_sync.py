@@ -16,6 +16,7 @@ from petnest.core.codex_usage import (
     CodexAccount,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
+    CodexModelUsage,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -25,6 +26,7 @@ from petnest.core.codex_usage import (
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.lan_interaction import LanPacketCodec, LanProtocolError
 from petnest.core.lan_service import LanInteractionService
+from petnest.models.lan_interaction import LanPeer
 
 
 def _report(tmp_path, *, total_tokens: int, reset: datetime) -> CodexUsageReport:
@@ -51,7 +53,10 @@ def _report(tmp_path, *, total_tokens: int, reset: datetime) -> CodexUsageReport
                 output_tokens=100,
                 total_tokens=total_tokens,
                 requests=2,
-            )
+            ),
+            model_usage=(CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=total_tokens),),
+            fast_uses=1,
+            standard_uses=1,
         ),
         fetched_at=datetime.now(UTC),
         codex_home=tmp_path,
@@ -73,6 +78,12 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         reasoning_output_tokens=0,
         total_tokens=1_000,
         requests=2,
+        model_usage=(CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=1_000),),
+        account_label="us*****@example.com",
+        plan_type="pro",
+        account_used_percent=12.5,
+        fast_uses=7,
+        standard_uses=3,
     )
     packet = LanPacketCodec.codex_usage_sync(
         kind="codex_usage_sync_request",
@@ -95,6 +106,35 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
             LanPacketCodec.encode(packet),
             local_device_id="receiver",
         )
+
+
+def test_first_discovered_lan_peer_triggers_sync_once(qtbot, tmp_path, monkeypatch) -> None:
+    service = LanInteractionService(
+        device_id="local-device",
+        display_name="Local Mac",
+        pet_name="Pet",
+        port=0,
+    )
+    coordinator = CodexUsageSyncCoordinator(
+        service,
+        CodexDeviceUsageStore(tmp_path / "devices.json"),
+        device_label=lambda: "Local Mac",
+        auto_sync_discovered=True,
+    )
+    started: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        coordinator,
+        "_start_fetch",
+        lambda action, context: started.append((action, context)),
+    )
+    peer = LanPeer("peer-device", "Office PC", "Pet", "192.168.1.20", 18_487)
+
+    service.peer_changed.emit(peer)
+    service.peer_changed.emit(peer)
+
+    assert started == [("initiate", ("peer-device",))]
+    assert coordinator._periodic_timer.isActive()
+    coordinator.stop()
 
 
 
@@ -162,6 +202,8 @@ def test_manual_ip_connection_mutually_syncs_same_account_device_totals(qtbot, t
     assert [(item.device_id, item.total_tokens) for item in second_remote] == [
         ("first-device", 1_000)
     ]
+    reopened = CodexDeviceUsageStore(tmp_path / "first-devices.json")
+    assert reopened.load()[0].device_id == "second-device"
 
     first_sync.stop()
     second_sync.stop()
@@ -169,7 +211,7 @@ def test_manual_ip_connection_mutually_syncs_same_account_device_totals(qtbot, t
     second_service.stop()
 
 
-def test_manual_ip_connection_does_not_merge_different_codex_accounts(qtbot, tmp_path) -> None:
+def test_lan_peers_exchange_different_accounts_without_merging_them(qtbot, tmp_path) -> None:
     app = QCoreApplication.instance() or QCoreApplication([])
     del app
     reset = (datetime.now(UTC) + timedelta(days=6)).replace(microsecond=0)
@@ -213,16 +255,22 @@ def test_manual_ip_connection_does_not_merge_different_codex_accounts(qtbot, tmp
         device_label=lambda: "Second PC",
         client_factory=SecondClient,  # type: ignore[arg-type]
     )
-    statuses: list[str] = []
-    second_sync.status_changed.connect(statuses.append)
     assert first_service.start()
     assert second_service.start()
 
     assert first_service.probe_peer("127.0.0.1", second_service.port)
-    qtbot.waitUntil(lambda: any("账号或额度周期不同" in item for item in statuses), timeout=5_000)
+    qtbot.waitUntil(
+        lambda: bool(first_store.load(account_key="b" * 24))
+        and bool(second_store.load(account_key="a" * 24)),
+        timeout=5_000,
+    )
 
-    assert first_store.load() == ()
-    assert second_store.load() == ()
+    assert first_store.load(account_key="a" * 24) == ()
+    assert second_store.load(account_key="b" * 24) == ()
+    assert first_store.load(account_key="b" * 24)[0].device_id == "second-device"
+    assert first_store.load(account_key="b" * 24)[0].account_label == "ot*****@example.com"
+    assert first_store.load(account_key="b" * 24)[0].account_used_percent == 4
+    assert second_store.load(account_key="a" * 24)[0].device_id == "first-device"
 
     first_sync.stop()
     second_sync.stop()

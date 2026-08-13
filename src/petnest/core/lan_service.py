@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from ipaddress import IPv4Address, ip_address as parse_ip_address
 from time import monotonic
@@ -233,38 +234,69 @@ class LanInteractionService(QObject):
         return self._send_packet(packet, QHostAddress(peer.ip_address), peer.port)
 
     def send_chat(self, draft: ChatDraft) -> bool:
-        """Send a framed chat message over TCP to a discovered LAN peer."""
+        """Send one direct message or fan a room message out to current peers."""
         if not self._running:
             self.error.emit("局域网互动服务尚未启动")
             return False
         if not self.chat_is_available:
             self.error.emit("本机 TCP 聊天端口被占用，请关闭其他 PetNest 进程后重试")
             return False
-        peer = self._peers.get(draft.target_device_id)
-        if peer is None or not peer.ip_address or not peer.port:
-            self.error.emit("聊天对象已离线，请刷新附近设备")
-            return False
         try:
             message = draft.to_message(
                 sender_device_id=self.device_id,
                 sender_name=self.display_name,
             )
+        except (LanProtocolError, TypeError, ValueError) as error:
+            self.error.emit(str(error))
+            return False
+        if draft.is_group:
+            peers = tuple(
+                peer
+                for peer in self._peers.values()
+                if peer.ip_address and peer.port and peer.online
+            )
+            if not peers:
+                self.error.emit("局域网群聊暂无其他在线设备")
+                return False
+            try:
+                deliveries = tuple(
+                    (
+                        peer,
+                        LanPacketCodec.encode_chat_frame(
+                            replace(message, target_device_id=peer.device_id)
+                        ),
+                    )
+                    for peer in peers
+                )
+            except (LanProtocolError, TypeError, ValueError) as error:
+                self.error.emit(str(error))
+                return False
+            for peer, frame in deliveries:
+                self._start_chat_send(peer, frame, message)
+            return True
+        peer = self._peers.get(draft.target_device_id)
+        if peer is None or not peer.ip_address or not peer.port:
+            self.error.emit("聊天对象已离线，请刷新附近设备")
+            return False
+        try:
             frame = LanPacketCodec.encode_chat_frame(message)
         except (LanProtocolError, TypeError, ValueError) as error:
             self.error.emit(str(error))
             return False
+        self._start_chat_send(peer, frame, message)
+        return True
 
+    def _start_chat_send(self, peer: LanPeer, frame: bytes, history_message: LanChatMessage) -> None:
         socket = QTcpSocket(self)
         self._outgoing_chat_sockets.add(socket)
-        socket.connected.connect(lambda: self._write_chat_frame(socket, frame, message))
+        socket.connected.connect(lambda: self._write_chat_frame(socket, frame, history_message))
         socket.disconnected.connect(lambda: self._cleanup_chat_socket(socket))
         socket.errorOccurred.connect(lambda _error: self._chat_socket_failed(socket, peer.display_name))
         timeout = QTimer(socket)
         timeout.setSingleShot(True)
         timeout.timeout.connect(lambda: self._chat_connect_timeout(socket, peer.display_name))
         timeout.start(5_000)
-        socket.connectToHost(peer.ip_address, peer.port)
-        return True
+        socket.connectToHost(str(peer.ip_address), int(peer.port or 0))
 
     def _write_chat_frame(self, socket: QTcpSocket, frame: bytes, message: LanChatMessage) -> None:
         if socket not in self._outgoing_chat_sockets:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from queue import Empty, Queue
 from threading import Thread
 from time import monotonic
@@ -29,8 +30,6 @@ DeviceLabelFactory = Callable[[], str]
 @dataclass(frozen=True, slots=True)
 class _PendingRequest:
     peer_id: str
-    account_key: str
-    window_resets_at: int
     deadline: float
 
 
@@ -47,6 +46,7 @@ class CodexUsageSyncCoordinator(QObject):
         *,
         device_label: DeviceLabelFactory,
         client_factory: ClientFactory = CodexUsageClient,
+        auto_sync_discovered: bool | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -54,6 +54,8 @@ class CodexUsageSyncCoordinator(QObject):
         self.store = store
         self._device_label = device_label
         self._client_factory = client_factory
+        if auto_sync_discovered is None:
+            auto_sync_discovered = os.environ.get("PETNEST_LAN_AUTO_SYNC", "1").strip() != "0"
         self._trusted_peer_ids: set[str] = set()
         self._workers: set[Thread] = set()
         self._results: Queue[tuple[str, object, object]] = Queue()
@@ -66,7 +68,10 @@ class CodexUsageSyncCoordinator(QObject):
         self._periodic_timer.setInterval(5 * 60 * 1000)
         self._periodic_timer.timeout.connect(self.sync_now)
 
-        service.manual_probe_succeeded.connect(self._manual_peer_connected)
+        if auto_sync_discovered:
+            service.peer_changed.connect(self._lan_peer_connected)
+        else:
+            service.manual_probe_succeeded.connect(self._lan_peer_connected)
         service.peer_removed.connect(self._peer_removed)
         service.codex_usage_sync_requested.connect(self._sync_requested)
         service.codex_usage_sync_received.connect(self._sync_received)
@@ -96,11 +101,14 @@ class CodexUsageSyncCoordinator(QObject):
         if peer_ids:
             self._send_report(report, peer_ids)
 
-    def _manual_peer_connected(self, peer: LanPeer) -> None:
+    def _lan_peer_connected(self, peer: LanPeer) -> None:
+        """首次发现或手动连接一台设备时立即互换一次用量。"""
+        if peer.device_id in self._trusted_peer_ids:
+            return
         self._trusted_peer_ids.add(peer.device_id)
         if not self._periodic_timer.isActive():
             self._periodic_timer.start()
-        self.status_changed.emit(f"已连接 {peer.display_name}，正在同步 Codex 用量…")
+        self.status_changed.emit(f"已发现 {peer.display_name}，正在同步 Codex 用量…")
         self._start_fetch("initiate", (peer.device_id,))
 
     def _peer_removed(self, device_id: str) -> None:
@@ -109,6 +117,7 @@ class CodexUsageSyncCoordinator(QObject):
             self._periodic_timer.stop()
 
     def _sync_requested(self, received: ReceivedCodexUsageSync) -> None:
+        self._save_incoming_snapshot(received.snapshot)
         self._start_fetch("respond", received)
 
     def _sync_received(self, received: ReceivedCodexUsageSync) -> None:
@@ -116,13 +125,12 @@ class CodexUsageSyncCoordinator(QObject):
         snapshot = received.snapshot
         if pending is None:
             return
-        if (
-            snapshot.device_id != pending.peer_id
-            or snapshot.account_key != pending.account_key
-            or abs(snapshot.window_resets_at - pending.window_resets_at) > 10
-        ):
-            self.status_changed.emit("已忽略账号或额度周期不匹配的同步结果")
+        if snapshot.device_id != pending.peer_id:
+            self.status_changed.emit("已忽略来源设备不匹配的同步结果")
             return
+        self._save_incoming_snapshot(snapshot)
+
+    def _save_incoming_snapshot(self, snapshot: CodexDeviceUsageSnapshot) -> None:
         try:
             self.store.save(snapshot)
         except (OSError, ValueError) as error:
@@ -189,8 +197,6 @@ class CodexUsageSyncCoordinator(QObject):
             request_id = uuid.uuid4().hex
             self._pending[request_id] = _PendingRequest(
                 peer_id=peer_id,
-                account_key=snapshot.account_key,
-                window_resets_at=snapshot.window_resets_at,
                 deadline=monotonic() + 6,
             )
             if not self.service.send_codex_usage_sync(
@@ -206,19 +212,7 @@ class CodexUsageSyncCoordinator(QObject):
         received: ReceivedCodexUsageSync,
     ) -> None:
         incoming = received.snapshot
-        window = report.primary_limit.primary
-        if (
-            window is None
-            or window.resets_at is None
-            or report.account.key != incoming.account_key
-            or abs(int(window.resets_at.timestamp()) - incoming.window_resets_at) > 10
-        ):
-            self.status_changed.emit(
-                f"{incoming.device_label} 请求同步，但两台电脑的 Codex 账号或额度周期不同"
-            )
-            return
         try:
-            self.store.save(incoming)
             local = CodexDeviceUsageSnapshot.from_report(
                 report,
                 device_id=self.service.device_id,
@@ -230,7 +224,6 @@ class CodexUsageSyncCoordinator(QObject):
         self._trusted_peer_ids.add(incoming.device_id)
         if not self._periodic_timer.isActive():
             self._periodic_timer.start()
-        self.snapshots_changed.emit(incoming.account_key)
         if self.service.send_codex_usage_sync(
             target_device_id=incoming.device_id,
             request_id=received.request_id,
