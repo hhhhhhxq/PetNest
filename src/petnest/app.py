@@ -62,7 +62,7 @@ from petnest.ui.cursor_style_dialog import CursorStyleDialog
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 from petnest.ui.tray_icon import PetTrayIcon
-from petnest.ui.work_countdown import WorkCountdownWindow
+from petnest.ui.work_countdown import WorkCountdownWindow, WorkEndTimeDialog
 
 LOGGER = logging.getLogger(__name__)
 REMOTE_RESOURCE_BASE_URL = "https://red-lake-ce5a.bbbbbiubiubiu.workers.dev"
@@ -266,6 +266,7 @@ class PetNest:
         self.mouse_follow_context_action.triggered.connect(self._toggle_mouse_follow)
         self.pet_context_menu.aboutToShow.connect(self._sync_pet_context_menu)
         self.window.context_menu_requested.connect(self._show_pet_context_menu)
+        self.window.countdown_clicked.connect(self.show_work_end_time_dialog)
         self._restore_window_settings()
         self.event_bus.subscribe(self.window.handle_pet_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
@@ -504,6 +505,12 @@ class PetNest:
         )
         if dialog.exec():
             self.apply_settings(dialog.updated_settings())
+
+    def show_work_end_time_dialog(self) -> None:
+        """点击倒计时卡片时选择每天统一的下班时间并立即保存。"""
+        dialog = WorkEndTimeDialog(self.settings.work_end_time, self.window)
+        if dialog.exec():
+            self.apply_settings(replace(self.settings, work_end_time=dialog.selected_time()))
 
     def show_cursor_style_dialog(self) -> None:
         supported_roles = getattr(self.cursor_controller, "supported_roles", frozenset(_CURSOR_STYLE_ROLES))
@@ -1113,7 +1120,6 @@ class PetNest:
         self.work_countdown.configure(
             enabled=self.settings.work_countdown_enabled,
             end_time=self.settings.work_end_time,
-            daily_end_times=self.settings.daily_work_end_times,
             gap=self.settings.countdown_gap,
             width=self.settings.countdown_width,
             height=self.settings.countdown_height,

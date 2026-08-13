@@ -90,15 +90,22 @@ def test_version_15_removes_legacy_work_start_time(tmp_path) -> None:
     assert "work_start_time" not in json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_version_7_countdown_migrates_to_weekday_schedule(tmp_path) -> None:
+def test_legacy_countdown_schedule_migrates_to_one_daily_end_time(tmp_path) -> None:
     path = tmp_path / "settings.json"
-    path.write_text(json.dumps({"schema_version": 7, "work_end_time": "18:30"}), encoding="utf-8")
+    path.write_text(
+        json.dumps({
+            "schema_version": 16,
+            "work_end_time": "18:30",
+            "daily_work_end_times": {"0": "17:00", "1": None},
+        }),
+        encoding="utf-8",
+    )
 
     loaded = SettingsManager(path).load()
 
-    assert loaded.daily_work_end_times == {
-        "0": "18:30", "1": "18:30", "2": "18:30", "3": "18:30", "4": "18:30", "5": None, "6": None
-    }
+    assert loaded.work_end_time == "18:30"
+    assert not hasattr(loaded, "daily_work_end_times")
+    assert "daily_work_end_times" not in json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_version_8_adds_compact_countdown_card_layout_defaults(tmp_path) -> None:

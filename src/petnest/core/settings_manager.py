@@ -181,6 +181,10 @@ class SettingsManager:
             version = 18
         if version == 18:
             migrated.pop("work_start_time", None)
+            migrated["schema_version"] = 16
+            version = 16
+        if version == 16:
+            migrated.pop("daily_work_end_times", None)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

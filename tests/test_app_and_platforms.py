@@ -681,6 +681,35 @@ def test_pet_context_menu_updates_scale_pause_and_always_on_top(
     assert settings_manager.load().always_on_top is False
 
 
+def test_clicking_countdown_can_update_and_persist_daily_end_time(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+
+    class _AcceptedTimeDialog:
+        def __init__(self, current_time: str, parent: object) -> None:
+            assert current_time == "18:00"
+            assert parent is application.window
+
+        def exec(self) -> int:
+            return 1
+
+        def selected_time(self) -> str:
+            return "19:45"
+
+    monkeypatch.setattr("petnest.app.WorkEndTimeDialog", _AcceptedTimeDialog)
+
+    application.window.countdown_clicked.emit()
+
+    assert application.settings.work_end_time == "19:45"
+    assert settings_manager.load().work_end_time == "19:45"
+
+
 def test_mouse_follow_moves_pet_without_replacing_its_saved_resting_position(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

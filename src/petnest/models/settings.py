@@ -44,9 +44,6 @@ class Settings:
     device_id: str = ""
     work_countdown_enabled: bool = True
     work_end_time: str = "18:00"
-    daily_work_end_times: dict[str, str | None] = field(
-        default_factory=lambda: {"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None}
-    )
     countdown_gap: int = 0
     countdown_width: int = 132
     countdown_height: int = 37

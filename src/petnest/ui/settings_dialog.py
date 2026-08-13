@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
-    QHBoxLayout,
     QSpinBox,
     QTimeEdit,
     QPushButton,
@@ -71,6 +70,8 @@ class SettingsDialog(QDialog):
         self.system_sleep_input.setValue(settings.system_sleep_seconds)
         self.work_countdown_input = QCheckBox(self)
         self.work_countdown_input.setChecked(settings.work_countdown_enabled)
+        self.work_end_input = QTimeEdit(QTime.fromString(settings.work_end_time, "HH:mm"), self)
+        self.work_end_input.setDisplayFormat("HH:mm")
         self.countdown_gap_input = QSpinBox(self)
         self.countdown_gap_input.setRange(0, 80)
         self.countdown_gap_input.setSuffix(" 像素")
@@ -89,7 +90,6 @@ class SettingsDialog(QDialog):
         self.countdown_theme_input.addItem("C · 毛线便签", "yarn")
         theme_index = self.countdown_theme_input.findData(settings.countdown_theme)
         self.countdown_theme_input.setCurrentIndex(max(0, theme_index))
-        self.daily_work_inputs: dict[str, tuple[QCheckBox, QTimeEdit]] = {}
         layout.addRow("缩放", self.scale_input)
         layout.addRow("始终置顶", self.always_on_top_input)
         layout.addRow("启用鼠标交互", self.mouse_interaction_input)
@@ -101,27 +101,11 @@ class SettingsDialog(QDialog):
         layout.addRow("无操作后无聊", self.system_bored_input)
         layout.addRow("无操作后睡觉", self.system_sleep_input)
         layout.addRow("显示下班倒计时", self.work_countdown_input)
+        layout.addRow("每天下班时间", self.work_end_input)
         layout.addRow("倒计时与宠物间距", self.countdown_gap_input)
         layout.addRow("倒计时最小宽度", self.countdown_width_input)
         layout.addRow("倒计时卡片高度", self.countdown_height_input)
         layout.addRow("倒计时主题", self.countdown_theme_input)
-        weekday_names = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-        for index, name in enumerate(weekday_names):
-            key = str(index)
-            configured = settings.daily_work_end_times.get(key)
-            row = QWidget(self)
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            enabled_input = QCheckBox("启用", row)
-            enabled_input.setChecked(configured is not None)
-            end_input = QTimeEdit(QTime.fromString(configured or settings.work_end_time, "HH:mm"), row)
-            end_input.setDisplayFormat("HH:mm")
-            end_input.setEnabled(enabled_input.isChecked())
-            enabled_input.toggled.connect(end_input.setEnabled)
-            row_layout.addWidget(enabled_input)
-            row_layout.addWidget(end_input)
-            self.daily_work_inputs[key] = (enabled_input, end_input)
-            layout.addRow(f"{name}下班", row)
         if on_check_app_update is not None:
             self.app_update_button = QPushButton("检查程序更新…", self)
             self.app_update_button.setToolTip("从 PetNest GitHub Releases 检查新的安装包")
@@ -134,11 +118,6 @@ class SettingsDialog(QDialog):
 
     def updated_settings(self) -> Settings:
         """返回当前表单值，交由调用者决定何时持久化。"""
-        daily_end_times = {
-            key: end_input.time().toString("HH:mm") if enabled_input.isChecked() else None
-            for key, (enabled_input, end_input) in self.daily_work_inputs.items()
-        }
-        legacy_end = next((value for value in daily_end_times.values() if value is not None), self._settings.work_end_time)
         return replace(
             self._settings,
             scale=self.scale_input.value(),
@@ -152,8 +131,7 @@ class SettingsDialog(QDialog):
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),
             work_countdown_enabled=self.work_countdown_input.isChecked(),
-            work_end_time=legacy_end,
-            daily_work_end_times=daily_end_times,
+            work_end_time=self.work_end_input.time().toString("HH:mm"),
             countdown_gap=self.countdown_gap_input.value(),
             countdown_width=self.countdown_width_input.value(),
             countdown_height=self.countdown_height_input.value(),

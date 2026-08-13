@@ -7,6 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QApplication
 
 from petnest.models.settings import Settings
@@ -53,3 +54,13 @@ def test_settings_dialog_has_no_work_start_time_control(qtbot) -> None:
     qtbot.addWidget(dialog)
 
     assert not hasattr(dialog, "work_start_input")
+
+
+def test_settings_dialog_uses_one_daily_work_end_time(qtbot) -> None:
+    dialog = SettingsDialog(Settings(work_end_time="18:00"))
+    qtbot.addWidget(dialog)
+
+    dialog.work_end_input.setTime(QTime(20, 15))
+
+    assert dialog.updated_settings().work_end_time == "20:15"
+    assert not hasattr(dialog, "daily_work_inputs")

@@ -42,6 +42,7 @@ class PetWindow(QWidget):
     drag_threshold = 6
     minimum_visible_pixels = 48
     context_menu_requested = Signal(QPoint)
+    countdown_clicked = Signal()
 
     def __init__(
         self,
@@ -87,6 +88,7 @@ class PetWindow(QWidget):
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
         self._dragging = False
+        self._countdown_pressed = False
         self._mouse_interaction_enabled = True
         self._countdown_text: str | None = None
         self._countdown_gap = 0
@@ -454,6 +456,10 @@ class PetWindow(QWidget):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._is_countdown_at(event.position().toPoint()):
+            self._countdown_pressed = True
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self._is_interactive(event):
             self._press_global = event.globalPosition().toPoint()
             self._window_origin = self.pos()
@@ -463,6 +469,9 @@ class PetWindow(QWidget):
         event.ignore()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._countdown_pressed:
+            event.accept()
+            return
         if self._press_global is None or self._window_origin is None:
             event.ignore()
             return
@@ -475,6 +484,12 @@ class PetWindow(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._countdown_pressed:
+            self._countdown_pressed = False
+            if self._is_countdown_at(event.position().toPoint()):
+                self.countdown_clicked.emit()
+            event.accept()
+            return
         if event.button() != Qt.MouseButton.LeftButton or self._press_global is None:
             event.ignore()
             return
@@ -726,6 +741,9 @@ class PetWindow(QWidget):
 
     def _is_interactive(self, event: QMouseEvent) -> bool:
         return self._mouse_interaction_enabled and self.is_opaque_at(int(event.position().x()), int(event.position().y()))
+
+    def _is_countdown_at(self, position: QPoint) -> bool:
+        return self._mouse_interaction_enabled and self.countdown_is_visible and self._countdown_rect().contains(position)
 
     @staticmethod
     def _make_state_machine(
