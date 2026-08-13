@@ -267,6 +267,7 @@ class PetNest:
         self.mouse_follow_context_action.triggered.connect(self._toggle_mouse_follow)
         self.pet_context_menu.aboutToShow.connect(self._sync_pet_context_menu)
         self.window.context_menu_requested.connect(self._show_pet_context_menu)
+        self.window.countdown_clicked.connect(lambda: self._show_settings_center("countdown"))
         self._restore_window_settings()
         self.event_bus.subscribe(self.window.handle_pet_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
@@ -309,6 +310,8 @@ class PetNest:
                 on_lan_interactions=self.show_lan_interaction_dialog,
                 on_toggle_always_on_top=self._toggle_context_always_on_top,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
+                on_visibility_changed=self._set_pet_visibility,
+                on_toggle_pause=self._toggle_tray_pause,
                 on_quit=self.shutdown,
             )
             if enable_tray
@@ -371,6 +374,7 @@ class PetNest:
         if self.tray is not None:
             self.tray.show()
         self.window.show()
+        self._set_pet_visibility(True)
         self.window.raise_()
         self.window.activateWindow()
         LOGGER.info("已响应新的启动请求并显示现有宠物")
@@ -500,6 +504,14 @@ class PetNest:
     def _toggle_context_pause(self) -> None:
         self.apply_settings(replace(self.settings, animation_paused=not self.window.player.is_paused))
 
+    def _toggle_tray_pause(self, paused: bool) -> None:
+        """让托盘暂停与设置持久化路径保持一致。"""
+        self.apply_settings(replace(self.settings, animation_paused=paused))
+
+    def _set_pet_visibility(self, visible: bool) -> None:
+        """同步桌宠及其独立辅助窗口的显示状态。"""
+        self.work_countdown.set_pet_visible(visible)
+
     def _toggle_context_always_on_top(self, enabled: bool) -> None:
         self.apply_settings(replace(self.settings, always_on_top=enabled))
 
@@ -523,15 +535,28 @@ class PetNest:
             dialog.activateWindow()
             return
         supported_roles = getattr(self.cursor_controller, "supported_roles", frozenset(_CURSOR_STYLE_ROLES))
+        preview_path = next(
+            (
+                frame
+                for definition in self.package.animations.values()
+                for frame in definition.frames
+                if frame.is_file()
+            ),
+            None,
+        )
         dialog = SettingsDialog(
             self.settings,
             self.window,
-            on_check_app_update=self._show_app_update_dialog if sys.platform in APP_UPDATE_PLATFORMS else None,
+            on_check_app_update=self._check_app_update_from_settings if sys.platform in APP_UPDATE_PLATFORMS else None,
+            on_download_app_update=self._schedule_app_update_download if sys.platform in APP_UPDATE_PLATFORMS else None,
             cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
+            pet_preview_path=preview_path,
             initial_section=initial_section,
         )
         self._settings_center_dialog = dialog
+        if self._pending_app_update is not None:
+            dialog.set_app_update_available(self._pending_app_update)
         dialog.accepted.connect(lambda: self.apply_settings(dialog.updated_settings()))
         dialog.finished.connect(lambda _result: self._clear_settings_center(dialog))
         dialog.open()
@@ -539,6 +564,10 @@ class PetNest:
     def _clear_settings_center(self, dialog: SettingsDialog) -> None:
         if self._settings_center_dialog is dialog:
             self._settings_center_dialog = None
+
+    def _check_app_update_from_settings(self) -> None:
+        """设置中心内联检查更新，不再打开独立更新窗口。"""
+        self._schedule_app_update_check(force=True)
 
     def show_lan_interaction_dialog(self) -> None:
         """打开附近设备与远程伙伴的统一互动入口。"""
@@ -689,6 +718,7 @@ class PetNest:
             self._run_shutdown_step("隐藏托盘图标", self.tray.hide)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
+        self._run_shutdown_step("隐藏打卡卡片", lambda: self._set_pet_visibility(False))
         self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
         server, self.external_server = self.external_server, None
         if server is not None:
@@ -892,8 +922,12 @@ class PetNest:
             return
         if self._app_update_worker is not None and self._app_update_worker.is_alive():
             return
+        # 新检查开始后，旧结果不能继续让新打开的设置页显示“更新”。
+        self._pending_app_update = None
         if self._app_update_dialog is not None:
             self._app_update_dialog.set_checking()
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.set_app_update_checking()
         worker = Thread(
             target=self._app_update_check_worker,
             args=(force,),
@@ -919,6 +953,8 @@ class PetNest:
         destination = self._app_update_download_path(info)
         if self._app_update_dialog is not None:
             self._app_update_dialog.set_downloading(0)
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.set_app_update_downloading(0)
         worker = Thread(
             target=self._app_update_download_worker,
             args=(info, destination),
@@ -1017,24 +1053,37 @@ class PetNest:
             if kind == "check" and isinstance(payload, AppUpdateCheckResult):
                 self._app_update_worker = None
                 if payload.error:
+                    self._pending_app_update = None
                     LOGGER.warning("程序更新检查失败：%s", payload.error)
                     if self._app_update_dialog is not None:
                         self._app_update_dialog.set_error(payload.error)
+                    if self._settings_center_dialog is not None:
+                        self._settings_center_dialog.set_app_update_error(payload.error)
                 elif payload.update is None:
+                    self._pending_app_update = None
                     if self._app_update_dialog is not None:
                         self._app_update_dialog.set_no_update()
+                    if self._settings_center_dialog is not None:
+                        self._settings_center_dialog.set_app_update_no_update()
                 else:
                     self._pending_app_update = payload.update
                     LOGGER.info("发现 PetNest 新版本：%s", payload.update.version)
                     if self._app_update_dialog is not None:
                         self._app_update_dialog.set_available(payload.update)
+                    if self._settings_center_dialog is not None:
+                        self._settings_center_dialog.set_app_update_available(payload.update)
             elif kind == "progress" and isinstance(payload, int):
                 if self._app_update_dialog is not None:
                     self._app_update_dialog.set_downloading(payload)
+                if self._settings_center_dialog is not None:
+                    self._settings_center_dialog.set_app_update_downloading(payload)
             elif kind == "download-error":
                 self._app_update_worker = None
+                self._pending_app_update = None
                 if self._app_update_dialog is not None:
                     self._app_update_dialog.set_error(str(payload))
+                if self._settings_center_dialog is not None:
+                    self._settings_center_dialog.set_app_update_error(str(payload))
             elif kind == "downloaded" and isinstance(payload, tuple) and len(payload) == 2:
                 self._app_update_worker = None
                 _info, installer = payload
@@ -1042,11 +1091,16 @@ class PetNest:
                     self._launch_app_installer(Path(installer))
                 except Exception as error:  # noqa: BLE001 - current install remains untouched.
                     LOGGER.exception("无法启动 PetNest 更新安装器")
+                    self._pending_app_update = None
                     if self._app_update_dialog is not None:
                         self._app_update_dialog.set_error(str(error) or error.__class__.__name__)
+                    if self._settings_center_dialog is not None:
+                        self._settings_center_dialog.set_app_update_error(str(error) or error.__class__.__name__)
                     continue
                 if self._app_update_dialog is not None:
                     self._app_update_dialog.set_finished()
+                if self._settings_center_dialog is not None:
+                    self._settings_center_dialog.set_app_update_finished()
                 self.shutdown()
 
     def _refresh_resource_directories(self, *, verify_files: bool = True) -> None:

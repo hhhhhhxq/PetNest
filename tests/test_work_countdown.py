@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 from PySide6.QtCore import QTime
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QTimeEdit, QWidget
 from pytestqt.qtbot import QtBot
 
 from petnest.ui.work_countdown import (
@@ -16,9 +16,9 @@ from petnest.ui.work_countdown import (
 )
 
 
-def test_countdown_before_and_during_work() -> None:
+def test_countdown_before_and_during_work_only_shows_time_until_end() -> None:
     monday = datetime(2026, 8, 10, 8, 30, 0)
-    assert countdown_text(monday, "09:00", "18:00") == "距离上班 00:30:00"
+    assert countdown_text(monday, "09:00", "18:00") == "距离下班 09:30:00"
     assert countdown_text(monday.replace(hour=17, minute=0), "09:00", "18:00") == "距离下班 01:00:00"
 
 
@@ -29,9 +29,9 @@ def test_countdown_after_work_and_on_weekend() -> None:
     assert countdown_text(sunday, "09:00", "18:00") == "今天休息 ☕"
 
 
-def test_invalid_work_period_is_explained() -> None:
+def test_invalid_start_time_does_not_restore_work_start_countdown() -> None:
     monday = datetime(2026, 8, 10, 10, 0, 0)
-    assert countdown_text(monday, "18:00", "09:00") == "上下班时间设置有误"
+    assert countdown_text(monday, "18:00", "09:00") == "下班啦 🎉"
 
 
 def test_daily_schedule_uses_each_days_end_time() -> None:
@@ -117,20 +117,142 @@ def test_elastic_countdown_uses_independent_clock_in_card_after_start(qtbot: QtB
     before = datetime(2026, 8, 13, 9, 29)
     countdown.refresh(before)
     assert not countdown.clock_in_card.isVisible()
-    assert pet.texts[-1] == "距离上班 00:01:00"
+    assert pet.texts[-1] == "距离下班 08:31:00"
 
     available = datetime(2026, 8, 13, 9, 35)
     countdown.refresh(available)
     assert countdown.clock_in_card.isVisible()
     assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:35"
+    assert countdown.clock_in_card.time_input.minimumTime().toString("HH:mm") == "09:30"
+    assert countdown.clock_in_card.time_input.maximumTime().toString("HH:mm") == "09:35"
     assert pet.texts[-1] is None
 
-    countdown.clock_in_card.time_input.setTime(QTime(9, 40))
+    countdown.clock_in_card.time_input.setTime(QTime(9, 32))
     countdown.clock_in_card.clock_in_button.click()
-    assert recorded == [datetime(2026, 8, 13, 9, 40)]
+    assert recorded == [datetime(2026, 8, 13, 9, 32)]
     assert not countdown.clock_in_card.isVisible()
-    assert pet.texts[-1] == "距离下班 09:05:00"
+    assert pet.texts[-1] == "距离下班 08:57:00"
     countdown.timer.stop()
+
+
+def test_clock_in_card_tracks_current_minute_until_user_edits_and_never_allows_future_time(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+    )
+
+    countdown.refresh(datetime(2026, 8, 13, 9, 35, 40))
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:35"
+    countdown.refresh(datetime(2026, 8, 13, 9, 39, 5))
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:39"
+
+    countdown.clock_in_card.time_input.setTime(QTime(9, 32))
+    countdown.refresh(datetime(2026, 8, 13, 9, 45, 0))
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:32"
+    assert countdown.clock_in_card.time_input.maximumTime().toString("HH:mm") == "09:45"
+
+    countdown.clock_in_card.time_input.setTime(QTime(9, 59))
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:45"
+    countdown.refresh(datetime(2026, 8, 13, 10, 5, 0))
+    assert countdown.clock_in_card.time_input.maximumTime().toString("HH:mm") == "10:00"
+    countdown.timer.stop()
+
+
+def test_clock_in_time_can_step_back_across_the_hour_boundary(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+    )
+
+    countdown.refresh(datetime(2026, 8, 13, 10, 5))
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "10:00"
+    countdown.clock_in_card.time_input.setCurrentSection(QTimeEdit.Section.MinuteSection)
+    assert countdown.clock_in_card.time_input.stepEnabled() & QTimeEdit.StepEnabledFlag.StepDownEnabled
+    countdown.clock_in_card.time_input.stepDown()
+
+    assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:59"
+    countdown.timer.stop()
+
+
+def test_hiding_pet_also_hides_clock_in_card_and_showing_refreshes_it(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+        def mapToGlobal(self, point: object) -> object:  # noqa: N802 - Qt compatibility stub
+            return point
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+    )
+    countdown.clock_in_card.show()
+
+    countdown.set_pet_visible(False)
+    assert not countdown.clock_in_card.isVisible()
+
+    countdown.set_pet_visible(True)
+    assert countdown.timer.isActive()
+    countdown.clock_in_card.hide()
 
 
 def test_countdown_controller_never_creates_a_second_visible_window(qtbot: QtBot) -> None:

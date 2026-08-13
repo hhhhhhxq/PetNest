@@ -24,6 +24,148 @@ def dialog_stylesheet() -> str:
             background: {c['window_background']};
             color: {c['text']};
             font-size: 13px;
+            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+        }}
+        QFrame#windowShell {{
+            background: rgba(255, 253, 249, 232);
+            border: 1px solid rgba(255, 255, 255, 210);
+            border-radius: 22px;
+        }}
+        QFrame#headerBar {{
+            background: rgba(255, 248, 243, 210);
+            border: 1px solid rgba(255, 255, 255, 180);
+            border-radius: 16px;
+        }}
+        QFrame#settingsSidebar {{
+            background: rgba(251, 244, 238, 175);
+            border: 1px solid rgba(255, 255, 255, 150);
+            border-radius: 18px;
+        }}
+        QFrame#contentPane {{
+            background: transparent;
+            border: none;
+        }}
+        QFrame#statusCard {{
+            background: rgba(255, 255, 255, 145);
+            border: 1px solid rgba(255, 255, 255, 180);
+            border-radius: 15px;
+        }}
+        QFrame#previewCard {{
+            background: rgba(255, 240, 232, 190);
+            border: 1px solid rgba(255, 255, 255, 185);
+            border-radius: 16px;
+        }}
+        QFrame#stepBar {{
+            background: rgba(255, 248, 243, 190);
+            border: 1px solid rgba(255, 255, 255, 170);
+            border-radius: 14px;
+        }}
+        QFrame#sourceCard, QFrame#petInfoCard {{
+            background: rgba(255, 253, 249, 228);
+            border: 1px solid {c['border']};
+            border-radius: 16px;
+        }}
+        QFrame#manualActionCard, QFrame#manualFrameCard {{
+            background: rgba(255, 253, 249, 228);
+            border: 1px solid {c['border']};
+            border-radius: 16px;
+        }}
+        QListWidget#manualActionList {{
+            background: transparent;
+            border: none;
+            outline: none;
+        }}
+        QListWidget#manualActionList::item {{
+            color: {c['text']};
+            background: {c['surface_alt']};
+            border: 1px solid {c['border']};
+            border-radius: 11px;
+            padding: 8px 10px;
+            margin: 3px 0;
+        }}
+        QListWidget#manualActionList::item:selected {{
+            color: #A85D3E;
+            background: {c['accent_soft']};
+            border: 1px solid #E8C7B8;
+        }}
+        QScrollArea#manualThumbnailArea, QScrollArea#manualThumbnailArea > QWidget, QScrollArea#manualThumbnailArea > QWidget > QWidget {{
+            background: transparent;
+            border: none;
+        }}
+        QToolButton#frameOption {{
+            background: {c['surface_alt']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+            padding: 8px;
+        }}
+        QToolButton#frameOption:checked {{
+            background: {c['accent_soft']};
+            color: #A85D3E;
+            border: 2px solid {c['accent']};
+        }}
+        QLabel#selectionBadge {{
+            background: {c['accent_soft']};
+            color: #A85D3E;
+            border-radius: 10px;
+            padding: 7px 12px;
+            font-weight: 700;
+        }}
+        QFrame#sourceDropzone {{
+            background: {c['surface_alt']};
+            border: 1px dashed #D8C5B9;
+            border-radius: 14px;
+        }}
+        QFrame#modeOption {{
+            background: {c['surface_alt']};
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+        }}
+        QFrame#modeOption:hover {{
+            border: 1px solid {c['accent']};
+            background: {c['accent_soft']};
+        }}
+        QFrame#modeSwitch, QFrame#totalTimeline {{
+            background: {c['surface_alt']};
+            border: 1px solid {c['border']};
+            border-radius: 10px;
+        }}
+        QFrame#workdaySelector, QFrame#scheduleModeSwitch, QFrame#advancedSettings {{
+            background: {c['surface_alt']};
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+        }}
+        QFrame#scheduleModeSwitch QRadioButton {{
+            background: transparent;
+            padding: 7px 10px;
+            border-radius: 8px;
+        }}
+        QFrame#scheduleModeSwitch QRadioButton:checked {{
+            background: {c['surface']};
+            color: {c['accent']};
+            font-weight: 700;
+        }}
+        QFrame#scheduleModeSwitch QRadioButton::indicator,
+        QFrame#modeSwitch QRadioButton::indicator {{
+            width: 0px;
+            height: 0px;
+            border: none;
+            background: transparent;
+        }}
+        QToolButton#advancedSettings {{
+            text-align: left;
+            color: {c['text']};
+            font-weight: 600;
+        }}
+        QFrame#modeSwitch QRadioButton {{
+            background: transparent;
+            padding: 7px 10px;
+            border-radius: 8px;
+        }}
+        QFrame#modeSwitch QRadioButton:checked {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+            font-weight: 700;
         }}
         QLabel {{
             color: {c['text']};
@@ -31,6 +173,20 @@ def dialog_stylesheet() -> str:
         QLabel#pageTitle {{
             color: {c['text']};
             font-size: 22px;
+            font-weight: 700;
+        }}
+        QLabel#contentTitle {{
+            color: {c['text']};
+            font-size: 28px;
+            font-weight: 700;
+        }}
+        QLabel#contentDescription {{
+            color: {c['muted_text']};
+            font-size: 14px;
+        }}
+        QLabel#accentValue {{
+            color: #A85D3E;
+            font-size: 17px;
             font-weight: 700;
         }}
         QLabel#pageDescription, QLabel#mutedLabel {{
@@ -56,6 +212,25 @@ def dialog_stylesheet() -> str:
             background: {c['accent_soft']};
             color: {c['accent']};
             font-weight: 700;
+        }}
+        QListWidget#settingsNavigation::item:selected:active {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+        }}
+        QTableWidget#animationActionTable, QListWidget#animationFrameList {{
+            background: rgba(255, 253, 249, 155);
+            border: 1px solid {c['border']};
+            border-radius: 12px;
+            gridline-color: transparent;
+            outline: none;
+        }}
+        QTableWidget#animationActionTable::item, QListWidget#animationFrameList::item {{
+            padding: 8px;
+            border-radius: 8px;
+        }}
+        QTableWidget#animationActionTable::item:selected, QListWidget#animationFrameList::item:selected {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
         }}
         QFrame#settingsCard {{
             background: rgba(255, 253, 249, 228);
@@ -106,6 +281,22 @@ def dialog_stylesheet() -> str:
             background: {c['accent']};
             border-color: {c['accent']};
         }}
+        QCheckBox#toggleSwitch {{
+            spacing: 10px;
+            padding: 4px 0;
+            background: transparent;
+            border: none;
+        }}
+        QCheckBox#toggleSwitch::indicator {{
+            width: 0px;
+            height: 0px;
+            border: none;
+            background: transparent;
+        }}
+        QCheckBox#toggleSwitch::indicator:checked {{
+            background: {c['accent']};
+            border-color: {c['accent']};
+        }}
         QRadioButton {{
             spacing: 8px;
             padding: 5px 0;
@@ -147,6 +338,13 @@ def dialog_stylesheet() -> str:
             background: transparent;
             border: none;
         }}
+        QAbstractScrollArea#settingsScroll, QScrollArea#settingsScroll > QWidget, QScrollArea#settingsScroll > QWidget > QWidget {{
+            background: transparent;
+            border: none;
+        }}
+        QStackedWidget#settingsPageStack, QWidget#settingsPage {{
+            background: transparent;
+        }}
         QDialogButtonBox {{
             border-top: 1px solid {c['border']};
             padding-top: 10px;
@@ -177,6 +375,7 @@ def menu_stylesheet(object_name: str = "trayMenu") -> str:
             border-radius: 12px;
             padding: 7px;
             font-size: 13px;
+            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
         }}
         QMenu#{object_name}::item {{
             padding: 8px 30px 8px 12px;

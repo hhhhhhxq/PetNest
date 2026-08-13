@@ -1,12 +1,12 @@
 @echo off
 setlocal
-if not exist ".venv\Scripts\python.exe" (
-  echo 未找到 .venv。请先执行：python -m venv .venv
+set "PETNEST_ROOT=%~dp0"
+if not exist "%PETNEST_ROOT%.venv\Scripts\pythonw.exe" (
+  echo PetNest virtual environment not found.
   exit /b 1
 )
-call .venv\Scripts\activate.bat
-set PYTHONPATH=src
-python -m petnest
-set EXIT_CODE=%ERRORLEVEL%
-if not "%EXIT_CODE%"=="0" echo PetNest 已退出，错误码：%EXIT_CODE%
+set "PYTHONPATH=%PETNEST_ROOT%src"
+rem Start pythonw without attaching the GUI process to this CMD session.
+start "" /b "%PETNEST_ROOT%.venv\Scripts\pythonw.exe" -m petnest
+set "EXIT_CODE=%ERRORLEVEL%"
 exit /b %EXIT_CODE%

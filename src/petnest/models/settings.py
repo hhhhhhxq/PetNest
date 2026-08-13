@@ -3,7 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import time
 from typing import Any
+
+
+def _default_daily_work_end_times() -> dict[str, str | None]:
+    return {
+        "0": "18:00",
+        "1": "18:00",
+        "2": "18:00",
+        "3": "18:00",
+        "4": "18:00",
+        "5": None,
+        "6": None,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +61,7 @@ class Settings:
     work_start_time: str = "09:00"
     work_end_time: str = "18:00"
     daily_work_end_times: dict[str, str | None] = field(
-        default_factory=lambda: {"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None}
+        default_factory=_default_daily_work_end_times
     )
     countdown_gap: int = 0
     countdown_width: int = 132
@@ -79,6 +92,7 @@ class Settings:
         """忽略未知键，避免未来版本设置使旧版本崩溃。"""
         fields = cls.__dataclass_fields__
         values = {name: raw[name] for name in fields if name in raw}
+        values["daily_work_end_times"] = _daily_work_end_times(values.get("daily_work_end_times"))
         values["cursor_scale"] = _cursor_scale(values.get("cursor_scale", 100))
         values["work_schedule_mode"] = _work_schedule_mode(values.get("work_schedule_mode", "fixed"))
         values["work_duration_minutes"] = _work_duration_minutes(values.get("work_duration_minutes", 540))
@@ -109,6 +123,30 @@ def _work_duration_minutes(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 24 * 60:
         return 540
     return value
+
+
+def _daily_work_end_times(value: object) -> dict[str, str | None]:
+    """宽容读取每周下班时间，避免损坏配置拖垮倒计时页面。"""
+    defaults = _default_daily_work_end_times()
+    if not isinstance(value, dict):
+        return defaults
+    normalized: dict[str, str | None] = {}
+    for day in range(7):
+        key = str(day)
+        raw_time = value.get(key, defaults[key])
+        if raw_time is None:
+            normalized[key] = None
+            continue
+        if not isinstance(raw_time, str):
+            normalized[key] = defaults[key]
+            continue
+        try:
+            parsed = time.fromisoformat(raw_time)
+        except ValueError:
+            normalized[key] = defaults[key]
+        else:
+            normalized[key] = f"{parsed.hour:02d}:{parsed.minute:02d}"
+    return normalized
 
 
 def _animation_overrides(value: object) -> dict[str, dict[str, AnimationOverride]]:

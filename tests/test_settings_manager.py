@@ -232,3 +232,36 @@ def test_invalid_new_settings_fall_back_to_safe_defaults() -> None:
     )
 
     assert (loaded.cursor_scale, loaded.work_schedule_mode, loaded.work_duration_minutes) == (100, "fixed", 540)
+
+
+def test_invalid_daily_work_schedule_falls_back_to_safe_weekday_values() -> None:
+    loaded = Settings.from_dict(
+        {
+            "daily_work_end_times": {
+                "0": "19:30",
+                "1": "not-a-time",
+                "5": None,
+            }
+        }
+    )
+
+    assert loaded.daily_work_end_times == {
+        "0": "19:30",
+        "1": "18:00",
+        "2": "18:00",
+        "3": "18:00",
+        "4": "18:00",
+        "5": None,
+        "6": None,
+    }
+
+    malformed = Settings.from_dict({"daily_work_end_times": ["18:00"]})
+    assert malformed.daily_work_end_times == {
+        "0": "18:00",
+        "1": "18:00",
+        "2": "18:00",
+        "3": "18:00",
+        "4": "18:00",
+        "5": None,
+        "6": None,
+    }

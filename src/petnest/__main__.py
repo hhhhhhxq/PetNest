@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import QCoreApplication
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 from PySide6.QtWidgets import QMessageBox
 
@@ -53,6 +54,7 @@ def main(arguments: list[str] | None = None) -> int:
     QCoreApplication.setApplicationVersion(__version__)
     QCoreApplication.setOrganizationName("PetNest")
     application = QApplication(sys.argv)
+    application.setFont(QFont("Microsoft YaHei UI", 10))
     install_diagnostic_hooks()
     application.aboutToQuit.connect(lambda: LOGGER.info("Qt aboutToQuit 信号已触发"))
     application.setApplicationDisplayName("PetNest")

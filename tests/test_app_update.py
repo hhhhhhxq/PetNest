@@ -7,6 +7,7 @@ import io
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -140,6 +141,23 @@ def test_client_checks_manifest_without_blocking_contract() -> None:
 
     assert client.check() is not None
     assert calls
+
+
+def test_client_explains_when_latest_release_has_no_platform_manifest() -> None:
+    def opener(request: object, timeout: float) -> object:
+        del request, timeout
+        raise HTTPError(
+            "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json",
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=io.BytesIO(),
+        )
+
+    client = AppUpdateClient(platform_name="win32", opener=opener)
+
+    with pytest.raises(AppUpdateError, match="Windows.*更新清单"):
+        client.check()
 
 
 def test_client_rejects_redirect_outside_github_release_hosts() -> None:

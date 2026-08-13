@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint, QPointF, QTime, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from petnest.models.settings import Settings
@@ -23,6 +27,9 @@ def test_settings_dialog_is_the_shared_five_section_center(qtbot, tmp_path: Path
     assert dialog.section_list.currentRow() == 1
     assert dialog.page_title.text() == "鼠标与行为"
     assert dialog.cursor_scale_slider.value() == 100
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "settingsSidebar") is not None
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "statusCard") is not None
 
 
 def test_settings_dialog_persists_remote_partner_toggle(qtbot) -> None:
@@ -83,7 +90,7 @@ def test_application_update_entry_is_opt_in_for_platform_owner(qtbot) -> None:
     dialog = SettingsDialog(Settings(), on_check_app_update=lambda: called.append(True))
     qtbot.addWidget(dialog)
 
-    assert dialog.app_update_button.text() == "检查程序更新…"
+    assert dialog.app_update_button.text() == "检查程序更新"
     qtbot.mouseClick(dialog.app_update_button, __import__("PySide6").QtCore.Qt.MouseButton.LeftButton)
     assert called == [True]
 
@@ -93,3 +100,182 @@ def test_application_update_entry_is_absent_without_platform_support(qtbot) -> N
     qtbot.addWidget(dialog)
 
     assert not hasattr(dialog, "app_update_button")
+
+
+def test_settings_pages_have_content_titles_and_surface_cards(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="display")
+    qtbot.addWidget(dialog)
+
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QLabel, "contentTitle") is not None
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "previewCard") is not None
+
+
+def test_display_scale_is_a_percent_slider_with_live_preview(qtbot) -> None:
+    dialog = SettingsDialog(Settings(scale=1.0), initial_section="display")
+    qtbot.addWidget(dialog)
+
+    assert dialog.scale_input.minimum() == 25
+    assert dialog.scale_input.maximum() == 200
+    assert dialog.scale_value_label.text() == "100%"
+    assert dialog.always_on_top_input.objectName() == "toggleSwitch"
+    assert dialog.mouse_interaction_input.objectName() == "toggleSwitch"
+
+
+def test_display_page_renders_the_current_pet_preview(qtbot, tmp_path: Path) -> None:
+    preview_path = tmp_path / "idle.png"
+    preview = QPixmap(24, 24)
+    preview.fill(QColor("#D98663"))
+    assert preview.save(str(preview_path))
+
+    dialog = SettingsDialog(Settings(), pet_preview_path=preview_path, initial_section="display")
+    qtbot.addWidget(dialog)
+
+    assert not dialog.pet_preview_label.pixmap().isNull()
+
+
+def test_elastic_duration_uses_hours_and_explains_end_time_range(qtbot) -> None:
+    dialog = SettingsDialog(Settings(work_schedule_mode="elastic", work_duration_minutes=540), initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    assert dialog.work_duration_input.suffix() == " 小时"
+    assert dialog.work_duration_input.value() == 9.0
+    assert "18:30" in dialog.elastic_end_range_label.text()
+    assert "19:00" in dialog.elastic_end_range_label.text()
+
+    dialog.work_duration_input.setValue(8.5)
+    assert dialog.updated_settings().work_duration_minutes == 510
+
+
+def test_elastic_schedule_can_edit_today_clock_in_time(qtbot) -> None:
+    settings = Settings(
+        work_schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        clock_in_date=date.today().isoformat(),
+        clock_in_time="09:40",
+        work_duration_minutes=540,
+    )
+    dialog = SettingsDialog(settings, initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    target = dialog.today_clock_in_input.minimumTime()
+    dialog.today_clock_in_input.setTime(target)
+
+    assert dialog.today_clock_in_input.minimumTime().toString("HH:mm") == "09:30"
+    assert dialog.updated_settings().clock_in_time == target.toString("HH:mm")
+    assert "18:30" in dialog.today_clock_in_hint.text()
+
+
+def test_today_clock_in_editor_does_not_allow_a_future_minute(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(QTime, "currentTime", staticmethod(lambda: QTime(9, 45)))
+    settings = Settings(
+        work_schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        clock_in_date=date.today().isoformat(),
+        clock_in_time="09:40",
+    )
+    dialog = SettingsDialog(settings, initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    assert dialog.today_clock_in_input.maximumTime().toString("HH:mm") == "09:45"
+
+
+def test_countdown_time_editors_step_by_minute_and_allow_today_adjustment(qtbot) -> None:
+    settings = Settings(
+        work_schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        clock_in_date=date.today().isoformat(),
+        clock_in_time="09:52",
+    )
+    dialog = SettingsDialog(settings, initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    dialog.clock_in_start_input.setTime(QTime(9, 30))
+    dialog.clock_in_start_input.stepBy(1)
+    assert dialog.clock_in_start_input.time().toString("HH:mm") == "09:31"
+
+    dialog.today_clock_in_input.setTime(QTime(9, 52))
+    dialog.today_clock_in_input.stepBy(-1)
+    assert dialog.today_clock_in_input.time().toString("HH:mm") == "09:51"
+
+
+def test_fixed_schedule_does_not_edit_today_clock_in_time(qtbot) -> None:
+    settings = Settings(
+        work_schedule_mode="fixed",
+        clock_in_date=date.today().isoformat(),
+        clock_in_time="09:40",
+    )
+    dialog = SettingsDialog(settings, initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    dialog.today_clock_in_input.setTime(QTime(9, 30))
+
+    assert dialog.updated_settings().clock_in_time == "09:40"
+
+
+def test_countdown_uses_one_workday_section_and_segmented_schedule_mode(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="countdown")
+    qtbot.addWidget(dialog)
+
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "workdaySelector") is not None
+    assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "scheduleModeSwitch") is not None
+    assert dialog.fixed_schedule_radio.text() == "固定时间"
+    assert dialog.elastic_schedule_radio.text() == "弹性打卡"
+    assert dialog.schedule_mode_input.isHidden()
+
+
+def test_switching_settings_sections_resets_shared_scroll_position(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="countdown")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(20)
+
+    scroll = dialog.findChild(__import__("PySide6").QtWidgets.QScrollArea, "settingsScroll")
+    assert scroll is not None
+    scroll.verticalScrollBar().setRange(0, 100)
+    scroll.verticalScrollBar().setValue(80)
+
+    dialog.section_list.setCurrentRow(1)
+
+    assert scroll.verticalScrollBar().value() == 0
+
+
+def test_settings_value_controls_ignore_wheel_without_focus(qtbot) -> None:
+    dialog = SettingsDialog(Settings(work_schedule_mode="elastic"), initial_section="countdown")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(20)
+
+    event = QWheelEvent(
+        QPointF(0, 0),
+        QPointF(0, 0),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+    before = dialog.work_duration_input.value()
+    dialog.work_duration_input.wheelEvent(event)
+
+    assert dialog.work_duration_input.value() == before
+
+
+def test_app_update_stays_in_settings_page_and_button_becomes_update(qtbot) -> None:
+    checked: list[bool] = []
+    downloaded: list[object] = []
+    dialog = SettingsDialog(
+        Settings(),
+        on_check_app_update=lambda: checked.append(True),
+        on_download_app_update=lambda info: downloaded.append(info),
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.app_update_button.text() == "检查程序更新"
+    dialog.set_app_update_available(type("Update", (), {"version": "0.2.0", "release_notes": "更稳定"})())
+    assert dialog.app_update_button.text() == "更新"
+    dialog.app_update_button.click()
+    assert downloaded

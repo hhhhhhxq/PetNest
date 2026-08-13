@@ -243,7 +243,14 @@ class AppUpdateClient:
             )
         except AppUpdateError:
             raise
-        except (HTTPError, URLError, OSError, TimeoutError) as error:
+        except HTTPError as error:
+            if error.code == 404:
+                platform_label = "Windows" if self.platform_name == "win32" else "macOS"
+                raise AppUpdateError(
+                    f"{platform_label} 更新清单尚未发布（GitHub Release 暂无对应附件）"
+                ) from error
+            raise AppUpdateError(f"无法检查程序更新：{error}") from error
+        except (URLError, OSError, TimeoutError) as error:
             raise AppUpdateError(f"无法检查程序更新：{error}") from error
         except Exception as error:  # noqa: BLE001 - untrusted opener must not escape cleanup.
             raise AppUpdateError(f"无法检查程序更新：{error}") from error

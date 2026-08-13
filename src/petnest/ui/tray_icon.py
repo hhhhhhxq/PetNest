@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
@@ -35,6 +35,17 @@ def application_icon() -> QIcon:
     return petnest_icon()
 
 
+def _apply_menu_skin(menu: QMenu, object_name: str) -> None:
+    """为可控的平台应用皮肤；Windows/macOS 使用原生菜单避免透明黑边。"""
+    menu.setObjectName(object_name)
+    if sys.platform in {"win32", "darwin"}:
+        menu.setStyleSheet("")
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        return
+    menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+    menu.setStyleSheet(menu_stylesheet(object_name))
+
+
 class PetTrayIcon(QSystemTrayIcon):
     """提供显示切换、暂停切换和退出动作的托盘图标。"""
 
@@ -56,6 +67,8 @@ class PetTrayIcon(QSystemTrayIcon):
         on_lan_interactions: Callable[[], object] | None = None,
         on_toggle_always_on_top: Callable[[bool], object] | None = None,
         on_toggle_mouse_follow: Callable[[], object] | None = None,
+        on_visibility_changed: Callable[[bool], object] | None = None,
+        on_toggle_pause: Callable[[bool], object] | None = None,
         on_quit: Callable[[], object] | None = None,
     ) -> None:
         super().__init__(petnest_icon(), window)
@@ -73,6 +86,8 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_lan_interactions = on_lan_interactions
         self._on_toggle_always_on_top = on_toggle_always_on_top
         self._on_toggle_mouse_follow = on_toggle_mouse_follow
+        self._on_visibility_changed = on_visibility_changed
+        self._on_toggle_pause = on_toggle_pause
         self._resource_update_available = False
         self._resource_update_loading = False
         self._current_pet_name = current_pet_name or "未选择"
@@ -81,9 +96,10 @@ class PetTrayIcon(QSystemTrayIcon):
         self._resource_loading_timer.setInterval(120)
         self._resource_loading_timer.timeout.connect(self._advance_resource_loading)
         self.menu = QMenu(window)
-        self.menu.setObjectName("trayMenu")
-        self.menu.setStyleSheet(menu_stylesheet("trayMenu"))
+        _apply_menu_skin(self.menu, "trayMenu")
+        self.menu.setSeparatorsCollapsible(False)
         self.application_title_action = QAction("PetNest", self.menu)
+        self.application_title_action.setIcon(petnest_icon())
         self.application_title_action.setEnabled(False)
         self.current_pet_action = QAction(f"当前宠物：{self._current_pet_name}", self.menu)
         self.current_pet_action.setEnabled(False)
@@ -93,7 +109,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_always_on_top_action.setCheckable(True)
         self.toggle_mouse_follow_action = QAction("跟随鼠标", self.menu)
         self.toggle_mouse_follow_action.setCheckable(True)
-        self.quit_action = QAction("退出", self.menu)
+        self.quit_action = QAction("退出 PetNest", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
         self.open_pets_folder_action = QAction("打开宠物文件夹", self.menu)
@@ -124,10 +140,14 @@ class PetTrayIcon(QSystemTrayIcon):
         self.menu.insertAction(self.toggle_visibility_action, self.application_title_action)
         self.menu.insertAction(self.toggle_visibility_action, self.current_pet_action)
         self.menu.insertSeparator(self.toggle_visibility_action)
+        self.menu.addSeparator()
         self.pet_menu = self.menu.addMenu("切换宠物")
+        _apply_menu_skin(self.pet_menu, "traySubmenu")
         self.set_pet_names(pet_names or {})
         self.menu.addAction(self.lan_interactions_action)
+        self.menu.addSeparator()
         self.pet_library_menu = self.menu.addMenu("宠物库")
+        _apply_menu_skin(self.pet_library_menu, "traySubmenu")
         self.pet_library_menu.addAction(self.import_action)
         self.pet_library_menu.addAction(self.open_pets_folder_action)
         self.pet_library_menu.addAction(self.refresh_pets_action)
@@ -190,13 +210,20 @@ class PetTrayIcon(QSystemTrayIcon):
         if self.window.isVisible():
             self.window.hide()
             self.toggle_visibility_action.setText("显示")
+            if self._on_visibility_changed is not None:
+                self._on_visibility_changed(False)
         else:
             self.window.show()
             self.toggle_visibility_action.setText("隐藏")
+            if self._on_visibility_changed is not None:
+                self._on_visibility_changed(True)
 
     def _toggle_pause(self) -> None:
         paused = not self.window.player.is_paused
-        self.window.set_paused(paused)
+        if self._on_toggle_pause is not None:
+            self._on_toggle_pause(paused)
+        else:
+            self.window.set_paused(paused)
         self.toggle_pause_action.setText("继续动画" if paused else "暂停动画")
 
     def _toggle_mouse_follow(self) -> None:

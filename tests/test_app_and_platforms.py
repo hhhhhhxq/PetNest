@@ -17,6 +17,7 @@ from PySide6.QtCore import QPoint
 
 from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
+from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
@@ -81,6 +82,41 @@ def test_settings_and_cursor_entries_reuse_one_settings_center(qtbot: pytest.QtB
     assert first.section_list.currentRow() == 1
     first.reject()
     assert application._settings_center_dialog is None
+    application.shutdown()
+
+
+def test_countdown_click_opens_work_countdown_settings(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.window.countdown_clicked.emit()
+
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    assert dialog.section_list.currentRow() == 3
+    dialog.reject()
+    application.shutdown()
+
+
+def test_empty_app_update_check_clears_stale_available_update(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._pending_app_update = object()  # type: ignore[assignment]
+    application._app_update_results.put(("check", AppUpdateCheckResult(True, False)))
+
+    application._drain_app_update_results()
+
+    assert application._pending_app_update is None
     application.shutdown()
 
     def register_startup(self, enabled: bool) -> bool:

@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPixmap
+from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QImage, QMouseEvent, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -306,6 +306,23 @@ def test_countdown_card_is_below_centered_pet_and_uses_adjustable_geometry(
     assert not window.is_opaque_at(window.width() // 2, window.height() - 1)
 
 
+def test_countdown_card_requires_double_click_for_settings_request(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=12, width=200, height=60)
+    window.set_countdown_text("距离下班 01:23:45")
+    window.show()
+    clicks: list[bool] = []
+    window.countdown_clicked.connect(lambda: clicks.append(True))
+
+    QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=window._countdown_rect().center())
+    assert clicks == []
+
+    QTest.mouseDClick(window, Qt.MouseButton.LeftButton, pos=window._countdown_rect().center())
+
+    assert clicks == [True]
+
+
 def test_countdown_ignores_transparent_padding_below_visible_pet(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     package = _package(tmp_path)
     for path in package.animations["idle"].frames:
@@ -424,7 +441,9 @@ def test_mouse_enter_and_click_drive_the_configured_state_machine(qtbot: pytest.
     qtbot.addWidget(window)
     window.show()
 
-    QTest.mouseMove(window, window.rect().center())
+    center = window.rect().center()
+    enter = QEnterEvent(QPointF(center), QPointF(center), QPointF(window.mapToGlobal(center)))
+    QApplication.sendEvent(window, enter)
     assert window.current_action == "hover"
 
     QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=window.rect().center())
@@ -606,6 +625,55 @@ def test_tray_menu_groups_application_and_pet_library_actions(qtbot: pytest.QtBo
     assert tray.toggle_always_on_top_action.isCheckable()
     tray.set_always_on_top_enabled(True)
     assert tray.toggle_always_on_top_action.isChecked()
+
+
+def test_tray_submenus_use_the_same_glass_menu_skin(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window, pet_names={"cat": "小猫"})
+
+    assert tray.pet_menu.objectName() == "traySubmenu"
+    assert tray.pet_library_menu.objectName() == "traySubmenu"
+    assert tray.pet_menu.styleSheet() == tray.pet_library_menu.styleSheet()
+    if __import__("sys").platform in {"win32", "darwin"}:
+        assert tray.pet_menu.styleSheet() == ""
+        assert not tray.pet_menu.testAttribute(__import__("PySide6").QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+    else:
+        assert "QMenu#traySubmenu" in tray.pet_menu.styleSheet()
+        assert "border-radius: 12px" in tray.pet_menu.styleSheet()
+
+
+def test_tray_visibility_and_pause_callbacks_report_new_state(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    visibility: list[bool] = []
+    pauses: list[bool] = []
+    tray = PetTrayIcon(
+        window,
+        on_visibility_changed=visibility.append,
+        on_toggle_pause=pauses.append,
+    )
+
+    tray.toggle_visibility_action.trigger()
+    tray.toggle_visibility_action.trigger()
+    tray.toggle_pause_action.trigger()
+
+    assert visibility == [False, True]
+    assert pauses == [True]
+
+
+def test_tray_menu_uses_native_macos_skin_instead_of_translucent_qss(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "darwin")
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window, pet_names={"cat": "小猫"})
+
+    assert tray.menu.styleSheet() == ""
+    assert not tray.menu.testAttribute(__import__("PySide6").QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert tray.pet_menu.styleSheet() == ""
 
 
 def test_tray_current_pet_title_can_follow_switches(qtbot: pytest.QtBot, tmp_path: Path) -> None:
