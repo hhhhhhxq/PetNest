@@ -192,6 +192,10 @@ class SettingsManager:
             version = 19
         if version == 19:
             migrated.setdefault("lan_group_chat_notifications_enabled", True)
+            migrated["schema_version"] = 20
+            version = 20
+        if version == 20:
+            migrated.setdefault("codex_usage_unlocked", False)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

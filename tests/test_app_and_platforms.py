@@ -13,8 +13,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import QPoint
+from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtCore import QPoint, Qt
 
 from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
@@ -84,6 +84,73 @@ def test_settings_and_cursor_entries_reuse_one_settings_center(qtbot: pytest.QtB
     assert first.section_list.currentRow() == 1
     first.reject()
     assert application._settings_center_dialog is None
+    application.shutdown()
+
+
+def test_unlocking_codex_usage_persists_and_shows_tray_action(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+    assert application.tray is not None
+    assert not application.tray.codex_usage_action.isVisible()
+
+    application._unlock_codex_usage()
+
+    assert application.settings.codex_usage_unlocked is True
+    assert settings_manager.load().codex_usage_unlocked is True
+    assert application.tray.codex_usage_action.isVisible()
+    application.shutdown()
+
+
+def test_version_click_unlock_survives_applying_the_open_settings_dialog(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+    application._show_settings_center("app_update")
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+
+    for _ in range(7):
+        qtbot.mouseClick(dialog.current_version_label, Qt.MouseButton.LeftButton)
+    dialog.button_box.button(QDialogButtonBox.StandardButton.Ok).click()
+
+    assert application.settings.codex_usage_unlocked is True
+    assert settings_manager.load().codex_usage_unlocked is True
+    assert application.tray is not None
+    assert application.tray.codex_usage_action.isVisible()
+    application.shutdown()
+
+
+def test_codex_usage_unlock_is_restored_when_application_restarts(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_usage_unlocked=True))
+
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+
+    assert application.tray is not None
+    assert application.tray.codex_usage_action.isVisible()
     application.shutdown()
 
 

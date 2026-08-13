@@ -748,15 +748,31 @@ def test_tray_exposes_lan_interaction_action(qtbot: pytest.QtBot, tmp_path: Path
     assert calls == ["lan"]
 
 
-def test_tray_exposes_codex_usage_action(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_tray_hides_codex_usage_until_unlocked(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)
     calls: list[str] = []
     tray = PetTrayIcon(window, on_codex_usage=lambda: calls.append("usage"))
 
     assert tray.codex_usage_action.text() == "Codex 用量…"
+    assert not tray.codex_usage_action.isVisible()
+
+    tray.set_codex_usage_unlocked(True)
+
+    assert tray.codex_usage_action.isVisible()
     tray.codex_usage_action.trigger()
     assert calls == ["usage"]
+
+
+def test_tray_shows_codex_usage_for_previously_unlocked_user(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+
+    tray = PetTrayIcon(window, codex_usage_unlocked=True)
+
+    assert tray.codex_usage_action.isVisible()
 
 
 def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp_path: Path) -> None:

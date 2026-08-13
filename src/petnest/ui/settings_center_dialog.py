@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSignalBlocker, QTime, Qt, QRect, QSize
+from PySide6.QtCore import QPoint, QSignalBlocker, QTime, Qt, QRect, QSize, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -203,6 +203,17 @@ class FocusWheelSnappingSlider(_FocusWheelMixin, SnappingSlider):
     """可吸附节点且不会被页面滚轮误触的滑块。"""
 
 
+class ClickableLabel(QLabel):
+    """把普通标签变成只响应鼠标左键的轻量点击入口。"""
+
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature
+        if event.button() == Qt.MouseButton.LeftButton:  # type: ignore[attr-defined]
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)  # type: ignore[arg-type]
+
+
 class MinuteStepTimeEdit(_FocusWheelMixin, QTimeEdit):
     """时间输入按整分钟步进，避免短时间范围只能切换小时。"""
 
@@ -254,6 +265,7 @@ class SettingsCenterDialog(QDialog):
         *,
         on_check_app_update: Callable[[], object] | None = None,
         on_download_app_update: Callable[[object], object] | None = None,
+        on_unlock_codex_usage: Callable[[], object] | None = None,
         cursor_styles: list[CursorStyle] | None = None,
         supported_roles: Iterable[str] | None = None,
         pet_preview_path: Path | None = None,
@@ -265,6 +277,8 @@ class SettingsCenterDialog(QDialog):
         self._supported_roles = frozenset(supported_roles) if supported_roles is not None else None
         self._on_check_app_update = on_check_app_update
         self._on_download_app_update = on_download_app_update
+        self._on_unlock_codex_usage = on_unlock_codex_usage
+        self._version_click_count = 0
         self._pet_preview_path = pet_preview_path
         self._pet_preview_pixmap = QPixmap()
         self._app_update_info: object | None = None
@@ -1051,8 +1065,14 @@ class SettingsCenterDialog(QDialog):
         card, card_layout = self._card("程序版本", "更新检查不会影响当前宠物和设置。", page)
         from petnest import __version__
 
-        self.current_version_label = QLabel(f"当前版本  {__version__}", card)
+        self.current_version_label = ClickableLabel(f"当前版本  {__version__}", card)
+        self.current_version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.current_version_label.clicked.connect(self._handle_version_click)
         card_layout.addWidget(self.current_version_label)
+        self.codex_unlock_status_label = QLabel("Codex 用量入口已解锁", card)
+        self.codex_unlock_status_label.setObjectName("mutedLabel")
+        self.codex_unlock_status_label.hide()
+        card_layout.addWidget(self.codex_unlock_status_label)
         self.app_update_status_label = QLabel("尚未检查更新。", card)
         self.app_update_status_label.setObjectName("mutedLabel")
         self.app_update_status_label.setWordWrap(True)
@@ -1076,6 +1096,17 @@ class SettingsCenterDialog(QDialog):
         layout.addWidget(card)
         layout.addStretch(1)
         return page
+
+    def _handle_version_click(self) -> None:
+        if self._settings.codex_usage_unlocked:
+            return
+        self._version_click_count += 1
+        if self._version_click_count < 7:
+            return
+        self._settings = replace(self._settings, codex_usage_unlocked=True)
+        self.codex_unlock_status_label.show()
+        if self._on_unlock_codex_usage is not None:
+            self._on_unlock_codex_usage()
 
     def _handle_app_update_button(self) -> None:
         if self._app_update_info is not None and self._on_download_app_update is not None:

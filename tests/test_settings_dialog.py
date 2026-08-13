@@ -418,3 +418,52 @@ def test_app_update_stays_in_settings_page_and_button_becomes_update(qtbot) -> N
     assert dialog.app_update_button.text() == "更新"
     dialog.app_update_button.click()
     assert downloaded
+
+
+def test_clicking_version_seven_times_unlocks_codex_usage_once(qtbot) -> None:
+    unlocked: list[bool] = []
+    dialog = SettingsDialog(
+        Settings(),
+        initial_section="app_update",
+        on_unlock_codex_usage=lambda: unlocked.append(True),
+    )
+    qtbot.addWidget(dialog)
+
+    for _ in range(6):
+        qtbot.mouseClick(dialog.current_version_label, Qt.MouseButton.LeftButton)
+    assert unlocked == []
+    assert dialog.updated_settings().codex_usage_unlocked is False
+
+    qtbot.mouseClick(dialog.current_version_label, Qt.MouseButton.LeftButton)
+
+    assert unlocked == [True]
+    assert dialog.updated_settings().codex_usage_unlocked is True
+    assert dialog.codex_unlock_status_label.text() == "Codex 用量入口已解锁"
+    assert not dialog.codex_unlock_status_label.isHidden()
+
+    qtbot.mouseClick(dialog.current_version_label, Qt.MouseButton.LeftButton)
+    assert unlocked == [True]
+
+
+def test_version_unlock_click_count_resets_with_each_settings_window(qtbot) -> None:
+    unlocked: list[bool] = []
+    first = SettingsDialog(
+        Settings(),
+        initial_section="app_update",
+        on_unlock_codex_usage=lambda: unlocked.append(True),
+    )
+    qtbot.addWidget(first)
+    for _ in range(6):
+        qtbot.mouseClick(first.current_version_label, Qt.MouseButton.LeftButton)
+    first.close()
+
+    second = SettingsDialog(
+        Settings(),
+        initial_section="app_update",
+        on_unlock_codex_usage=lambda: unlocked.append(True),
+    )
+    qtbot.addWidget(second)
+    qtbot.mouseClick(second.current_version_label, Qt.MouseButton.LeftButton)
+
+    assert unlocked == []
+    assert second.updated_settings().codex_usage_unlocked is False

@@ -332,6 +332,7 @@ class PetNest:
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
                 on_codex_usage=self.show_codex_usage_dialog,
+                codex_usage_unlocked=self.settings.codex_usage_unlocked,
                 on_cursor_styles=self.show_cursor_style_dialog,
                 on_resource_update=self._handle_resource_update_action,
                 on_lan_interactions=self.show_lan_interaction_dialog,
@@ -585,6 +586,15 @@ class PetNest:
         dialog.raise_()
         dialog.activateWindow()
 
+    def _unlock_codex_usage(self) -> None:
+        """永久解锁 Codex 用量入口，并立即刷新当前托盘菜单。"""
+        if self.settings.codex_usage_unlocked:
+            return
+        self.settings = replace(self.settings, codex_usage_unlocked=True)
+        self.settings_manager.save(self.settings)
+        if self.tray is not None:
+            self.tray.set_codex_usage_unlocked(True)
+
     def _clear_codex_usage_dialog(self, dialog: CodexUsageDialog) -> None:
         if self._codex_usage_dialog is dialog:
             self._codex_usage_dialog = None
@@ -620,6 +630,7 @@ class PetNest:
             self.window,
             on_check_app_update=self._check_app_update_from_settings if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_download_app_update=self._schedule_app_update_download if sys.platform in APP_UPDATE_PLATFORMS else None,
+            on_unlock_codex_usage=self._unlock_codex_usage,
             cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
             pet_preview_path=preview_path,

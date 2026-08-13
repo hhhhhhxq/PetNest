@@ -63,6 +63,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
         on_codex_usage: Callable[[], object] | None = None,
+        codex_usage_unlocked: bool = False,
         on_cursor_styles: Callable[[], object] | None = None,
         on_resource_update: Callable[[], object] | None = None,
         on_lan_interactions: Callable[[], object] | None = None,
@@ -159,6 +160,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.pet_library_menu.addAction(self.reload_action)
         self.menu.addAction(self.settings_action)
         self.menu.addAction(self.codex_usage_action)
+        self.set_codex_usage_unlocked(codex_usage_unlocked)
         self.menu.addAction(self.cursor_styles_action)
         self.menu.addAction(self.resource_update_action)
         self.menu.addSeparator()
@@ -181,6 +183,10 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def set_always_on_top_enabled(self, enabled: bool) -> None:
         self.toggle_always_on_top_action.setChecked(enabled)
+
+    def set_codex_usage_unlocked(self, unlocked: bool) -> None:
+        """按本地解锁状态显示或隐藏 Codex 用量入口。"""
+        self.codex_usage_action.setVisible(bool(unlocked))
 
     def set_resource_update_available(self, available: bool) -> None:
         """在资源动作旁显示或清除蓝色更新提示点。"""

@@ -189,6 +189,21 @@ def test_group_chat_notification_preference_round_trips_and_migrates(tmp_path) -
     assert migrated.lan_group_chat_notifications_enabled is True
 
 
+def test_codex_usage_unlock_defaults_migrates_and_round_trips(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+
+    assert manager.load().codex_usage_unlocked is False
+
+    path.write_text('{"schema_version": 20}', encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.codex_usage_unlocked is False
+
+    manager.save(Settings(codex_usage_unlocked=True))
+    assert manager.load().codex_usage_unlocked is True
+
+
 def test_elastic_clock_in_defaults_are_available_and_round_trip(tmp_path) -> None:
     path = tmp_path / "settings.json"
     manager = SettingsManager(path)
