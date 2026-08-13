@@ -7,9 +7,10 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, QTime, Qt, QRect, QSize
+from PySide6.QtCore import QPoint, QSignalBlocker, QTime, Qt, QRect, QSize
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -72,6 +73,10 @@ class ToggleSwitch(QCheckBox):
     def sizeHint(self) -> QSize:
         base = super().sizeHint()
         return QSize(max(base.width() + 52, 160), max(base.height(), 32))
+
+    def hitButton(self, pos: QPoint) -> bool:  # noqa: N802 - Qt override signature
+        """让自绘的文字与开关轨道都属于实际可点击区域。"""
+        return self.rect().contains(pos)
 
     def paintEvent(self, _event: object) -> None:  # noqa: ARG002 - Qt event signature
         painter = QPainter(self)
@@ -156,6 +161,10 @@ class SegmentRadioButton(QRadioButton):
 class _FocusWheelMixin:
     """只有控件已获得焦点时才允许滚轮改值，否则交给外层滚动页面。"""
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[misc]
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # type: ignore[attr-defined]
+
     def wheelEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature
         if not self.hasFocus():
             event.ignore()  # type: ignore[attr-defined]
@@ -225,6 +234,10 @@ class MinuteStepTimeEdit(_FocusWheelMixin, QTimeEdit):
 class SettingsCenterDialog(QDialog):
     """一个窗口承载显示、鼠标、空闲、倒计时和更新五类设置。"""
 
+    _PREFERRED_SIZE = QSize(1180, 760)
+    _ROOMY_MINIMUM_SIZE = QSize(1000, 680)
+    _SCREEN_MARGIN = 16
+
     _SECTION_NAMES = (
         ("display", "显示与窗口"),
         ("mouse_behavior", "鼠标与行为"),
@@ -257,8 +270,8 @@ class SettingsCenterDialog(QDialog):
         self._app_update_info: object | None = None
         self.setObjectName("settingsCenter")
         self.setWindowTitle("PetNest 设置中心")
-        self.setMinimumSize(1000, 680)
-        self.resize(1180, 760)
+        self.setMinimumSize(self._ROOMY_MINIMUM_SIZE)
+        self.resize(self._PREFERRED_SIZE)
         self.setStyleSheet(dialog_stylesheet())
 
         # 互动设置仍由互动窗口负责；保留隐藏兼容属性，不在设置中心页面呈现。
@@ -325,28 +338,28 @@ class SettingsCenterDialog(QDialog):
         for _key, label in self._SECTION_NAMES:
             self.section_list.addItem(QListWidgetItem(label))
         sidebar_layout.addWidget(self.section_list, 1)
-        status_title = QLabel("当前状态", sidebar)
-        status_title.setObjectName("mutedLabel")
-        status_title.setStyleSheet("font-size: 12px; font-weight: 700; letter-spacing: 1px;")
-        sidebar_layout.addWidget(status_title)
-        status_card = QFrame(sidebar)
-        status_card.setObjectName("statusCard")
-        status_layout = QVBoxLayout(status_card)
+        self.status_title = QLabel("当前状态", sidebar)
+        self.status_title.setObjectName("mutedLabel")
+        self.status_title.setStyleSheet("font-size: 12px; font-weight: 700; letter-spacing: 1px;")
+        sidebar_layout.addWidget(self.status_title)
+        self.status_card = QFrame(sidebar)
+        self.status_card.setObjectName("statusCard")
+        status_layout = QVBoxLayout(self.status_card)
         status_layout.setContentsMargins(14, 11, 14, 11)
         status_row = QHBoxLayout()
-        status_dot = QLabel("●", status_card)
+        status_dot = QLabel("●", self.status_card)
         status_dot.setStyleSheet("color: #6D9A7A; font-size: 15px;")
         status_row.addWidget(status_dot)
-        status_label = QLabel("桌宠在线", status_card)
+        status_label = QLabel("桌宠在线", self.status_card)
         status_label.setStyleSheet("color: #6B625D; font-size: 14px;")
         status_row.addWidget(status_label)
         status_row.addStretch(1)
         status_layout.addLayout(status_row)
-        current_pet = QLabel(f"当前宠物 · {self._settings.current_pet_id or '未选择'}", status_card)
+        current_pet = QLabel(f"当前宠物 · {self._settings.current_pet_id or '未选择'}", self.status_card)
         current_pet.setObjectName("mutedLabel")
         current_pet.setWordWrap(True)
         status_layout.addWidget(current_pet)
-        sidebar_layout.addWidget(status_card)
+        sidebar_layout.addWidget(self.status_card)
         body.addWidget(sidebar)
 
         content_pane = QFrame(window_shell)
@@ -401,6 +414,41 @@ class SettingsCenterDialog(QDialog):
 
         self.section_list.currentRowChanged.connect(self._change_section)
         self.section_list.setCurrentRow(self._section_index(initial_section))
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            self._fit_to_available_geometry(screen.availableGeometry())
+
+    def _fit_to_available_geometry(self, available: QRect) -> None:
+        """在小屏或高 DPI 环境中保住导航，空间充足时保持设计尺寸。"""
+        usable_width = max(1, available.width() - self._SCREEN_MARGIN * 2)
+        usable_height = max(1, available.height() - self._SCREEN_MARGIN * 2)
+        constrained = (
+            usable_width < self._ROOMY_MINIMUM_SIZE.width()
+            or usable_height < self._ROOMY_MINIMUM_SIZE.height()
+        )
+        short_screen = usable_height < self._ROOMY_MINIMUM_SIZE.height()
+        self.status_title.setVisible(not short_screen)
+        self.status_card.setVisible(not short_screen)
+
+        navigation_height = sum(
+            max(1, self.section_list.sizeHintForRow(row))
+            for row in range(self.section_list.count())
+        )
+        frame_height = self.section_list.frameWidth() * 2
+        navigation_padding = 16  # 与 settingsNavigation 的上下 QSS padding 一致。
+        self.section_list.setMinimumHeight(navigation_height + frame_height + navigation_padding)
+
+        if constrained:
+            self.setMinimumSize(
+                min(self._ROOMY_MINIMUM_SIZE.width(), usable_width),
+                min(self.minimumSizeHint().height(), usable_height),
+            )
+        else:
+            self.setMinimumSize(self._ROOMY_MINIMUM_SIZE)
+        self.resize(
+            min(self._PREFERRED_SIZE.width(), usable_width),
+            min(self._PREFERRED_SIZE.height(), usable_height),
+        )
 
     def _section_index(self, section: str) -> int:
         aliases = {

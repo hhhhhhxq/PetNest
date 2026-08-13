@@ -8,8 +8,8 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, QPointF, QTime, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, QTime, Qt
+from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -30,6 +30,64 @@ def test_settings_dialog_is_the_shared_five_section_center(qtbot, tmp_path: Path
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "settingsSidebar") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "statusCard") is not None
+
+
+def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:
+    dialog = SettingsDialog(Settings())
+    qtbot.addWidget(dialog)
+
+    dialog._fit_to_available_geometry(QRect(0, 0, 1920, 1040))
+
+    assert dialog.minimumSize() == QSize(1000, 680)
+    assert dialog.size() == QSize(1180, 760)
+    assert not dialog.status_title.isHidden()
+    assert not dialog.status_card.isHidden()
+
+
+def test_settings_center_keeps_status_card_when_only_width_is_constrained(qtbot) -> None:
+    dialog = SettingsDialog(Settings())
+    qtbot.addWidget(dialog)
+
+    dialog._fit_to_available_geometry(QRect(0, 0, 960, 900))
+
+    assert dialog.width() <= 928
+    assert dialog.height() == 760
+    assert not dialog.status_title.isHidden()
+    assert not dialog.status_card.isHidden()
+
+
+def test_settings_center_prioritizes_complete_navigation_on_short_screen(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="mouse_behavior")
+    qtbot.addWidget(dialog)
+
+    available = QRect(0, 0, 960, 600)
+    dialog._fit_to_available_geometry(available)
+    dialog.show()
+    qtbot.wait(20)
+
+    assert dialog.width() <= available.width() - 32
+    assert dialog.height() <= available.height() - 32
+    assert dialog.status_title.isHidden()
+    assert dialog.status_card.isHidden()
+    last_row = dialog.section_list.visualItemRect(
+        dialog.section_list.item(dialog.section_list.count() - 1)
+    )
+    assert last_row.bottom() < dialog.section_list.viewport().height()
+
+
+def test_settings_center_navigation_height_follows_larger_system_font(qtbot) -> None:
+    dialog = SettingsDialog(Settings())
+    qtbot.addWidget(dialog)
+    dialog.section_list.setFont(QFont("Microsoft YaHei UI", 16))
+
+    dialog._fit_to_available_geometry(QRect(0, 0, 960, 640))
+    dialog.show()
+    qtbot.wait(20)
+
+    last_row = dialog.section_list.visualItemRect(
+        dialog.section_list.item(dialog.section_list.count() - 1)
+    )
+    assert last_row.bottom() < dialog.section_list.viewport().height()
 
 
 def test_settings_dialog_persists_remote_partner_toggle(qtbot) -> None:
@@ -61,6 +119,31 @@ def test_mouse_follow_and_cursor_scale_controls_are_linked(qtbot) -> None:
     dialog.cursor_scale_slider.snap_to_node()
     assert dialog.cursor_scale_slider.value() in {80, 100, 125, 150}
     assert dialog.updated_settings().cursor_scale == dialog.cursor_scale_slider.value()
+
+
+def test_mouse_behavior_switches_respond_when_painted_tracks_are_clicked(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(mouse_follow_enabled=False, cursor_style_enabled=False),
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(20)
+
+    follow_switch = dialog.mouse_follow_input
+    follow_track = QPoint(follow_switch.width() - 24, follow_switch.height() // 2)
+    qtbot.mouseClick(follow_switch, Qt.MouseButton.LeftButton, pos=follow_track)
+
+    assert follow_switch.isChecked()
+    assert dialog.mouse_follow_scale_input.isEnabled()
+
+    cursor_switch = dialog.cursor_style_enabled_input
+    cursor_track = QPoint(cursor_switch.width() - 24, cursor_switch.height() // 2)
+    qtbot.mouseClick(cursor_switch, Qt.MouseButton.LeftButton, pos=cursor_track)
+
+    assert cursor_switch.isChecked()
+    assert dialog.cursor_style_input.isEnabled()
+    assert dialog.cursor_scale_slider.isEnabled()
 
 
 def test_workday_choice_is_shared_by_fixed_and_elastic_modes(qtbot) -> None:
@@ -269,6 +352,55 @@ def test_settings_value_controls_ignore_wheel_without_focus(qtbot) -> None:
     dialog.work_duration_input.wheelEvent(event)
 
     assert dialog.work_duration_input.value() == before
+    assert not event.isAccepted()
+
+
+def test_settings_value_controls_only_accept_focus_by_direct_click(qtbot) -> None:
+    dialog = SettingsDialog(Settings(work_schedule_mode="elastic"), initial_section="countdown")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(20)
+
+    value_controls = (
+        dialog.scale_input,
+        dialog.mouse_follow_scale_input,
+        dialog.cursor_style_input,
+        dialog.cursor_scale_slider,
+        dialog.system_bored_input,
+        dialog.system_sleep_input,
+        dialog.countdown_gap_input,
+        dialog.countdown_width_input,
+        dialog.countdown_height_input,
+        dialog.countdown_theme_input,
+        dialog.work_start_input,
+        dialog.work_end_input,
+        dialog.clock_in_start_input,
+        dialog.clock_in_end_input,
+        dialog.work_duration_input,
+        dialog.today_clock_in_input,
+    )
+
+    assert all(control.focusPolicy() == Qt.FocusPolicy.ClickFocus for control in value_controls)
+
+    control = dialog.work_duration_input
+    qtbot.mouseClick(control, Qt.MouseButton.LeftButton, pos=control.rect().center())
+    assert control.hasFocus()
+
+    before = control.value()
+    event = QWheelEvent(
+        QPointF(0, 0),
+        QPointF(0, 0),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+    control.wheelEvent(event)
+
+    assert control.value() > before
+    assert event.isAccepted()
 
 
 def test_app_update_stays_in_settings_page_and_button_becomes_update(qtbot) -> None:
