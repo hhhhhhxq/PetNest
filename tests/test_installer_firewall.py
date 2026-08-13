@@ -20,7 +20,11 @@ def test_installer_declares_scoped_lan_firewall_configuration() -> None:
     assert "Profiles := GetFirewallProfiles('');" in script
     assert "[UninstallRun]" in script
     assert "PetNest LAN UDP 18487" in script
+    assert "PetNest LAN TCP 18487" in script
+    assert "protocol=UDP" in script
+    assert "protocol=TCP" in script
     assert "RunOnceId: \"RemovePetNestLanFirewall\"" in script
+    assert "RunOnceId: \"RemovePetNestLanChatFirewall\"" in script
 
 
 def test_installer_warns_when_firewall_rule_cannot_be_created() -> None:

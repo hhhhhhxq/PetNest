@@ -1,4 +1,4 @@
-"""基于 UDP 广播的局域网发现与互动传输。"""
+"""UDP discovery/interactions and framed TCP chat for trusted LAN peers."""
 
 from __future__ import annotations
 
@@ -7,15 +7,18 @@ from ipaddress import IPv4Address, ip_address as parse_ip_address
 from time import monotonic
 
 from PySide6.QtCore import QObject, QTimer, Signal
-from PySide6.QtNetwork import QHostAddress, QUdpSocket
+from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket, QUdpSocket
 
 from petnest.core.lan_interaction import (
     LAN_INTERACTION_PORT,
+    MAX_CHAT_PACKET_BYTES,
     LanPacketCodec,
     LanProtocolError,
+    ReceivedCodexUsageSync,
     ReceivedInteraction,
 )
-from petnest.models.lan_interaction import InteractionDraft, LanPeer
+from petnest.core.codex_usage import CodexDeviceUsageSnapshot
+from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, InteractionDraft, LanChatMessage, LanPeer
 
 LOGGER = logging.getLogger(__name__)
 MANUAL_PROBE_TIMEOUT_MS = 4_000
@@ -23,12 +26,16 @@ MANUAL_REFRESH_INTERVAL_MS = 8_000
 
 
 class LanInteractionService(QObject):
-    """不阻塞 GUI 的本地 UDP 服务，只广播身份和安全互动消息。"""
+    """不阻塞 GUI 的局域网发现、互动与聊天服务。"""
 
     peer_changed = Signal(object)
     peer_removed = Signal(str)
     interaction_received = Signal(object)
     manual_probe_succeeded = Signal(object)
+    codex_usage_sync_requested = Signal(object)
+    codex_usage_sync_received = Signal(object)
+    chat_message_added = Signal(object)
+    chat_message_received = Signal(object)
     error = Signal(str)
     running_changed = Signal(bool)
 
@@ -51,10 +58,18 @@ class LanInteractionService(QObject):
         self._peers: dict[str, LanPeer] = {}
         self._peer_seen_at: dict[str, float] = {}
         self._interaction_times: dict[str, list[float]] = {}
+        self._usage_sync_times: dict[str, list[float]] = {}
+        self._chat_times: dict[tuple[str, str], list[float]] = {}
+        self._chat_messages: list[LanChatMessage] = []
+        self._chat_message_ids: set[str] = set()
         self._manual_peer_targets: dict[str, tuple[str, int]] = {}
         self._manual_probe_target: tuple[str, int] | None = None
         self._socket = QUdpSocket(self)
         self._socket.readyRead.connect(self._read_datagrams)
+        self._tcp_server = QTcpServer(self)
+        self._tcp_server.newConnection.connect(self._accept_chat_connections)
+        self._incoming_chat_buffers: dict[QTcpSocket, bytearray] = {}
+        self._outgoing_chat_sockets: set[QTcpSocket] = set()
         self._announce_timer = QTimer(self)
         self._announce_timer.setInterval(8_000)
         self._announce_timer.timeout.connect(self.discover)
@@ -77,8 +92,24 @@ class LanInteractionService(QObject):
     def port(self) -> int:
         return self._port
 
+    @property
+    def chat_is_available(self) -> bool:
+        return self._running and self._tcp_server.isListening()
+
     def peers(self) -> tuple[LanPeer, ...]:
         return tuple(sorted(self._peers.values(), key=lambda item: item.display_name.casefold()))
+
+    def manual_peer_ids(self) -> tuple[str, ...]:
+        return tuple(self._manual_peer_targets)
+
+    def chat_messages(self, peer_device_id: str | None = None) -> tuple[LanChatMessage, ...]:
+        if peer_device_id is None:
+            return tuple(self._chat_messages)
+        return tuple(
+            message
+            for message in self._chat_messages
+            if message.peer_device_id(self.device_id) == peer_device_id
+        )
 
     def start(self) -> bool:
         if self._running:
@@ -90,6 +121,10 @@ class LanInteractionService(QObject):
             self.error.emit(message)
             return False
         self._port = self._socket.localPort()
+        if not self._tcp_server.listen(QHostAddress.SpecialAddress.AnyIPv4, self._port):
+            message = f"局域网聊天暂不可用：{self._tcp_server.errorString()}"
+            LOGGER.warning(message)
+            self.error.emit(message)
         self._running = True
         self._announce_timer.start()
         self._expiry_timer.start()
@@ -105,6 +140,12 @@ class LanInteractionService(QObject):
         self._expiry_timer.stop()
         self._manual_refresh_timer.stop()
         self._socket.close()
+        self._tcp_server.close()
+        for socket in tuple(self._incoming_chat_buffers) + tuple(self._outgoing_chat_sockets):
+            socket.abort()
+            socket.deleteLater()
+        self._incoming_chat_buffers.clear()
+        self._outgoing_chat_sockets.clear()
         self._manual_probe_timer.stop()
         self._manual_peer_targets.clear()
         self._manual_probe_target = None
@@ -112,6 +153,8 @@ class LanInteractionService(QObject):
         self._peers.clear()
         self._peer_seen_at.clear()
         self._interaction_times.clear()
+        self._usage_sync_times.clear()
+        self._chat_times.clear()
         self.running_changed.emit(False)
 
     def update_identity(self, *, display_name: str, pet_name: str) -> None:
@@ -189,6 +232,171 @@ class LanInteractionService(QObject):
         packet = LanPacketCodec.interaction(draft, self.device_id, self.display_name)
         return self._send_packet(packet, QHostAddress(peer.ip_address), peer.port)
 
+    def send_chat(self, draft: ChatDraft) -> bool:
+        """Send a framed chat message over TCP to a discovered LAN peer."""
+        if not self._running:
+            self.error.emit("局域网互动服务尚未启动")
+            return False
+        if not self.chat_is_available:
+            self.error.emit("本机 TCP 聊天端口被占用，请关闭其他 PetNest 进程后重试")
+            return False
+        peer = self._peers.get(draft.target_device_id)
+        if peer is None or not peer.ip_address or not peer.port:
+            self.error.emit("聊天对象已离线，请刷新附近设备")
+            return False
+        try:
+            message = draft.to_message(
+                sender_device_id=self.device_id,
+                sender_name=self.display_name,
+            )
+            frame = LanPacketCodec.encode_chat_frame(message)
+        except (LanProtocolError, TypeError, ValueError) as error:
+            self.error.emit(str(error))
+            return False
+
+        socket = QTcpSocket(self)
+        self._outgoing_chat_sockets.add(socket)
+        socket.connected.connect(lambda: self._write_chat_frame(socket, frame, message))
+        socket.disconnected.connect(lambda: self._cleanup_chat_socket(socket))
+        socket.errorOccurred.connect(lambda _error: self._chat_socket_failed(socket, peer.display_name))
+        timeout = QTimer(socket)
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(lambda: self._chat_connect_timeout(socket, peer.display_name))
+        timeout.start(5_000)
+        socket.connectToHost(peer.ip_address, peer.port)
+        return True
+
+    def _write_chat_frame(self, socket: QTcpSocket, frame: bytes, message: LanChatMessage) -> None:
+        if socket not in self._outgoing_chat_sockets:
+            return
+        written = socket.write(frame)
+        if written != len(frame):
+            self.error.emit(f"聊天消息发送失败：{socket.errorString()}")
+            socket.abort()
+            return
+        self._remember_chat_message(message)
+        socket.disconnectFromHost()
+
+    def _chat_socket_failed(self, socket: QTcpSocket, peer_name: str) -> None:
+        if socket not in self._outgoing_chat_sockets:
+            return
+        self.error.emit(f"无法发送给 {peer_name}：{socket.errorString()}")
+        self._cleanup_chat_socket(socket)
+
+    def _chat_connect_timeout(self, socket: QTcpSocket, peer_name: str) -> None:
+        if socket not in self._outgoing_chat_sockets:
+            return
+        self.error.emit(f"连接 {peer_name} 超时，聊天消息未发送")
+        socket.abort()
+        self._cleanup_chat_socket(socket)
+
+    def _accept_chat_connections(self) -> None:
+        while self._tcp_server.hasPendingConnections():
+            socket = self._tcp_server.nextPendingConnection()
+            if socket is None:
+                break
+            self._incoming_chat_buffers[socket] = bytearray()
+            timeout = QTimer(socket)
+            timeout.setSingleShot(True)
+            timeout.setInterval(10_000)
+            timeout.timeout.connect(socket.abort)
+            timeout.start()
+            socket.readyRead.connect(lambda socket=socket: self._read_chat_stream(socket))
+            socket.disconnected.connect(lambda socket=socket: self._cleanup_chat_socket(socket))
+            socket.errorOccurred.connect(lambda _error, socket=socket: self._cleanup_chat_socket(socket))
+
+    def _read_chat_stream(self, socket: QTcpSocket) -> None:
+        buffer = self._incoming_chat_buffers.get(socket)
+        if buffer is None:
+            return
+        buffer.extend(bytes(socket.readAll()))
+        while len(buffer) >= 4:
+            payload_size = int.from_bytes(buffer[:4], "big")
+            if payload_size <= 0 or payload_size > MAX_CHAT_PACKET_BYTES:
+                LOGGER.warning("拒绝超过安全大小的局域网聊天消息")
+                socket.abort()
+                return
+            if len(buffer) < 4 + payload_size:
+                return
+            payload = bytes(buffer[4 : 4 + payload_size])
+            del buffer[: 4 + payload_size]
+            try:
+                message = LanPacketCodec.decode_chat_message(payload, local_device_id=self.device_id)
+            except LanProtocolError as error:
+                LOGGER.debug("忽略无效局域网聊天消息：%s", error)
+                socket.abort()
+                return
+            if not self._trusted_chat_sender(message, socket.peerAddress()):
+                LOGGER.warning("忽略来自未握手设备的局域网聊天消息")
+                socket.abort()
+                return
+            if not self._allow_chat(message):
+                continue
+            if self._remember_chat_message(message):
+                self.chat_message_received.emit(message)
+
+    def _cleanup_chat_socket(self, socket: QTcpSocket) -> None:
+        self._incoming_chat_buffers.pop(socket, None)
+        self._outgoing_chat_sockets.discard(socket)
+        socket.deleteLater()
+
+    def _trusted_chat_sender(self, message: LanChatMessage, address: QHostAddress) -> bool:
+        peer = self._peers.get(message.sender_device_id)
+        if peer is None or not peer.ip_address:
+            return False
+        return address.toString() == peer.ip_address
+
+    def _allow_chat(self, message: LanChatMessage) -> bool:
+        now = monotonic()
+        rate_kind = "image" if message.kind is ChatMessageKind.IMAGE else "small"
+        key = (message.sender_device_id, rate_kind)
+        recent = [stamp for stamp in self._chat_times.get(key, []) if now - stamp < 60]
+        limit = 12 if message.kind is ChatMessageKind.IMAGE else 60
+        if len(recent) >= limit:
+            self._chat_times[key] = recent
+            LOGGER.warning("忽略过于频繁的局域网聊天：%s", message.sender_device_id)
+            return False
+        recent.append(now)
+        self._chat_times[key] = recent
+        return True
+
+    def _remember_chat_message(self, message: LanChatMessage) -> bool:
+        if message.message_id in self._chat_message_ids:
+            return False
+        self._chat_messages.append(message)
+        self._chat_message_ids.add(message.message_id)
+        image_bytes = sum(len(item.image_data or b"") for item in self._chat_messages)
+        while len(self._chat_messages) > 200 or image_bytes > 30 * 1024 * 1024:
+            removed = self._chat_messages.pop(0)
+            self._chat_message_ids.discard(removed.message_id)
+            image_bytes -= len(removed.image_data or b"")
+        self.chat_message_added.emit(message)
+        return True
+
+    def send_codex_usage_sync(
+        self,
+        *,
+        target_device_id: str,
+        request_id: str,
+        snapshot: CodexDeviceUsageSnapshot,
+        response: bool = False,
+    ) -> bool:
+        """Send one local-only contribution to an already discovered peer."""
+        if not self._running:
+            self.error.emit("局域网互动服务尚未启动")
+            return False
+        peer = self._peers.get(target_device_id)
+        if peer is None or not peer.ip_address or not peer.port:
+            self.error.emit("同步目标设备已离线")
+            return False
+        packet = LanPacketCodec.codex_usage_sync(
+            kind="codex_usage_sync_response" if response else "codex_usage_sync_request",
+            request_id=request_id,
+            target_device_id=target_device_id,
+            snapshot=snapshot,
+        )
+        return self._send_packet(packet, QHostAddress(peer.ip_address), peer.port)
+
     def _send_packet(self, packet: dict[str, object], address: QHostAddress, port: int) -> bool:
         try:
             data = LanPacketCodec.encode(packet)
@@ -230,6 +438,23 @@ class LanInteractionService(QObject):
                     port=self._port,
                 )
                 self._send_packet(packet, address, int(presence["port"]))
+            return
+        try:
+            usage_sync = LanPacketCodec.decode_codex_usage_sync(
+                data,
+                local_device_id=self.device_id,
+            )
+        except LanProtocolError:
+            usage_sync = None
+        if usage_sync is not None:
+            if not self._trusted_sync_sender(usage_sync, address, source_port):
+                return
+            if not self._allow_usage_sync(usage_sync.snapshot.device_id):
+                return
+            if usage_sync.kind == "codex_usage_sync_request":
+                self.codex_usage_sync_requested.emit(usage_sync)
+            else:
+                self.codex_usage_sync_received.emit(usage_sync)
             return
         received = LanPacketCodec.decode_interaction(data, local_device_id=self.device_id)
         if not self._allow_interaction(received):
@@ -276,6 +501,7 @@ class LanInteractionService(QObject):
         self.error.emit(
             f"无法验证 {target[0]}：4 秒内未收到回应。请确认对方已启动 PetNest、"
             "UDP 18487 已放行，且两个网段允许设备互通。"
+            "如需聊天，还需放行 TCP 18487。"
         )
 
     def _expire_peers(self) -> None:
@@ -296,4 +522,28 @@ class LanInteractionService(QObject):
             return False
         recent.append(now)
         self._interaction_times[received.sender_device_id] = recent
+        return True
+
+    def _trusted_sync_sender(
+        self,
+        received: ReceivedCodexUsageSync,
+        address: QHostAddress,
+        source_port: int,
+    ) -> bool:
+        """Only accept sync packets from the address registered by hello."""
+        peer = self._peers.get(received.snapshot.device_id)
+        if peer is None or not peer.ip_address or not peer.port:
+            return False
+        host = address.toString() if isinstance(address, QHostAddress) else QHostAddress(address).toString()
+        return host == peer.ip_address and int(source_port) == peer.port
+
+    def _allow_usage_sync(self, device_id: str) -> bool:
+        now = monotonic()
+        recent = [stamp for stamp in self._usage_sync_times.get(device_id, []) if now - stamp < 60]
+        if len(recent) >= 12:
+            self._usage_sync_times[device_id] = recent
+            LOGGER.warning("忽略过于频繁的 Codex 用量同步：%s", device_id)
+            return False
+        recent.append(now)
+        self._usage_sync_times[device_id] = recent
         return True

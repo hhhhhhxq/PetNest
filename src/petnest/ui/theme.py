@@ -20,7 +20,7 @@ def dialog_stylesheet() -> str:
     """返回设置、导入和编辑窗口共用的轻量 QSS。"""
     c = COLORS
     return f"""
-        QDialog, QWidget#settingsCenter {{
+        QDialog, QWidget#settingsCenter, QWidget#codexUsageContent {{
             background: {c['window_background']};
             color: {c['text']};
             font-size: 13px;

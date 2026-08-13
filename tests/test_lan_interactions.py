@@ -176,7 +176,7 @@ def test_dialog_exposes_manual_ip_entry_and_normalizes_input(qtbot) -> None:
     dialog = LanInteractionDialog(settings=Settings(device_id="local-1"), peers=[])
     qtbot.addWidget(dialog)
 
-    assert dialog.manual_ip_button.text() == "手动添加 IP"
+    assert dialog.manual_ip_button.text() == "连接电脑 IP"
     manual = ManualPeerDialog(parent=dialog)
     qtbot.addWidget(manual)
     manual.ip_input.setText(" 192.168.21.146 ")

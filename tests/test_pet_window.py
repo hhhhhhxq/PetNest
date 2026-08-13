@@ -726,6 +726,17 @@ def test_tray_exposes_lan_interaction_action(qtbot: pytest.QtBot, tmp_path: Path
     assert calls == ["lan"]
 
 
+def test_tray_exposes_codex_usage_action(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    calls: list[str] = []
+    tray = PetTrayIcon(window, on_codex_usage=lambda: calls.append("usage"))
+
+    assert tray.codex_usage_action.text() == "Codex 用量…"
+    tray.codex_usage_action.trigger()
+    assert calls == ["usage"]
+
+
 def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     package = _package(tmp_path)
     machine = PetWindow._make_state_machine(package)

@@ -62,6 +62,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_refresh_pets: Callable[[], object] | None = None,
         on_edit_animations: Callable[[], object] | None = None,
         on_settings: Callable[[], object] | None = None,
+        on_codex_usage: Callable[[], object] | None = None,
         on_cursor_styles: Callable[[], object] | None = None,
         on_resource_update: Callable[[], object] | None = None,
         on_lan_interactions: Callable[[], object] | None = None,
@@ -81,6 +82,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_refresh_pets = on_refresh_pets
         self._on_edit_animations = on_edit_animations
         self._on_settings = on_settings
+        self._on_codex_usage = on_codex_usage
         self._on_cursor_styles = on_cursor_styles
         self._on_resource_update = on_resource_update
         self._on_lan_interactions = on_lan_interactions
@@ -116,6 +118,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.refresh_pets_action = QAction("刷新宠物列表", self.menu)
         self.edit_animations_action = QAction("编辑动画时长…", self.menu)
         self.settings_action = QAction("设置…", self.menu)
+        self.codex_usage_action = QAction("Codex 用量…", self.menu)
         self.lan_interactions_action = QAction("互动…", self.menu)
         cursor_styles_supported = sys.platform in {"win32", "darwin"}
         cursor_styles_label = "鼠标样式…" if cursor_styles_supported else "鼠标样式…（当前平台暂不支持）"
@@ -133,6 +136,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.refresh_pets_action.triggered.connect(self._refresh_pets)
         self.edit_animations_action.triggered.connect(self._edit_animations)
         self.settings_action.triggered.connect(self._settings)
+        self.codex_usage_action.triggered.connect(self._codex_usage)
         self.lan_interactions_action.triggered.connect(self._lan_interactions)
         self.cursor_styles_action.triggered.connect(self._cursor_styles)
         self.resource_update_action.triggered.connect(self._resource_update)
@@ -154,6 +158,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.pet_library_menu.addAction(self.edit_animations_action)
         self.pet_library_menu.addAction(self.reload_action)
         self.menu.addAction(self.settings_action)
+        self.menu.addAction(self.codex_usage_action)
         self.menu.addAction(self.cursor_styles_action)
         self.menu.addAction(self.resource_update_action)
         self.menu.addSeparator()
@@ -267,6 +272,10 @@ class PetTrayIcon(QSystemTrayIcon):
     def _settings(self) -> None:
         if self._on_settings is not None:
             self._on_settings()
+
+    def _codex_usage(self) -> None:
+        if self._on_codex_usage is not None:
+            self._on_codex_usage()
 
     def _cursor_styles(self) -> None:
         if self._on_cursor_styles is not None:

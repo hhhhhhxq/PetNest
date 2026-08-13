@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import re
+from time import time
+import uuid
 
 
 class InteractionKind(StrEnum):
@@ -14,6 +16,16 @@ class InteractionKind(StrEnum):
     HEART = "heart"
     TEXT = "text"
     EFFECT = "effect"
+
+
+class ChatMessageKind(StrEnum):
+    TEXT = "text"
+    EMOJI = "emoji"
+    IMAGE = "image"
+
+
+MAX_CHAT_TEXT_LENGTH = 2_000
+MAX_CHAT_IMAGE_BYTES = 1_500_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +50,90 @@ class LanPeer:
         elif self.transport == "remote":
             details.append("远程伙伴")
         return " · ".join(details) or ("在线" if self.online else "离线")
+
+
+@dataclass(frozen=True, slots=True)
+class ChatDraft:
+    """A validated chat payload addressed to one LAN device."""
+
+    target_device_id: str
+    kind: ChatMessageKind
+    text: str | None = None
+    image_data: bytes | None = None
+    image_name: str | None = None
+
+    def __post_init__(self) -> None:
+        target = str(self.target_device_id).strip()
+        if not target or len(target) > 64:
+            raise ValueError("聊天目标设备无效")
+        object.__setattr__(self, "target_device_id", target)
+        try:
+            kind = self.kind if isinstance(self.kind, ChatMessageKind) else ChatMessageKind(self.kind)
+        except (TypeError, ValueError) as error:
+            raise ValueError("聊天消息类型无效") from error
+        object.__setattr__(self, "kind", kind)
+        if kind is ChatMessageKind.IMAGE:
+            data = self.image_data
+            if not isinstance(data, bytes) or not data:
+                raise ValueError("图片内容为空")
+            if len(data) > MAX_CHAT_IMAGE_BYTES:
+                raise ValueError("图片超过 1.5 MB 传输上限")
+            name = str(self.image_name or "image.jpg").strip()
+            if not name or len(name) > 100 or any(char in name for char in "\\/\r\n\x00"):
+                raise ValueError("图片名称无效")
+            object.__setattr__(self, "image_name", name)
+            object.__setattr__(self, "text", None)
+            return
+        value = str(self.text or "").strip()
+        maximum = 16 if kind is ChatMessageKind.EMOJI else MAX_CHAT_TEXT_LENGTH
+        if not value:
+            raise ValueError("聊天内容不能为空")
+        if len(value) > maximum:
+            raise ValueError(f"聊天内容不能超过 {maximum} 个字符")
+        object.__setattr__(self, "text", value)
+        object.__setattr__(self, "image_data", None)
+        object.__setattr__(self, "image_name", None)
+
+    @classmethod
+    def text_message(cls, target_device_id: str, text: str) -> "ChatDraft":
+        return cls(target_device_id, ChatMessageKind.TEXT, text=text)
+
+    @classmethod
+    def emoji(cls, target_device_id: str, emoji: str) -> "ChatDraft":
+        return cls(target_device_id, ChatMessageKind.EMOJI, text=emoji)
+
+    @classmethod
+    def image(cls, target_device_id: str, data: bytes, name: str) -> "ChatDraft":
+        return cls(target_device_id, ChatMessageKind.IMAGE, image_data=data, image_name=name)
+
+    def to_message(self, *, sender_device_id: str, sender_name: str) -> "LanChatMessage":
+        return LanChatMessage(
+            message_id=uuid.uuid4().hex,
+            sender_device_id=str(sender_device_id).strip(),
+            sender_name=str(sender_name).strip(),
+            target_device_id=self.target_device_id,
+            kind=self.kind,
+            created_at=int(time()),
+            text=self.text,
+            image_data=self.image_data,
+            image_name=self.image_name,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LanChatMessage:
+    message_id: str
+    sender_device_id: str
+    sender_name: str
+    target_device_id: str
+    kind: ChatMessageKind
+    created_at: int
+    text: str | None = None
+    image_data: bytes | None = None
+    image_name: str | None = None
+
+    def peer_device_id(self, local_device_id: str) -> str:
+        return self.target_device_id if self.sender_device_id == local_device_id else self.sender_device_id
 
 
 _EFFECT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")

@@ -1,0 +1,750 @@
+"""Codex weekly quota and per-computer token dashboard."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
+from typing import Callable
+
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QListWidget,
+    QListWidgetItem,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
+
+from petnest.core.codex_usage import (
+    CodexAccountSnapshot,
+    CodexDeviceUsageStore,
+    CodexRateLimit,
+    CodexRateWindow,
+    CodexTokenUsage,
+    CodexUsageClient,
+    CodexUsageHistoryStore,
+    CodexUsageReport,
+    codex_device_usage_path,
+)
+from petnest.ui.theme import dialog_stylesheet
+
+
+ClientFactory = Callable[[], CodexUsageClient]
+ReportCallback = Callable[[CodexUsageReport], object]
+
+
+class CodexUsageDialog(QDialog):
+    """Display the signed-in Codex account without reading its auth file."""
+
+    def __init__(
+        self,
+        history_path: Path,
+        parent: QWidget | None = None,
+        *,
+        client_factory: ClientFactory = CodexUsageClient,
+        auto_refresh: bool = True,
+        device_id: str = "",
+        device_label: str = "",
+        on_connect_device: Callable[[], object] | None = None,
+        on_report: ReportCallback | None = None,
+    ) -> None:
+        super().__init__(
+            parent,
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowCloseButtonHint,
+        )
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self._history = CodexUsageHistoryStore(history_path)
+        self._device_history = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+        self._client_factory = client_factory
+        self._device_id = str(device_id)
+        self._device_label = str(device_label).strip() or "当前电脑"
+        self._on_connect_device = on_connect_device
+        self._on_report = on_report
+        self._results: Queue[tuple[str, object]] = Queue()
+        self._worker: Thread | None = None
+        self._live_report: CodexUsageReport | None = None
+        self._cycle_snapshots: dict[str, CodexAccountSnapshot] = {}
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(100)
+        self._poll_timer.timeout.connect(self._poll_result)
+
+        self.setObjectName("codexUsageDialog")
+        self.setWindowTitle("Codex 用量")
+        self.setMinimumSize(820, 650)
+        self.resize(920, 730)
+        self.setStyleSheet(dialog_stylesheet())
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.content_scroll = QScrollArea(self)
+        self.content_scroll.setObjectName("codexUsageScroll")
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget(self.content_scroll)
+        content.setObjectName("codexUsageContent")
+        root = QVBoxLayout(content)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(14)
+        self.content_scroll.setWidget(content)
+        outer.addWidget(self.content_scroll)
+
+        header = QHBoxLayout()
+        titles = QVBoxLayout()
+        title = QLabel("Codex 额度与本机 Token", self)
+        title.setObjectName("contentTitle")
+        subtitle = QLabel(
+            "读取当前 ChatGPT/Codex 账号的滚动用量，并从本机 Codex 会话统计 Token。",
+            self,
+        )
+        subtitle.setObjectName("contentDescription")
+        subtitle.setWordWrap(True)
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        header.addLayout(titles, 1)
+        self.connect_device_button = QPushButton("连接电脑…", self)
+        self.connect_device_button.clicked.connect(self._connect_device)
+        self.connect_device_button.setVisible(on_connect_device is not None)
+        header.addWidget(self.connect_device_button, 0, Qt.AlignmentFlag.AlignTop)
+        self.refresh_button = QPushButton("刷新", self)
+        self.refresh_button.setObjectName("primaryButton")
+        self.refresh_button.clicked.connect(self.refresh_usage)
+        header.addWidget(self.refresh_button, 0, Qt.AlignmentFlag.AlignTop)
+        root.addLayout(header)
+
+        account_card = QFrame(self)
+        account_card.setObjectName("surfaceCard")
+        account_layout = QHBoxLayout(account_card)
+        account_layout.setContentsMargins(18, 14, 18, 14)
+        account_label = QLabel("账号", account_card)
+        account_label.setStyleSheet("font-weight: 700; color: #4B4641;")
+        account_layout.addWidget(account_label)
+        self.account_selector = QComboBox(account_card)
+        self.account_selector.setMinimumWidth(330)
+        self.account_selector.currentIndexChanged.connect(self._show_selected_account)
+        account_layout.addWidget(self.account_selector)
+        cycle_label = QLabel("周期", account_card)
+        cycle_label.setStyleSheet("font-weight: 700; color: #4B4641;")
+        account_layout.addWidget(cycle_label)
+        self.cycle_selector = QComboBox(account_card)
+        self.cycle_selector.setMinimumWidth(235)
+        self.cycle_selector.currentIndexChanged.connect(self._show_selected_cycle)
+        account_layout.addWidget(self.cycle_selector)
+        account_layout.addStretch(1)
+        self.current_account_label = QLabel("正在识别…", account_card)
+        self.current_account_label.setObjectName("mutedLabel")
+        account_layout.addWidget(self.current_account_label)
+        root.addWidget(account_card)
+
+        self.status_label = QLabel("尚未读取 Codex 用量。", self)
+        self.status_label.setObjectName("mutedLabel")
+        self.status_label.setWordWrap(True)
+        root.addWidget(self.status_label)
+        self.loading_bar = QProgressBar(self)
+        self.loading_bar.setRange(0, 0)
+        self.loading_bar.setTextVisible(False)
+        self.loading_bar.hide()
+        root.addWidget(self.loading_bar)
+
+        quota_card, quota_layout = self._card(
+            "剩余用量",
+            "与 Codex 界面中的 1 周百分比和重置时间采用同一数据源。",
+        )
+        self.quota_rows = QVBoxLayout()
+        self.quota_rows.setSpacing(10)
+        quota_layout.addLayout(self.quota_rows)
+        root.addWidget(quota_card)
+
+        metrics = QGridLayout()
+        metrics.setHorizontalSpacing(14)
+        metrics.setVerticalSpacing(14)
+        account_tokens_card, account_tokens_layout = self._card(
+            "当前账号 Token",
+            "账号汇总由 Codex app-server 返回，会随登录账号切换。",
+        )
+        self.account_lifetime_label = self._metric("累计  —", account_tokens_card)
+        self.account_recent_label = QLabel("最近记录  —", account_tokens_card)
+        self.account_recent_label.setObjectName("mutedLabel")
+        self.account_streak_label = QLabel("连续使用  —", account_tokens_card)
+        self.account_streak_label.setObjectName("mutedLabel")
+        account_tokens_layout.addWidget(self.account_lifetime_label)
+        account_tokens_layout.addWidget(self.account_recent_label)
+        account_tokens_layout.addWidget(self.account_streak_label)
+        metrics.addWidget(account_tokens_card, 0, 0)
+
+        local_card, local_layout = self._card(
+            "当前电脑 · 本周期",
+            "按本机 token_count 事件的账号额度窗口匹配，不混入普通账号切换后的记录。",
+        )
+        self.local_total_label = self._metric("Token  —", local_card)
+        self.local_breakdown_label = QLabel("输入 / 输出 / 缓存  —", local_card)
+        self.local_breakdown_label.setObjectName("mutedLabel")
+        self.local_breakdown_label.setWordWrap(True)
+        self.local_requests_label = QLabel("模型请求  —", local_card)
+        self.local_requests_label.setObjectName("mutedLabel")
+        self.local_quota_change_label = QLabel("账号额度变化  —", local_card)
+        self.local_quota_change_label.setObjectName("mutedLabel")
+        self.local_quota_change_label.setWordWrap(True)
+        self.local_quota_change_label.setToolTip(
+            "Codex 只提供账号级额度百分比。这里展示本机请求期间观察到的账号已用额度变化；"
+            "若同一账号也在其他电脑使用，无法精确拆分到单台电脑。"
+        )
+        self.synced_devices_label = QLabel("局域网同步  尚未连接其他电脑", local_card)
+        self.synced_devices_label.setObjectName("mutedLabel")
+        self.synced_devices_label.setWordWrap(True)
+        self.all_devices_total_label = QLabel("多电脑合计  —", local_card)
+        self.all_devices_total_label.setStyleSheet("font-weight: 700; color: #4B4641;")
+        self.all_devices_total_label.setWordWrap(True)
+        self.device_ranking_title = QLabel("同账号设备 Token 排名", local_card)
+        self.device_ranking_title.setStyleSheet("font-weight: 700; color: #4B4641;")
+        self.device_ranking_hint = QLabel(
+            "仅统计已连接并同步、且与当前账号和额度周期一致的电脑；按 Token 降序。",
+            local_card,
+        )
+        self.device_ranking_hint.setObjectName("mutedLabel")
+        self.device_ranking_hint.setWordWrap(True)
+        self.device_ranking_list = QListWidget(local_card)
+        self.device_ranking_list.setObjectName("deviceRankingList")
+        self.device_ranking_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.device_ranking_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.device_ranking_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.device_ranking_list.setMinimumHeight(52)
+        self.device_ranking_list.setMaximumHeight(132)
+        self.device_ranking_list.setStyleSheet(
+            "QListWidget#deviceRankingList {"
+            "background: #FBF7F2; color: #4B4641; border: 1px solid #E8DED5;"
+            "border-radius: 8px; padding: 4px; outline: none;"
+            "}"
+            "QListWidget#deviceRankingList::item {"
+            "background: transparent; color: #4B4641; padding: 5px 6px; border: none;"
+            "}"
+        )
+        local_layout.addWidget(self.local_total_label)
+        local_layout.addWidget(self.local_breakdown_label)
+        local_layout.addWidget(self.local_requests_label)
+        local_layout.addWidget(self.local_quota_change_label)
+        local_layout.addWidget(self.synced_devices_label)
+        local_layout.addWidget(self.all_devices_total_label)
+        local_layout.addWidget(self.device_ranking_title)
+        local_layout.addWidget(self.device_ranking_hint)
+        local_layout.addWidget(self.device_ranking_list)
+        metrics.addWidget(local_card, 0, 1)
+        metrics.setColumnStretch(0, 1)
+        metrics.setColumnStretch(1, 1)
+        root.addLayout(metrics)
+
+        note = QLabel(
+            "说明：输入、缓存输入、输出及模型的用量权重不同，不能用总 Token 直接等比换算周额度。多电脑同步只交换同账号、同额度周期的脱敏用量统计，不传输会话内容和凭据。",
+            self,
+        )
+        note.setObjectName("mutedLabel")
+        note.setWordWrap(True)
+        root.addWidget(note)
+        root.addStretch(1)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        close_button = QPushButton("关闭", self)
+        close_button.clicked.connect(self.close)
+        footer.addWidget(close_button)
+        root.addLayout(footer)
+
+        self._reload_account_selector()
+        if auto_refresh:
+            QTimer.singleShot(0, self.refresh_usage)
+
+    @staticmethod
+    def _card(title: str, description: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("surfaceCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
+        title_label = QLabel(title, card)
+        title_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #4B4641;")
+        description_label = QLabel(description, card)
+        description_label.setObjectName("mutedLabel")
+        description_label.setWordWrap(True)
+        layout.addWidget(title_label)
+        layout.addWidget(description_label)
+        return card, layout
+
+    @staticmethod
+    def _metric(text: str, parent: QWidget) -> QLabel:
+        label = QLabel(text, parent)
+        label.setStyleSheet("font-size: 20px; font-weight: 700; color: #A85D3E;")
+        label.setWordWrap(True)
+        return label
+
+    def refresh_usage(self) -> None:
+        if self._worker is not None and self._worker.is_alive():
+            return
+        self.refresh_button.setEnabled(False)
+        self.loading_bar.show()
+        self.status_label.setStyleSheet("")
+        self.status_label.setText("正在读取当前 Codex 账号、周额度和本机会话…")
+        self._worker = Thread(target=self._fetch_worker, name="petnest-codex-usage", daemon=True)
+        self._worker.start()
+        self._poll_timer.start()
+
+    def _fetch_worker(self) -> None:
+        try:
+            report = self._client_factory().fetch_report()
+        except Exception as error:  # noqa: BLE001 - pass safe failure to the Qt thread.
+            self._results.put(("error", error))
+        else:
+            self._results.put(("report", report))
+
+    def _poll_result(self) -> None:
+        try:
+            kind, payload = self._results.get_nowait()
+        except Empty:
+            return
+        self._poll_timer.stop()
+        self._worker = None
+        self.refresh_button.setEnabled(True)
+        self.loading_bar.hide()
+        if kind == "error":
+            message = str(payload) or payload.__class__.__name__
+            self.status_label.setText(f"读取失败：{message}")
+            self.status_label.setStyleSheet("color: #B34D3F;")
+            return
+        if not isinstance(payload, CodexUsageReport):
+            self.status_label.setText("读取失败：Codex 用量结果格式无效。")
+            self.status_label.setStyleSheet("color: #B34D3F;")
+            return
+        self._live_report = payload
+        try:
+            self._history.save_report(payload)
+        except (OSError, ValueError) as error:
+            history_warning = f"；账号历史未保存：{error}"
+        else:
+            history_warning = ""
+        self._reload_account_selector(current_key=payload.account.key)
+        self._show_report(payload)
+        if self._on_report is not None:
+            try:
+                self._on_report(payload)
+            except Exception:  # noqa: BLE001 - usage remains visible if LAN sync fails.
+                pass
+        fetched = payload.fetched_at.astimezone()
+        self.status_label.setText(
+            f"已更新 · {fetched:%Y-%m-%d %H:%M:%S} · {payload.account.label}{history_warning}"
+        )
+        self.status_label.setStyleSheet("")
+
+    def _reload_account_selector(self, *, current_key: str | None = None) -> None:
+        snapshots = self._history.load()
+        self.account_selector.blockSignals(True)
+        self.account_selector.clear()
+        for snapshot in snapshots:
+            current = snapshot.account_key == current_key
+            suffix = "（当前）" if current else ""
+            self.account_selector.addItem(
+                f"{snapshot.account_label} · {_plan_label(snapshot.plan_type)}{suffix}",
+                snapshot.account_key,
+            )
+        if not snapshots:
+            self.account_selector.addItem("尚无账号记录", None)
+        if current_key is not None:
+            index = self.account_selector.findData(current_key)
+            if index >= 0:
+                self.account_selector.setCurrentIndex(index)
+        self.account_selector.blockSignals(False)
+        self.account_selector.setEnabled(bool(snapshots))
+        selected_key = self.account_selector.currentData()
+        self._reload_cycle_selector(
+            selected_key if isinstance(selected_key, str) else None,
+            prefer_live=current_key is not None,
+        )
+
+    def _show_selected_account(self) -> None:
+        key = self.account_selector.currentData()
+        if not isinstance(key, str):
+            return
+        self._reload_cycle_selector(
+            key,
+            prefer_live=self._live_report is not None and key == self._live_report.account.key,
+        )
+        self._show_selected_cycle()
+
+    def _reload_cycle_selector(self, account_key: str | None, *, prefer_live: bool) -> None:
+        self.cycle_selector.blockSignals(True)
+        self.cycle_selector.clear()
+        self._cycle_snapshots = {}
+        live_reset: str | None = None
+        if (
+            account_key is not None
+            and self._live_report is not None
+            and self._live_report.account.key == account_key
+        ):
+            window = self._live_report.primary_limit.primary
+            live_reset = window.resets_at.isoformat() if window is not None and window.resets_at else None
+            self.cycle_selector.addItem(
+                _live_cycle_label(window),
+                "__live__",
+            )
+        if account_key is not None:
+            for index, snapshot in enumerate(self._history.load_cycles(account_key)):
+                if live_reset is not None and snapshot.resets_at == live_reset:
+                    continue
+                identifier = f"snapshot:{index}:{snapshot.resets_at or snapshot.updated_at}"
+                self._cycle_snapshots[identifier] = snapshot
+                self.cycle_selector.addItem(_snapshot_cycle_label(snapshot), identifier)
+        if self.cycle_selector.count() == 0:
+            self.cycle_selector.addItem("尚无周期记录", None)
+        elif prefer_live:
+            live_index = self.cycle_selector.findData("__live__")
+            if live_index >= 0:
+                self.cycle_selector.setCurrentIndex(live_index)
+        self.cycle_selector.setEnabled(self.cycle_selector.currentData() is not None)
+        self.cycle_selector.blockSignals(False)
+
+    def _show_selected_cycle(self) -> None:
+        identifier = self.cycle_selector.currentData()
+        if identifier == "__live__" and self._live_report is not None:
+            self._show_report(self._live_report)
+            return
+        if isinstance(identifier, str):
+            snapshot = self._cycle_snapshots.get(identifier)
+            if snapshot is not None:
+                self._show_snapshot(snapshot)
+
+    def _show_report(self, report: CodexUsageReport) -> None:
+        self.current_account_label.setText(
+            f"当前登录 · {report.account.label} · {_plan_label(report.account.plan_type)}"
+        )
+        self._clear_quota_rows()
+        for limit in report.rate_limits:
+            self._add_limit_rows(limit)
+        summary = report.account_tokens
+        self.account_lifetime_label.setText(
+            "累计  " + (_number(summary.lifetime_tokens) if summary.lifetime_tokens is not None else "—")
+        )
+        recent_tokens = sum(item.tokens for item in report.daily_usage[-7:])
+        self.account_recent_label.setText(
+            f"最近 {min(7, len(report.daily_usage))} 个有记录日  {_number(recent_tokens)}"
+            if report.daily_usage
+            else "最近记录  —"
+        )
+        self.account_streak_label.setText(
+            f"连续使用  {summary.current_streak_days} 天"
+            if summary.current_streak_days is not None
+            else "连续使用  —"
+        )
+        local = report.local_usage
+        tokens = local.tokens
+        self.local_total_label.setText(f"Token  {_number(tokens.total_tokens)}")
+        self.local_breakdown_label.setText(
+            "输入 / 输出 / 缓存  "
+            f"{_number(tokens.input_tokens)} / {_number(tokens.output_tokens)} / "
+            f"{_number(tokens.cached_input_tokens)}"
+        )
+        self.local_requests_label.setText(f"模型请求  {_number(tokens.requests)}")
+        change = local.observed_quota_change
+        if change is None:
+            self.local_quota_change_label.setText("本机记录期间的账号整体额度变化  —")
+        else:
+            self.local_quota_change_label.setText(
+                f"本机记录期间，账号整体已用额度 +{_percent(change)} 个百分点"
+                "（非单机归因）"
+            )
+        window = report.primary_limit.primary
+        reset_epoch = int(window.resets_at.timestamp()) if window is not None and window.resets_at else None
+        self._show_synced_devices(
+            account_key=report.account.key,
+            reset_epoch=reset_epoch,
+            local_tokens=tokens,
+        )
+
+    def _show_snapshot(self, snapshot: CodexAccountSnapshot) -> None:
+        self.current_account_label.setText(
+            f"历史快照 · {snapshot.account_label} · {_plan_label(snapshot.plan_type)}"
+        )
+        self._clear_quota_rows()
+        reset = _parse_snapshot_time(snapshot.resets_at)
+        window = CodexRateWindow(
+            used_percent=snapshot.used_percent,
+            window_duration_minutes=snapshot.window_duration_minutes,
+            resets_at=reset,
+        )
+        self._add_window_row("Codex", window, historical=True)
+        self.account_lifetime_label.setText(
+            "累计  "
+            + (_number(snapshot.account_lifetime_tokens) if snapshot.account_lifetime_tokens is not None else "—")
+        )
+        self.account_recent_label.setText(f"最后更新  {_format_snapshot_date(snapshot.updated_at)}")
+        self.account_streak_label.setText("切换回该账号后可刷新最新数据")
+        self.local_total_label.setText(f"Token  {_number(snapshot.local_tokens)}")
+        self.local_breakdown_label.setText(
+            "输入 / 输出 / 缓存  "
+            f"{_number(snapshot.local_input_tokens)} / {_number(snapshot.local_output_tokens)} / "
+            f"{_number(snapshot.local_cached_input_tokens)}"
+        )
+        self.local_requests_label.setText(f"模型请求  {_number(snapshot.local_requests)}")
+        if snapshot.observed_quota_change is None:
+            self.local_quota_change_label.setText("本机记录期间的账号整体额度变化  —")
+        else:
+            self.local_quota_change_label.setText(
+                "本机记录期间，账号整体已用额度 "
+                f"+{_percent(snapshot.observed_quota_change)} 个百分点（非单机归因）"
+            )
+        self._show_synced_devices(
+            account_key=snapshot.account_key,
+            reset_epoch=int(reset.timestamp()) if reset is not None else None,
+            local_tokens=CodexTokenUsage(
+                input_tokens=snapshot.local_input_tokens,
+                cached_input_tokens=snapshot.local_cached_input_tokens,
+                output_tokens=snapshot.local_output_tokens,
+                total_tokens=snapshot.local_tokens,
+                requests=snapshot.local_requests,
+            ),
+        )
+
+    def reload_synced_usage(self, account_key: str | None = None) -> None:
+        if self._live_report is None:
+            return
+        if account_key is not None and self._live_report.account.key != account_key:
+            return
+        if (
+            self.account_selector.currentData() == self._live_report.account.key
+            and self.cycle_selector.currentData() == "__live__"
+        ):
+            self._show_report(self._live_report)
+
+    def _show_synced_devices(
+        self,
+        *,
+        account_key: str,
+        reset_epoch: int | None,
+        local_tokens: CodexTokenUsage,
+    ) -> None:
+        if reset_epoch is None:
+            self.synced_devices_label.setText("局域网同步  当前额度周期未知")
+            self.all_devices_total_label.setText("多电脑合计  —")
+            self._set_device_ranking_lines(("当前额度周期未知，无法生成排名",))
+            return
+        devices = self._device_history.load(
+            account_key=account_key,
+            window_resets_at=reset_epoch,
+            exclude_device_id=self._device_id or None,
+        )
+        if not devices:
+            self.synced_devices_label.setText("局域网同步  尚未同步其他电脑")
+            self.all_devices_total_label.setText(
+                f"多电脑合计  {_number(local_tokens.total_tokens)} Token（仅本机）"
+            )
+            self.synced_devices_label.setToolTip("点击“连接电脑”并输入对方局域网 IPv4")
+            self._show_device_ranking(
+                local_tokens=local_tokens,
+                devices=(),
+            )
+            return
+        combined = local_tokens
+        for device in devices:
+            combined += device.tokens
+        labels = "、".join(device.device_label for device in devices)
+        self.synced_devices_label.setText(f"局域网同步  已同步 {len(devices)} 台其他电脑")
+        self.synced_devices_label.setToolTip(labels)
+        self.all_devices_total_label.setText(
+            f"多电脑合计  {_number(combined.total_tokens)} Token · "
+            f"{_number(combined.requests)} 次模型请求"
+        )
+        self._show_device_ranking(
+            local_tokens=local_tokens,
+            devices=devices,
+        )
+
+    def _show_device_ranking(
+        self,
+        *,
+        local_tokens: CodexTokenUsage,
+        devices: tuple[CodexDeviceUsageSnapshot, ...],
+    ) -> None:
+        entries = [
+            (
+                self._device_label + "（本机）",
+                local_tokens.total_tokens,
+                local_tokens.requests,
+            )
+        ]
+        entries.extend(
+            (
+                device.device_label,
+                device.total_tokens,
+                device.requests,
+            )
+            for device in devices
+        )
+        entries.sort(key=lambda item: (-item[1], item[0].casefold()))
+        lines: list[str] = []
+        for rank, (label, tokens, requests) in enumerate(entries[:8], 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
+            lines.append(
+                f"{medal} {label}  {_number(tokens)} Token · {_number(requests)} 次模型请求"
+            )
+        if len(entries) > 8:
+            lines.append(f"…还有 {len(entries) - 8} 台设备")
+        self._set_device_ranking_lines(tuple(lines))
+
+    def _set_device_ranking_lines(self, lines: tuple[str, ...]) -> None:
+        self.device_ranking_list.clear()
+        for line in lines:
+            QListWidgetItem(line, self.device_ranking_list)
+        visible_rows = max(1, min(len(lines), 4))
+        self.device_ranking_list.setFixedHeight(min(132, 10 + visible_rows * 28))
+
+    def _connect_device(self) -> None:
+        if self._on_connect_device is not None:
+            self._on_connect_device()
+
+    def _add_limit_rows(self, limit: CodexRateLimit) -> None:
+        prefix = limit.limit_name or ("Codex" if limit.limit_id == "codex" else limit.limit_id)
+        if limit.primary is not None:
+            self._add_window_row(prefix, limit.primary)
+        if limit.secondary is not None:
+            self._add_window_row(f"{prefix} · 次级窗口", limit.secondary)
+
+    def _add_window_row(
+        self,
+        name: str,
+        window: CodexRateWindow,
+        *,
+        historical: bool = False,
+    ) -> None:
+        row = QFrame(self)
+        row.setObjectName("statusCard")
+        layout = QGridLayout(row)
+        layout.setContentsMargins(14, 10, 14, 10)
+        title = QLabel(f"{name} · {_window_label(window.window_duration_minutes)}", row)
+        title.setStyleSheet("font-weight: 700; color: #4B4641;")
+        layout.addWidget(title, 0, 0)
+        layout.setColumnStretch(0, 1)
+        remaining_label = QLabel(f"剩余 {_percent(window.remaining_percent)}%", row)
+        remaining_label.setObjectName("quotaRemainingLabel")
+        remaining_label.setStyleSheet("font-weight: 700; color: #A85D3E;")
+        remaining_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(remaining_label, 0, 1)
+        reset_text = "重置时间未知"
+        if window.resets_at is not None:
+            reset = window.resets_at.astimezone()
+            reset_text = f"{reset:%m月%d日 %H:%M} 重置"
+        if historical:
+            reset_text = f"历史快照 · {reset_text}"
+        reset_label = QLabel(reset_text, row)
+        reset_label.setObjectName("mutedLabel")
+        reset_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(reset_label, 0, 2)
+        progress = QProgressBar(row)
+        progress.setRange(0, 100)
+        progress.setValue(round(window.remaining_percent))
+        progress.setFormat(f"剩余 {_percent(window.remaining_percent)}%")
+        # macOS native progress bars intentionally do not paint their format text.
+        # Keep the format for accessibility/tests and show the value in a label above.
+        progress.setTextVisible(False)
+        layout.addWidget(progress, 1, 0, 1, 3)
+        self.quota_rows.addWidget(row)
+
+    def _clear_quota_rows(self) -> None:
+        while self.quota_rows.count():
+            item = self.quota_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature
+        self._poll_timer.stop()
+        super().closeEvent(event)  # type: ignore[arg-type]
+
+
+def _window_label(minutes: int | None) -> str:
+    if minutes is None:
+        return "滚动窗口"
+    if minutes % (7 * 24 * 60) == 0:
+        return f"{minutes // (7 * 24 * 60)} 周"
+    if minutes % (24 * 60) == 0:
+        return f"{minutes // (24 * 60)} 天"
+    if minutes % 60 == 0:
+        return f"{minutes // 60} 小时"
+    return f"{minutes} 分钟"
+
+
+def _live_cycle_label(window: CodexRateWindow | None) -> str:
+    if window is None:
+        return "当前周期"
+    return f"当前 · {_cycle_range(window.resets_at, window.window_duration_minutes)}"
+
+
+def _snapshot_cycle_label(snapshot: CodexAccountSnapshot) -> str:
+    reset = _parse_snapshot_time(snapshot.resets_at)
+    state = "已归档" if snapshot.finalized else "最后快照"
+    return f"往期 · {_cycle_range(reset, snapshot.window_duration_minutes)} · {state}"
+
+
+def _cycle_range(reset: datetime | None, minutes: int | None) -> str:
+    if reset is None:
+        return "重置时间未知"
+    local_reset = reset.astimezone()
+    if minutes is None:
+        return f"{local_reset:%m/%d} 重置"
+    start = (reset - timedelta(minutes=minutes)).astimezone()
+    return f"{start:%m/%d}–{local_reset:%m/%d}"
+
+
+def _plan_label(plan: str) -> str:
+    labels = {
+        "free": "Free",
+        "go": "Go",
+        "plus": "Plus",
+        "pro": "Pro",
+        "team": "Team",
+        "business": "Business",
+        "enterprise": "Enterprise",
+        "edu": "Edu",
+    }
+    return labels.get(plan, plan.replace("_", " ").title() if plan else "Unknown")
+
+
+def _number(value: int | None) -> str:
+    return "—" if value is None else f"{value:,}"
+
+
+def _percent(value: float) -> str:
+    rounded = round(value, 1)
+    return f"{rounded:g}"
+
+
+def _parse_snapshot_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _format_snapshot_date(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return value
+
+
+__all__ = ["CodexUsageDialog"]

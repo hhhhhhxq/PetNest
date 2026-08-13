@@ -7,7 +7,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication
-from PySide6.QtNetwork import QHostAddress
+from PySide6.QtNetwork import QHostAddress, QTcpServer
 from PySide6.QtTest import QTest
 
 from petnest.core.lan_interaction import LanPacketCodec
@@ -22,9 +22,30 @@ def test_service_binds_an_ephemeral_port_and_stops_cleanly(qtbot) -> None:
 
     assert service.start()
     assert service.is_running
+    assert service.chat_is_available
     assert service.port > 0
     service.stop()
     assert not service.is_running
+
+
+def test_service_keeps_udp_interactions_when_tcp_chat_port_is_occupied(qtbot) -> None:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    del app
+    occupied = QTcpServer()
+    assert occupied.listen(QHostAddress.SpecialAddress.AnyIPv4, 0)
+    service = LanInteractionService(
+        device_id="local",
+        display_name="本机",
+        pet_name="平安",
+        port=occupied.serverPort(),
+    )
+
+    assert service.start()
+    assert service.is_running
+    assert not service.chat_is_available
+
+    service.stop()
+    occupied.close()
 
 
 def test_service_registers_a_remote_presence_with_ip_and_port(qtbot) -> None:

@@ -31,6 +31,8 @@ from petnest.core.app_update import (
     AppUpdateInfo,
 )
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
+from petnest.core.codex_usage import CodexDeviceUsageStore, codex_device_usage_path
+from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
 from petnest.core.lottie_effects import EffectCatalog
@@ -50,11 +52,12 @@ from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.core.device_identity import display_name_for
 from petnest.models.event import PetEvent
-from petnest.models.lan_interaction import InteractionKind
+from petnest.models.lan_interaction import ChatMessageKind, InteractionKind
 from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.ui.app_update_dialog import AppUpdateDialog
+from petnest.ui.codex_usage_dialog import CodexUsageDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
@@ -190,6 +193,8 @@ class PetNest:
         self._app_update_worker: Thread | None = None
         self._app_update_dialog: AppUpdateDialog | None = None
         self._settings_center_dialog: SettingsDialog | None = None
+        self._codex_usage_dialog: CodexUsageDialog | None = None
+        self._codex_usage_history_path = self.settings_manager.path.parent / "codex-usage-history.json"
         self._pending_app_update: AppUpdateInfo | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)
         cursor_root = (
@@ -230,7 +235,15 @@ class PetNest:
             parent=self.window,
         )
         self.lan_service.interaction_received.connect(self._handle_lan_interaction)
+        self.lan_service.chat_message_received.connect(self._handle_lan_chat)
         self.lan_service.error.connect(lambda message: LOGGER.warning("%s", message))
+        self.codex_usage_sync = CodexUsageSyncCoordinator(
+            self.lan_service,
+            CodexDeviceUsageStore(codex_device_usage_path(self._codex_usage_history_path)),
+            device_label=lambda: display_name_for(self.settings),
+            parent=self.window,
+        )
+        self.codex_usage_sync.snapshots_changed.connect(self._codex_sync_snapshots_changed)
         self.remote_interaction_service = FirebaseRemoteInteractionService(
             display_name=display_name_for(self.settings),
             pet_name=self.package.name,
@@ -305,6 +318,7 @@ class PetNest:
                 on_refresh_pets=self.refresh_pets,
                 on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
+                on_codex_usage=self.show_codex_usage_dialog,
                 on_cursor_styles=self.show_cursor_style_dialog,
                 on_resource_update=self._handle_resource_update_action,
                 on_lan_interactions=self.show_lan_interaction_dialog,
@@ -522,6 +536,36 @@ class PetNest:
         """打开或激活统一设置中心。"""
         self._show_settings_center("display")
 
+    def show_codex_usage_dialog(self) -> None:
+        """打开或激活按账号隔离的 Codex 用量面板。"""
+        dialog = self._codex_usage_dialog
+        if dialog is not None:
+            dialog.showNormal()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        dialog = CodexUsageDialog(
+            self._codex_usage_history_path,
+            self.window,
+            device_id=self.settings.device_id,
+            device_label=display_name_for(self.settings),
+            on_connect_device=self.show_lan_interaction_dialog,
+            on_report=self.codex_usage_sync.sync_report,
+        )
+        self._codex_usage_dialog = dialog
+        dialog.finished.connect(lambda _result: self._clear_codex_usage_dialog(dialog))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_codex_usage_dialog(self, dialog: CodexUsageDialog) -> None:
+        if self._codex_usage_dialog is dialog:
+            self._codex_usage_dialog = None
+
+    def _codex_sync_snapshots_changed(self, account_key: str) -> None:
+        if self._codex_usage_dialog is not None:
+            self._codex_usage_dialog.reload_synced_usage(account_key)
+
     def show_cursor_style_dialog(self) -> None:
         """保留托盘独立入口，但定位到设置中心的鼠标分类。"""
         self._show_settings_center("mouse_behavior")
@@ -581,6 +625,7 @@ class PetNest:
             remote_peers=self.remote_interaction_service.peers(),
             effects=effects,
             on_send=self.lan_service.send_interaction,
+            on_chat_send=self.lan_service.send_chat,
             on_remote_send=(
                 self.remote_interaction_service.send_interaction
                 if self.remote_interaction_service.is_configured
@@ -601,12 +646,15 @@ class PetNest:
                 else ""
             ),
             remote_status=self.remote_interaction_service.status_message,
+            chat_messages=self.lan_service.chat_messages(),
             parent=self.window,
         )
         self.lan_service.peer_changed.connect(dialog.update_peer)
         self.lan_service.manual_probe_succeeded.connect(dialog.manual_probe_succeeded)
         self.lan_service.peer_removed.connect(dialog.remove_peer)
+        self.lan_service.chat_message_added.connect(dialog.add_chat_message)
         self.lan_service.error.connect(dialog.set_status_message)
+        self.codex_usage_sync.status_changed.connect(dialog.set_status_message)
         self.remote_interaction_service.peer_changed.connect(dialog.update_remote_peer)
         self.remote_interaction_service.peer_removed.connect(dialog.remove_remote_peer)
         self.remote_interaction_service.pairing_succeeded.connect(dialog.remote_pair_succeeded)
@@ -716,6 +764,8 @@ class PetNest:
         # 超时，不能让“退出”菜单看起来像没有响应。
         if self.tray is not None:
             self._run_shutdown_step("隐藏托盘图标", self.tray.hide)
+        if self._codex_usage_dialog is not None:
+            self._run_shutdown_step("关闭 Codex 用量窗口", self._codex_usage_dialog.close)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
         self._run_shutdown_step("隐藏打卡卡片", lambda: self._set_pet_visibility(False))
@@ -730,6 +780,7 @@ class PetNest:
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
+        self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
         self._run_shutdown_step("停止局域网互动服务", self.lan_service.stop)
         self._run_shutdown_step("停止远程伙伴服务", self.remote_interaction_service.stop)
         self._run_shutdown_step("停止平台适配器", self.platform_adapter.stop)
@@ -1159,6 +1210,22 @@ class PetNest:
             return
         self.window.show_interaction_bubble(message)
         LOGGER.info("收到局域网互动：%s", message)
+
+    def _handle_lan_chat(self, message: object) -> None:
+        """Show a lightweight notification while the full message stays in chat."""
+        sender = str(getattr(message, "sender_name", "附近设备"))
+        kind = getattr(message, "kind", None)
+        if kind is ChatMessageKind.IMAGE:
+            summary = "发来一张图片 🖼"
+        elif kind is ChatMessageKind.EMOJI:
+            summary = str(getattr(message, "text", "") or "发来一个表情")
+        elif kind is ChatMessageKind.TEXT:
+            text = str(getattr(message, "text", "") or "")
+            summary = text if len(text) <= 48 else text[:48] + "…"
+        else:
+            return
+        self.window.show_interaction_bubble(f"{sender}：{summary}")
+        LOGGER.info("收到局域网聊天：%s", sender)
 
     def _configure_system_idle_timer(self) -> None:
         if self.settings.system_idle_enabled:

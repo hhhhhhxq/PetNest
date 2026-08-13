@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import base64
+import binascii
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
+import re
 from typing import Any
 
-from petnest.models.lan_interaction import InteractionDraft, InteractionKind
+from petnest.core.codex_usage import CodexDeviceUsageSnapshot
+from petnest.core.lan_chat import LanChatImageError, validate_chat_image_data
+from petnest.models.lan_interaction import (
+    ChatDraft,
+    ChatMessageKind,
+    InteractionDraft,
+    InteractionKind,
+    LanChatMessage,
+    MAX_CHAT_IMAGE_BYTES,
+)
 
 LAN_PROTOCOL_VERSION = 1
 LAN_INTERACTION_PORT = 18_487
 MAX_PACKET_BYTES = 8 * 1024
+MAX_CHAT_PACKET_BYTES = 2_100_000
 MAX_DISPLAY_NAME_LENGTH = 40
 MAX_PET_NAME_LENGTH = 40
 
@@ -27,6 +41,16 @@ class ReceivedInteraction:
     sender_device_id: str
     sender_name: str
     draft: InteractionDraft
+
+
+@dataclass(frozen=True, slots=True)
+class ReceivedCodexUsageSync:
+    """A validated direct-device Codex usage contribution."""
+
+    kind: str
+    request_id: str
+    target_device_id: str
+    snapshot: CodexDeviceUsageSnapshot
 
 
 class LanPacketCodec:
@@ -56,6 +80,91 @@ class LanPacketCodec:
     def interaction(cls, draft: InteractionDraft, sender_id: str, sender_name: str) -> dict[str, Any]:
         packet = draft.to_payload(sender_id=sender_id, sender_name=sender_name)
         return {"version": LAN_PROTOCOL_VERSION, "kind": "interaction", **packet}
+
+    @classmethod
+    def codex_usage_sync(
+        cls,
+        *,
+        kind: str,
+        request_id: str,
+        target_device_id: str,
+        snapshot: CodexDeviceUsageSnapshot,
+    ) -> dict[str, Any]:
+        if kind not in {"codex_usage_sync_request", "codex_usage_sync_response"}:
+            raise LanProtocolError("Codex 用量同步类型无效")
+        if not _valid_account_key(snapshot.account_key):
+            raise LanProtocolError("Codex 账号标识无效")
+        try:
+            updated = datetime.fromisoformat(snapshot.updated_at)
+        except (TypeError, ValueError) as error:
+            raise LanProtocolError("Codex 用量更新时间无效") from error
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=UTC)
+        duration = snapshot.window_duration_minutes
+        if duration is not None and (not isinstance(duration, int) or not 0 < duration <= 525_600):
+            raise LanProtocolError("Codex 额度窗口无效")
+        usage = {
+            "input_tokens": _sync_counter(snapshot.input_tokens),
+            "cached_input_tokens": _sync_counter(snapshot.cached_input_tokens),
+            "cache_write_input_tokens": _sync_counter(snapshot.cache_write_input_tokens),
+            "output_tokens": _sync_counter(snapshot.output_tokens),
+            "reasoning_output_tokens": _sync_counter(snapshot.reasoning_output_tokens),
+            "total_tokens": _sync_counter(snapshot.total_tokens),
+            "requests": _sync_counter(snapshot.requests),
+        }
+        return {
+            "version": LAN_PROTOCOL_VERSION,
+            "kind": kind,
+            "request_id": _identity(request_id, "同步请求 ID"),
+            "target_device_id": _identity(target_device_id, "目标设备 ID"),
+            "sender_device_id": _identity(snapshot.device_id, "发送方设备 ID"),
+            "sender_name": _bounded_text(snapshot.device_label, "发送方名称", MAX_DISPLAY_NAME_LENGTH),
+            "account_key": snapshot.account_key,
+            "window_resets_at": _sync_epoch(snapshot.window_resets_at),
+            "window_duration_minutes": duration,
+            "updated_at": _sync_epoch(int(updated.timestamp())),
+            "usage": usage,
+        }
+
+    @classmethod
+    def chat_message(cls, message: LanChatMessage) -> dict[str, Any]:
+        sender_id = _identity(message.sender_device_id, "发送方设备 ID")
+        target = _identity(message.target_device_id, "目标设备 ID")
+        sender_name = _bounded_text(message.sender_name, "发送方名称", MAX_DISPLAY_NAME_LENGTH)
+        draft = ChatDraft(
+            target_device_id=target,
+            kind=message.kind,
+            text=message.text,
+            image_data=message.image_data,
+            image_name=message.image_name,
+        )
+        packet: dict[str, Any] = {
+            "version": LAN_PROTOCOL_VERSION,
+            "kind": "chat",
+            "message_id": _identity(message.message_id, "聊天消息 ID"),
+            "sender_device_id": sender_id,
+            "sender_name": sender_name,
+            "target_device_id": target,
+            "type": draft.kind.value,
+            "created_at": _sync_epoch(message.created_at),
+        }
+        if draft.kind is ChatMessageKind.IMAGE:
+            packet["image_name"] = draft.image_name
+            packet["image_data"] = base64.b64encode(draft.image_data or b"").decode("ascii")
+        else:
+            packet["text"] = draft.text
+        return packet
+
+    @classmethod
+    def encode_chat_frame(cls, message: LanChatMessage) -> bytes:
+        packet = cls.chat_message(message)
+        try:
+            payload = json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise LanProtocolError(f"聊天消息无法编码：{error}") from error
+        if len(payload) > MAX_CHAT_PACKET_BYTES:
+            raise LanProtocolError("聊天消息超过安全大小限制")
+        return len(payload).to_bytes(4, "big") + payload
 
     @staticmethod
     def encode(packet: Mapping[str, Any]) -> bytes:
@@ -113,8 +222,121 @@ class LanPacketCodec:
         return ReceivedInteraction(sender_device_id=sender_id, sender_name=sender_name, draft=draft)
 
     @classmethod
-    def _decode_envelope(cls, data: bytes, *, expected_kind: set[str]) -> dict[str, Any]:
-        if not isinstance(data, (bytes, bytearray)) or len(data) > MAX_PACKET_BYTES:
+    def decode_codex_usage_sync(
+        cls,
+        data: bytes,
+        *,
+        local_device_id: str,
+    ) -> ReceivedCodexUsageSync:
+        raw = cls._decode_envelope(
+            data,
+            expected_kind={"codex_usage_sync_request", "codex_usage_sync_response"},
+        )
+        sender_id = _identity(raw.get("sender_device_id"), "发送方设备 ID")
+        if sender_id == local_device_id:
+            raise LanProtocolError("忽略本机发出的用量同步")
+        target = _identity(raw.get("target_device_id"), "目标设备 ID")
+        if target != local_device_id:
+            raise LanProtocolError("用量同步的目标设备不是本机")
+        request_id = _identity(raw.get("request_id"), "同步请求 ID")
+        account_key = raw.get("account_key")
+        if not _valid_account_key(account_key):
+            raise LanProtocolError("Codex 账号标识无效")
+        sender_name = _bounded_text(raw.get("sender_name"), "发送方名称", MAX_DISPLAY_NAME_LENGTH)
+        reset_at = _sync_epoch(raw.get("window_resets_at"))
+        updated_at = _sync_epoch(raw.get("updated_at"))
+        duration = raw.get("window_duration_minutes")
+        if duration is not None and (
+            isinstance(duration, bool)
+            or not isinstance(duration, int)
+            or not 0 < duration <= 525_600
+        ):
+            raise LanProtocolError("Codex 额度窗口无效")
+        usage = raw.get("usage")
+        if not isinstance(usage, dict):
+            raise LanProtocolError("Codex Token 用量无效")
+        snapshot = CodexDeviceUsageSnapshot(
+            account_key=account_key,
+            device_id=sender_id,
+            device_label=sender_name,
+            window_resets_at=reset_at,
+            window_duration_minutes=duration,
+            updated_at=datetime.fromtimestamp(updated_at, UTC).isoformat(),
+            input_tokens=_sync_counter(usage.get("input_tokens")),
+            cached_input_tokens=_sync_counter(usage.get("cached_input_tokens")),
+            cache_write_input_tokens=_sync_counter(usage.get("cache_write_input_tokens")),
+            output_tokens=_sync_counter(usage.get("output_tokens")),
+            reasoning_output_tokens=_sync_counter(usage.get("reasoning_output_tokens")),
+            total_tokens=_sync_counter(usage.get("total_tokens")),
+            requests=_sync_counter(usage.get("requests")),
+        )
+        return ReceivedCodexUsageSync(
+            kind=str(raw["kind"]),
+            request_id=request_id,
+            target_device_id=target,
+            snapshot=snapshot,
+        )
+
+    @classmethod
+    def decode_chat_message(cls, data: bytes, *, local_device_id: str) -> LanChatMessage:
+        raw = cls._decode_envelope(
+            data,
+            expected_kind={"chat"},
+            maximum=MAX_CHAT_PACKET_BYTES,
+        )
+        sender_id = _identity(raw.get("sender_device_id"), "发送方设备 ID")
+        if sender_id == local_device_id:
+            raise LanProtocolError("忽略本机发出的聊天消息")
+        target = _identity(raw.get("target_device_id"), "目标设备 ID")
+        if target != local_device_id:
+            raise LanProtocolError("聊天消息的目标设备不是本机")
+        sender_name = _bounded_text(raw.get("sender_name"), "发送方名称", MAX_DISPLAY_NAME_LENGTH)
+        message_id = _identity(raw.get("message_id"), "聊天消息 ID")
+        created_at = _sync_epoch(raw.get("created_at"))
+        try:
+            kind = ChatMessageKind(raw.get("type"))
+        except (TypeError, ValueError) as error:
+            raise LanProtocolError("聊天消息类型无效") from error
+        if kind is ChatMessageKind.IMAGE:
+            encoded = raw.get("image_data")
+            if not isinstance(encoded, str) or len(encoded) > 2_000_000:
+                raise LanProtocolError("聊天图片数据无效")
+            try:
+                image_data = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as error:
+                raise LanProtocolError("聊天图片编码无效") from error
+            if not image_data or len(image_data) > MAX_CHAT_IMAGE_BYTES:
+                raise LanProtocolError("聊天图片超过大小限制")
+            try:
+                validate_chat_image_data(image_data)
+            except LanChatImageError as error:
+                raise LanProtocolError(str(error)) from error
+            draft = ChatDraft.image(target, image_data, str(raw.get("image_name") or ""))
+        elif kind is ChatMessageKind.EMOJI:
+            draft = ChatDraft.emoji(target, str(raw.get("text") or ""))
+        else:
+            draft = ChatDraft.text_message(target, str(raw.get("text") or ""))
+        return LanChatMessage(
+            message_id=message_id,
+            sender_device_id=sender_id,
+            sender_name=sender_name,
+            target_device_id=target,
+            kind=kind,
+            created_at=created_at,
+            text=draft.text,
+            image_data=draft.image_data,
+            image_name=draft.image_name,
+        )
+
+    @classmethod
+    def _decode_envelope(
+        cls,
+        data: bytes,
+        *,
+        expected_kind: set[str],
+        maximum: int = MAX_PACKET_BYTES,
+    ) -> dict[str, Any]:
+        if not isinstance(data, (bytes, bytearray)) or len(data) > maximum:
             raise LanProtocolError("消息超过安全大小限制")
         try:
             raw = json.loads(bytes(data).decode("utf-8"))
@@ -152,4 +374,20 @@ def _bounded_text(value: object, label: str, maximum: int) -> str:
 def _port(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65_535:
         raise LanProtocolError("端口无效")
+    return value
+
+
+def _valid_account_key(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{24}", value) is not None
+
+
+def _sync_epoch(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1_500_000_000 <= value <= 4_102_444_800:
+        raise LanProtocolError("Codex 用量时间无效")
+    return value
+
+
+def _sync_counter(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10**18:
+        raise LanProtocolError("Codex Token 计数无效")
     return value
