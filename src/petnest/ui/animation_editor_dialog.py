@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QHeaderView,
 )
 
 from petnest.models.pet_package import AnimationDefinition, PetPackage
@@ -122,6 +123,7 @@ class AnimationEditorDialog(QDialog):
 
         self.action_card = QFrame(window_shell)
         self.action_card.setObjectName("settingsCard")
+        self.action_card.setMinimumWidth(450)
         action_card_layout = QVBoxLayout(self.action_card)
         action_card_layout.setContentsMargins(14, 12, 14, 12)
         action_card_layout.addWidget(QLabel("动作列表", self.action_card))
@@ -141,8 +143,12 @@ class AnimationEditorDialog(QDialog):
         self.action_table.setPalette(action_palette)
         for column in (2, 3, 4):
             self.action_table.setColumnHidden(column, True)
-        self.action_table.setColumnWidth(0, 110)
-        self.action_table.setColumnWidth(1, 180)
+        action_header = self.action_table.horizontalHeader()
+        action_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        action_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.action_table.setWordWrap(True)
+        self.action_table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.action_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.action_table.itemSelectionChanged.connect(self._load_selected_action)
         action_card_layout.addWidget(self.action_table, 1)
 
@@ -248,7 +254,7 @@ class AnimationEditorDialog(QDialog):
         preview_card_layout.addWidget(self.preview_play_button)
         main_row = QHBoxLayout()
         main_row.setSpacing(14)
-        main_row.addWidget(self.action_card, 3)
+        main_row.addWidget(self.action_card, 4)
         main_row.addWidget(self.editor_card, 5)
         main_row.addWidget(self.preview_card, 3)
         shell_layout.addLayout(main_row, 1)

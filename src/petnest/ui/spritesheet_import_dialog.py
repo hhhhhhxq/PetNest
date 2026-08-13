@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -163,7 +164,21 @@ class SpriteSheetImportDialog(QDialog):
         step_layout.addWidget(QLabel("3  完成导入", step_bar))
         shell_layout.addWidget(step_bar)
 
-        self.initial_content = QWidget(window_shell)
+        self.content_scroll = QScrollArea(window_shell)
+        self.content_scroll.setObjectName("spritesheetContentScroll")
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.content_container = QWidget(self.content_scroll)
+        self.content_container.setObjectName("spritesheetContent")
+        content_layout = QVBoxLayout(self.content_container)
+        content_layout.setContentsMargins(0, 0, 4, 0)
+        content_layout.setSpacing(14)
+        self.content_scroll.setWidget(self.content_container)
+        shell_layout.addWidget(self.content_scroll, 1)
+
+        self.initial_content = QWidget(self.content_container)
         initial_layout = QVBoxLayout(self.initial_content)
         initial_layout.setContentsMargins(0, 0, 0, 0)
         initial_layout.setSpacing(14)
@@ -278,9 +293,9 @@ class SpriteSheetImportDialog(QDialog):
         self.mode_group.addButton(self.manual_select_radio)
         self.auto_skip_radio.toggled.connect(self._toggle_manual_selection)
         initial_layout.addWidget(mode_box)
-        shell_layout.addWidget(self.initial_content, 1)
+        content_layout.addWidget(self.initial_content)
 
-        self.manual_selection_panel = QFrame(window_shell)
+        self.manual_selection_panel = QFrame(self.content_container)
         self.manual_selection_panel.setObjectName("manualSelectionPanel")
         manual_layout = QVBoxLayout(self.manual_selection_panel)
         manual_layout.setContentsMargins(0, 0, 0, 0)
@@ -324,7 +339,7 @@ class SpriteSheetImportDialog(QDialog):
         manual_frame_layout.addWidget(self.thumbnail_area, 1)
         panel_layout.addWidget(manual_frame_card, 1)
         self.manual_selection_panel.hide()
-        shell_layout.addWidget(self.manual_selection_panel, 1)
+        content_layout.addWidget(self.manual_selection_panel)
 
         footer = QHBoxLayout()
         self.status_label = QLabel("选择文件后会检测图集尺寸与透明格位。", window_shell)
@@ -340,6 +355,25 @@ class SpriteSheetImportDialog(QDialog):
         footer.addWidget(self.buttons)
         shell_layout.addLayout(footer)
         root.addWidget(window_shell)
+        self._fit_initial_height()
+
+    def _fit_initial_height(self, available_height: int | None = None) -> None:
+        """在打开时尽量容纳初始表单，同时为屏幕边缘预留空间。"""
+        if available_height is None:
+            screen = self.screen()
+            if screen is None and self.parentWidget() is not None:
+                screen = self.parentWidget().screen()
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            if screen is None:
+                return
+            available_height = screen.availableGeometry().height()
+
+        content_height = self.content_container.sizeHint().height()
+        chrome_height = self.layout().sizeHint().height() - self.content_scroll.sizeHint().height()
+        natural_height = max(self.minimumHeight(), content_height + max(0, chrome_height))
+        maximum_height = max(self.minimumHeight(), available_height - 40)
+        self.resize(self.width(), min(natural_height, maximum_height))
 
     def choose_source(self) -> None:
         """只允许用户通过标准本地文件选择器选择 PNG。"""

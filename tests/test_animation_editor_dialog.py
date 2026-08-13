@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QHeaderView
 
 from tests.test_pet_window import _package
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
@@ -53,6 +54,21 @@ def test_action_list_selection_uses_petnest_accent_instead_of_system_blue(qtbot:
     assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight).name().lower() == COLORS["accent_soft"].lower()
     assert palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.HighlightedText).name().lower() == COLORS["accent"].lower()
     assert palette.color(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight).name().lower() == COLORS["accent_soft"].lower()
+
+
+def test_action_list_description_column_expands_with_the_dialog(qtbot: object, tmp_path: Path) -> None:
+    dialog = AnimationEditorDialog(_package(tmp_path))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.resize(1600, 780)
+    __import__("PySide6").QtWidgets.QApplication.processEvents()
+
+    header = dialog.action_table.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
+    assert dialog.action_table.wordWrap()
+    assert dialog.action_table.verticalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+    assert dialog.action_table.columnWidth(1) > 180
 
 
 def test_advanced_frame_editor_is_reset_when_switching_actions(qtbot: object, tmp_path: Path) -> None:

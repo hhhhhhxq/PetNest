@@ -78,6 +78,29 @@ def test_manual_mode_keeps_source_and_pet_details_available(qtbot: object, tmp_p
     assert dialog.manual_selection_panel.isVisible()
 
 
+def test_dialog_uses_one_scrollable_content_area_for_manual_mode(qtbot: object, tmp_path: Path) -> None:
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+
+    scroll = dialog.findChild(__import__("PySide6").QtWidgets.QScrollArea, "spritesheetContentScroll")
+
+    assert scroll is not None
+    assert scroll.widget() is dialog.content_container
+    assert dialog.initial_content.parentWidget() is dialog.content_container
+    assert dialog.manual_selection_panel.parentWidget() is dialog.content_container
+    assert scroll.widgetResizable()
+    assert scroll.verticalScrollBarPolicy() == __import__("PySide6").QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+
+
+def test_dialog_initial_height_respects_available_screen_height(qtbot: object, tmp_path: Path) -> None:
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+
+    dialog._fit_initial_height(available_height=720)
+
+    assert dialog.height() <= max(dialog.minimumHeight(), 720 - 40)
+
+
 def test_dialog_accepts_a_local_png_dropped_on_the_source_zone(qtbot: object, tmp_path: Path) -> None:
     source = _spritesheet(tmp_path / "dropped.png")
     dialog = SpriteSheetImportDialog(tmp_path / "pets")

@@ -122,6 +122,7 @@ def test_elastic_countdown_uses_independent_clock_in_card_after_start(qtbot: QtB
     available = datetime(2026, 8, 13, 9, 35)
     countdown.refresh(available)
     assert countdown.clock_in_card.isVisible()
+    assert countdown.clock_in_card.clock_in_button.text() == "上工"
     assert countdown.clock_in_card.time_input.time().toString("HH:mm") == "09:35"
     assert countdown.clock_in_card.time_input.minimumTime().toString("HH:mm") == "09:30"
     assert countdown.clock_in_card.time_input.maximumTime().toString("HH:mm") == "09:35"

@@ -170,7 +170,7 @@ class ClockInCard(QFrame):
         self.time_input.setCurrentSection(QTimeEdit.Section.MinuteSection)
         self.time_input.setToolTip("点击箭头或直接输入打卡时间")
         self.time_input.timeChanged.connect(self._mark_time_as_edited)
-        self.clock_in_button = QPushButton("打卡", self)
+        self.clock_in_button = QPushButton("上工", self)
         self.clock_in_button.setToolTip("按当前输入时间记录上班")
         controls.addWidget(self.time_input)
         controls.addWidget(self.clock_in_button)
