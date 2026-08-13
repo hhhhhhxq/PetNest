@@ -1004,17 +1004,21 @@ class PetNest:
         if sys.platform != "win32":
             raise AppUpdateError("当前平台不支持 Windows 安装器")
         if not getattr(sys, "frozen", False):
-            raise AppUpdateError("开发模式未打包 PetNestUpdater.exe，无法自动安装")
-        updater = Path(sys.executable).with_name("PetNestUpdater.exe")
-        if not updater.is_file():
-            raise AppUpdateError("安装包缺少 PetNestUpdater.exe")
+            raise AppUpdateError("开发模式未打包 PetNestUpdateHost.exe，无法自动安装")
+        executable = Path(sys.executable).absolute()
+        bundled_updater = executable.with_name("PetNestUpdateHost.exe")
+        if not bundled_updater.is_file():
+            raise AppUpdateError("安装包缺少 PetNestUpdateHost.exe")
         from petnest.core.app_update import build_updater_command
+        from petnest.core.windows_updater import stage_windows_updater
+
+        updater = stage_windows_updater(bundled_updater, installer.parent / "update-hosts")
 
         command = build_updater_command(
             updater,
             installer,
             os.getpid(),
-            restart_path=Path(sys.executable),
+            restart_path=executable,
         )
         subprocess.Popen(command, cwd=str(updater.parent), close_fds=True)
 

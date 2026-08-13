@@ -1,6 +1,7 @@
 """Windows 更新器的无 Qt 进程控制逻辑。
 
-主程序只启动独立的 ``PetNestUpdater.exe``，不在自己仍运行时覆盖安装目录。
+主程序将独立的 ``PetNestUpdateHost.exe`` 复制到临时目录后运行，不在更新宿主
+仍运行时覆盖安装目录。
 该模块保留标准库实现，macOS 不会调用它；参数解析和等待逻辑可在所有平台测试。
 """
 
@@ -11,9 +12,11 @@ import ctypes
 from ctypes import wintypes
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import time
+import uuid
 
 from petnest.core.app_update import AppUpdateError
 
@@ -22,6 +25,10 @@ _SEE_MASK_NOCLOSEPROCESS = 0x00000040
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
 _INSTALLER_WAIT_TIMEOUT_MS = 30 * 60 * 1000
+
+
+class InstallerProcessNotExitedError(AppUpdateError):
+    """安装器仍可能占用安装目录，此时不能重启 PetNest。"""
 
 
 class _ShellExecuteInfo(ctypes.Structure):
@@ -49,6 +56,28 @@ class UpdaterArguments:
     wait_pid: int
     installer: Path
     restart: Path | None = None
+
+
+def stage_windows_updater(source: Path, staging_directory: Path) -> Path:
+    """将更新宿主复制到安装目录之外，避免安装器覆盖正在运行的自身。"""
+
+    source = Path(source)
+    staging_directory = Path(staging_directory)
+    if not source.is_file():
+        raise AppUpdateError("安装包缺少 Windows 更新宿主")
+    staging_directory.mkdir(parents=True, exist_ok=True)
+    for candidate in staging_directory.glob("PetNestUpdateHost-*.exe"):
+        try:
+            candidate.unlink()
+        except OSError:
+            # 上一次更新宿主仍在退出时可能暂时无法删除；唯一文件名可避免冲突。
+            pass
+    destination = staging_directory / f"PetNestUpdateHost-{uuid.uuid4().hex}.exe"
+    try:
+        shutil.copy2(source, destination)
+    except OSError as error:
+        raise AppUpdateError(f"无法准备 Windows 更新宿主：{error}") from error
+    return destination
 
 
 def parse_updater_args(argv: list[str]) -> UpdaterArguments:
@@ -161,7 +190,7 @@ def _run_elevated_installer(installer: Path) -> int:
         error_code = int(windll.kernel32.GetLastError())
         raise AppUpdateError(f"无法以管理员权限启动安装器（Windows 错误 {error_code}）")
     if not execute_info.hProcess:
-        raise AppUpdateError("安装器已启动但未返回进程句柄")
+        raise InstallerProcessNotExitedError("安装器已启动但未返回进程句柄")
 
     try:
         wait_result = int(
@@ -171,9 +200,9 @@ def _run_elevated_installer(installer: Path) -> int:
             )
         )
         if wait_result == _WAIT_TIMEOUT:
-            raise AppUpdateError("安装器运行超时，请查看安装器日志后重试")
+            raise InstallerProcessNotExitedError("安装器运行超时，请查看安装器日志后重试")
         if wait_result != _WAIT_OBJECT_0:
-            raise AppUpdateError(f"等待安装器结束失败（Windows 状态 {wait_result}）")
+            raise InstallerProcessNotExitedError(f"无法确认安装器已经结束（Windows 状态 {wait_result}）")
         exit_code = wintypes.DWORD()
         if not windll.kernel32.GetExitCodeProcess(
             execute_info.hProcess,
@@ -194,9 +223,18 @@ def run_installer(arguments: UpdaterArguments) -> int:
         raise AppUpdateError("更新安装包不存在")
     if not wait_for_process_exit(arguments.wait_pid):
         raise AppUpdateError("等待 PetNest 退出超时")
-    installer_exit_code = _run_elevated_installer(arguments.installer)
-    if installer_exit_code != 0:
-        return installer_exit_code
-    if arguments.restart is not None and arguments.restart.is_file():
-        subprocess.Popen([str(arguments.restart)], cwd=str(arguments.restart.parent), close_fds=True)
-    return 0
+    installer_has_exited = False
+    try:
+        result = _run_elevated_installer(arguments.installer)
+        installer_has_exited = True
+        return result
+    except InstallerProcessNotExitedError:
+        raise
+    except Exception:
+        # 启动安装器前的 UAC 取消等错误不会留下安装器进程，可以安全恢复应用。
+        installer_has_exited = True
+        raise
+    finally:
+        # 安装失败、用户取消 UAC 或安装成功后都恢复应用，避免桌宠无声消失。
+        if installer_has_exited and arguments.restart is not None and arguments.restart.is_file():
+            subprocess.Popen([str(arguments.restart)], cwd=str(arguments.restart.parent), close_fds=True)

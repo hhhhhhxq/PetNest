@@ -1,7 +1,7 @@
 ; PetNest Windows 安装包。先由根目录 build_windows.bat 生成 dist\PetNest。
 
 #ifndef AppVersion
-#define AppVersion "0.1.4"
+#define AppVersion "0.1.5"
 #endif
 
 [Setup]
@@ -22,7 +22,8 @@ WizardStyle=modern
 
 [Files]
 Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "pets\*"
-Source: "..\dist\PetNestUpdater.exe"; DestDir: "{app}"; Flags: ignoreversion
+; 名称与旧 PetNestUpdater.exe 分离，确保 0.1.2/0.1.4 的运行中更新器不会阻塞升级。
+Source: "..\dist\PetNestUpdateHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\pets\sample_pet\*"; DestDir: "{code:GetPetsRoot}\sample_pet"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: SamplePetNeedsRepair
 
 [Icons]

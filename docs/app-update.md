@@ -9,7 +9,7 @@
 - 启动后约 2.5 秒会进行一次后台检查；后台检查与上次成功/失败检查间隔至少 24 小时。
 - 设置页手动点击会强制检查，不受 24 小时节流影响。检查、下载都在后台进行，重复点击不会创建第二个任务。
 
-发现新版本后，用户可以查看版本说明并选择下载。安装包下载到用户临时目录，只有大小和 SHA-256 都匹配后才会交给独立的 `PetNestUpdater`。Windows updater 等待 PetNest 退出后启动 Inno Setup；macOS updater 会再次检查 ZIP 路径、应用标识和代码签名，再以备份回滚方式替换当前 `PetNest.app`。网络失败、校验失败、取消或安装失败都会保留或恢复当前版本。
+发现新版本后，用户可以查看版本说明并选择下载。安装包下载到用户临时目录，只有大小和 SHA-256 都匹配后才会交给独立更新宿主。Windows 0.1.5 及之后会先把 `PetNestUpdateHost.exe` 复制到专用临时目录，再等待 PetNest 退出并启动 Inno Setup；确认安装器结束后，无论安装成功、失败或取消都会重新启动 PetNest。首次从旧更新器迁移到 0.1.5 时，如果用户取消管理员授权，需要手动重新打开 PetNest。macOS updater 会再次检查 ZIP 路径、应用标识和代码签名，再以备份回滚方式替换当前 `PetNest.app`。网络失败、校验失败、取消或安装失败都会保留或恢复当前版本。
 
 ## GitHub Release 发布文件
 
@@ -43,7 +43,7 @@
 运行 `build_windows.bat` 会生成：
 
 - `dist/PetNest/`：主程序 onedir 包；
-- `dist/PetNestUpdater.exe`：不依赖 Qt 的独立等待/启动程序；
+- `dist/PetNestUpdateHost.exe`：不依赖 Qt、运行前复制到临时目录的独立等待/启动程序；
 - `dist/installer/PetNest-Setup-<version>.exe`：Inno Setup 安装包。
 
 发布前应计算安装包 SHA-256，将大小和摘要写入 `app-update.json`，再把两个文件一起上传到同一个 GitHub Release。安装器升级使用相同的 `AppId`，因此会覆盖程序文件但不会删除用户宠物库。

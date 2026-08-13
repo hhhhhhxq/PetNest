@@ -20,6 +20,7 @@ from petnest.core.app_update import (
     build_updater_command,
     parse_update_manifest,
 )
+from petnest.core import windows_updater
 from petnest.core.windows_updater import UpdaterArguments, parse_updater_args, run_installer
 
 
@@ -306,6 +307,94 @@ def test_run_installer_delegates_to_elevated_launcher(
 
     assert run_installer(UpdaterArguments(123, installer)) == 0
     assert launched == [installer]
+
+
+def test_stage_windows_updater_copies_it_outside_the_install_directory(tmp_path: Path) -> None:
+    install_directory = tmp_path / "installed" / "PetNest"
+    install_directory.mkdir(parents=True)
+    source = install_directory / "PetNestUpdateHost.exe"
+    source.write_bytes(b"updater")
+    staging_directory = tmp_path / "downloads"
+    staging_directory.mkdir()
+    stale = staging_directory / "PetNestUpdateHost-stale.exe"
+    stale.write_bytes(b"stale")
+
+    staged = windows_updater.stage_windows_updater(source, staging_directory)
+
+    assert staged.parent == staging_directory
+    assert staged != source
+    assert staged.name.startswith("PetNestUpdateHost-")
+    assert staged.read_bytes() == b"updater"
+    assert source.read_bytes() == b"updater"
+    assert not stale.exists()
+
+
+def test_run_installer_restarts_petnest_after_a_failed_install(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    installer = tmp_path / "PetNest-Setup.exe"
+    installer.write_bytes(b"installer")
+    restart = tmp_path / "PetNest.exe"
+    restart.write_bytes(b"application")
+    restarted: list[tuple[list[str], str]] = []
+    monkeypatch.setattr("petnest.core.windows_updater.sys.platform", "win32")
+    monkeypatch.setattr("petnest.core.windows_updater.wait_for_process_exit", lambda _pid: True)
+    monkeypatch.setattr("petnest.core.windows_updater._run_elevated_installer", lambda _path: 2)
+    monkeypatch.setattr(
+        "petnest.core.windows_updater.subprocess.Popen",
+        lambda command, **kwargs: restarted.append((command, kwargs["cwd"])),
+    )
+
+    assert run_installer(UpdaterArguments(123, installer, restart)) == 2
+    assert restarted == [([str(restart)], str(restart.parent))]
+
+
+def test_run_installer_does_not_restart_while_the_installer_is_still_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    installer = tmp_path / "PetNest-Setup.exe"
+    installer.write_bytes(b"installer")
+    restart = tmp_path / "PetNest.exe"
+    restart.write_bytes(b"application")
+    restarted: list[list[str]] = []
+    monkeypatch.setattr("petnest.core.windows_updater.sys.platform", "win32")
+    monkeypatch.setattr("petnest.core.windows_updater.wait_for_process_exit", lambda _pid: True)
+    monkeypatch.setattr(
+        "petnest.core.windows_updater._run_elevated_installer",
+        lambda _path: (_ for _ in ()).throw(windows_updater.InstallerProcessNotExitedError("still running")),
+    )
+    monkeypatch.setattr(
+        "petnest.core.windows_updater.subprocess.Popen",
+        lambda command, **_kwargs: restarted.append(command),
+    )
+
+    with pytest.raises(windows_updater.InstallerProcessNotExitedError):
+        run_installer(UpdaterArguments(123, installer, restart))
+    assert restarted == []
+
+
+def test_run_installer_restarts_petnest_when_uac_launch_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    installer = tmp_path / "PetNest-Setup.exe"
+    installer.write_bytes(b"installer")
+    restart = tmp_path / "PetNest.exe"
+    restart.write_bytes(b"application")
+    restarted: list[list[str]] = []
+    monkeypatch.setattr("petnest.core.windows_updater.sys.platform", "win32")
+    monkeypatch.setattr("petnest.core.windows_updater.wait_for_process_exit", lambda _pid: True)
+    monkeypatch.setattr(
+        "petnest.core.windows_updater._run_elevated_installer",
+        lambda _path: (_ for _ in ()).throw(AppUpdateError("UAC cancelled")),
+    )
+    monkeypatch.setattr(
+        "petnest.core.windows_updater.subprocess.Popen",
+        lambda command, **_kwargs: restarted.append(command),
+    )
+
+    with pytest.raises(AppUpdateError, match="UAC cancelled"):
+        run_installer(UpdaterArguments(123, installer, restart))
+    assert restarted == [[str(restart)]]
 
 
 class _FakeUpdateClient:

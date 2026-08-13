@@ -28,11 +28,25 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert 'pets\\sample_pet;pets\\sample_pet' not in build_script
     assert "src\\petnest_launcher.py" in build_script
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
-    assert "PetNestUpdater" in build_script
+    assert "--name PetNestUpdateHost" in build_script
     assert "google-services.json;." in build_script
+    assert "PETNEST_FIREBASE_CONFIG" in build_script
+    assert '--add-data "%PETNEST_FIREBASE_CONFIG%;."' in build_script
+    assert 'if not exist "%PETNEST_FIREBASE_CONFIG%"' in build_script
     assert "/google-services.json" in ignored
-    assert "Source: \"..\\dist\\PetNestUpdater.exe\"" in contents
+    assert "Source: \"..\\dist\\PetNestUpdateHost.exe\"" in contents
+    assert "Source: \"..\\dist\\PetNestUpdater.exe\"" not in contents
     assert "skipifsilent" in contents
+
+
+def test_release_version_is_consistent_across_python_and_installer() -> None:
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    package = Path("src/petnest/__init__.py").read_text(encoding="utf-8")
+    installer = Path("installer/PetNest.iss").read_text(encoding="utf-8")
+
+    assert 'version = "0.1.5"' in pyproject
+    assert '__version__ = "0.1.5"' in package
+    assert '#define AppVersion "0.1.5"' in installer
 
 
 def test_installer_and_application_use_the_dedicated_app_icon() -> None:

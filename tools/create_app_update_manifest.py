@@ -31,7 +31,9 @@ def _parser() -> argparse.ArgumentParser:
         default="windows-x64",
     )
     parser.add_argument("--output", type=Path, default=Path("app-update.json"))
-    parser.add_argument("--notes", default="")
+    notes_group = parser.add_mutually_exclusive_group()
+    notes_group.add_argument("--notes", default="")
+    notes_group.add_argument("--notes-file", type=Path)
     return parser
 
 
@@ -70,12 +72,13 @@ def create_manifest(
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        notes = args.notes_file.read_text(encoding="utf-8").strip() if args.notes_file is not None else args.notes
         document = create_manifest(
             version=args.version,
             installer=args.installer,
             url=args.url,
             platform=args.platform,
-            notes=args.notes,
+            notes=notes,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
