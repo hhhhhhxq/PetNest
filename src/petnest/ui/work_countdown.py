@@ -16,10 +16,10 @@ LOGGER = logging.getLogger(__name__)
 
 def countdown_text(
     now: datetime,
-    _start_text: str,
+    start_text: str,
     end_text: str,
     daily_end_times: dict[str, str | None] | None = None,
-) -> str:
+) -> str | None:
     """根据本地时间生成工作日的下班倒计时或休息状态文字。"""
     if daily_end_times is not None:
         scheduled_end = daily_end_times.get(str(now.weekday()))
@@ -28,8 +28,14 @@ def countdown_text(
         end_text = scheduled_end
     elif now.weekday() >= 5:
         return "今天休息 ☕"
+    start = _parse_time(start_text, time(9))
     end = _parse_time(end_text, time(18))
+    start_at = datetime.combine(now.date(), start, tzinfo=now.tzinfo)
     end_at = datetime.combine(now.date(), end, tzinfo=now.tzinfo)
+    if end_at <= start_at:
+        return "下班啦 🎉" if now >= end_at else None
+    if now < start_at:
+        return None
     if now < end_at:
         return f"距离下班 {_duration(end_at - now)}"
     return "下班啦 🎉"
@@ -68,20 +74,53 @@ def clock_in_is_available(
     now: datetime,
     workdays: dict[str, str | None],
     start_text: str,
+    end_text: str = "10:00",
+    work_duration_minutes: int = 540,
 ) -> bool:
-    """判断当前是否已到选中工作日的允许打卡开始时间。"""
-    if workdays.get(str(now.weekday())) is None:
-        return False
+    """判断当前是否处于当天允许补录弹性打卡的时间段。"""
+    return _available_clock_in_date(
+        now,
+        workdays,
+        start_text,
+        end_text,
+        work_duration_minutes,
+    ) is not None
+
+
+def _available_clock_in_date(
+    now: datetime,
+    workdays: dict[str, str | None],
+    start_text: str,
+    end_text: str,
+    work_duration_minutes: int,
+) -> date | None:
+    """返回当前可补录的工作日；截止时间跨午夜时也保留前一工作日。"""
     start = _parse_time(start_text, time(9, 30))
-    start_at = datetime.combine(now.date(), start, tzinfo=now.tzinfo)
-    return now >= start_at
+    end = _parse_time(end_text, time(10))
+    if end <= start:
+        return None
+    duration = work_duration_minutes if isinstance(work_duration_minutes, int) and work_duration_minutes > 0 else 540
+    for work_date in (now.date(), now.date() - timedelta(days=1)):
+        if workdays.get(str(work_date.weekday())) is None:
+            continue
+        start_at = datetime.combine(work_date, start, tzinfo=now.tzinfo)
+        latest_recorded = datetime.combine(work_date, end, tzinfo=now.tzinfo)
+        cutoff = latest_recorded + timedelta(minutes=duration)
+        if start_at <= now < cutoff:
+            return work_date
+    return None
 
 
-def _clock_in_bounds(now: datetime, start_text: str, end_text: str) -> tuple[QTime, QTime]:
+def _clock_in_bounds(
+    now: datetime,
+    start_text: str,
+    end_text: str,
+    work_date: date | None = None,
+) -> tuple[QTime, QTime]:
     """返回当前打卡卡片允许使用的最早和最晚分钟。"""
     start = _parse_time(start_text, time(9, 30))
     end = _parse_time(end_text, time(10))
-    latest = min(time(now.hour, now.minute), end)
+    latest = end if work_date is not None and work_date < now.date() else min(time(now.hour, now.minute), end)
     if latest < start:
         latest = start
     return QTime(start.hour, start.minute), QTime(latest.hour, latest.minute)
@@ -181,16 +220,23 @@ class ClockInCard(QFrame):
         self._draft_edited = False
         self._syncing_time = False
 
-    def show_for(self, now: datetime, start_text: str, end_text: str) -> None:
+    def show_for(
+        self,
+        now: datetime,
+        start_text: str,
+        end_text: str,
+        work_date: date | None = None,
+    ) -> None:
         """更新时间范围；默认值随当前分钟变化，用户编辑后保持不变。"""
-        minimum, maximum = _clock_in_bounds(now, start_text, end_text)
-        is_new_draft = not self.isVisible() or self._draft_date != now.date()
+        draft_date = work_date or now.date()
+        minimum, maximum = _clock_in_bounds(now, start_text, end_text, draft_date)
+        is_new_draft = not self.isVisible() or self._draft_date != draft_date
         self._syncing_time = True
         try:
             self.time_input.setMinimumTime(minimum)
             self.time_input.setMaximumTime(maximum)
             if is_new_draft:
-                self._draft_date = now.date()
+                self._draft_date = draft_date
                 self._draft_edited = False
             if not self._draft_edited:
                 self.time_input.setTime(maximum)
@@ -224,6 +270,7 @@ class WorkCountdownWindow(QObject):
         self._clock_in_time: str | None = None
         self._on_clock_in: Callable[[datetime], object] | None = None
         self._last_now: datetime | None = None
+        self._active_clock_in_date: date | None = None
         self.clock_in_card = ClockInCard(pet_window)
         self.clock_in_card.clock_in_requested.connect(self._handle_clock_in)
         position_changed = getattr(pet_window, "position_changed", None)
@@ -306,38 +353,57 @@ class WorkCountdownWindow(QObject):
             "5": None,
             "6": None,
         }
-        if workdays.get(str(now.weekday())) is None:
-            self.clock_in_card.hide()
-            self.pet_window.set_countdown_text("今天休息 ☕")  # type: ignore[attr-defined]
-            return
-        if self._clock_in_date != now.date().isoformat():
+        recorded = self._recorded_at(now)
+        if (self._clock_in_date or self._clock_in_time) and recorded is None:
             self._clock_in_date = None
             self._clock_in_time = None
-        recorded = self._recorded_at(now)
-        if recorded is None:
-            if clock_in_is_available(now, workdays, self.clock_in_start_time):
-                self._position_card()
-                self.clock_in_card.show_for(now, self.clock_in_start_time, self.clock_in_end_time)
-                self.clock_in_card.show()
-                self.pet_window.set_countdown_text(None)  # type: ignore[attr-defined]
-            else:
+        if recorded is not None:
+            end_at = elastic_work_end_at(
+                recorded,
+                self.clock_in_start_time,
+                self.clock_in_end_time,
+                self.work_duration_minutes,
+            )
+            is_today = recorded.date() == now.date()
+            latest_recorded = datetime.combine(
+                recorded.date(),
+                _parse_time(self.clock_in_end_time, time(10)),
+                tzinfo=now.tzinfo,
+            )
+            overnight_cutoff = latest_recorded + timedelta(minutes=self.work_duration_minutes)
+            is_active_overnight = recorded.date() == now.date() - timedelta(days=1) and now < overnight_cutoff
+            if is_today or is_active_overnight:
+                self._active_clock_in_date = None
                 self.clock_in_card.hide()
-                self.pet_window.set_countdown_text(  # type: ignore[attr-defined]
-                    countdown_text(now, self.clock_in_start_time, self.end_time, workdays)
-                )
-            return
-        self.clock_in_card.hide()
-        end_at = elastic_work_end_at(
-            recorded,
+                text = f"距离下班 {_duration(end_at - now)}" if now < end_at else "下班啦 🎉"
+                self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
+                return
+            self._clock_in_date = None
+            self._clock_in_time = None
+
+        work_date = _available_clock_in_date(
+            now,
+            workdays,
             self.clock_in_start_time,
             self.clock_in_end_time,
             self.work_duration_minutes,
         )
-        if now < end_at:
-            text = f"距离下班 {_duration(end_at - now)}"
-        else:
-            text = "下班啦 🎉"
-        self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
+        if work_date is None:
+            self._active_clock_in_date = None
+            self.clock_in_card.hide()
+            text = "今天休息 ☕" if workdays.get(str(now.weekday())) is None else None
+            self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
+            return
+        self._active_clock_in_date = work_date
+        self._position_card()
+        self.clock_in_card.show_for(
+            now,
+            self.clock_in_start_time,
+            self.clock_in_end_time,
+            work_date,
+        )
+        self.clock_in_card.show()
+        self.pet_window.set_countdown_text(None)  # type: ignore[attr-defined]
 
     def set_pet_visible(self, visible: bool) -> None:
         """同步宠物窗口可见性，避免独立打卡卡片脱离主窗口残留。"""
@@ -351,16 +417,21 @@ class WorkCountdownWindow(QObject):
             self.timer.start()
 
     def _recorded_at(self, now: datetime) -> datetime | None:
-        if self._clock_in_date != now.date().isoformat() or not self._clock_in_time:
+        if not self._clock_in_date or not self._clock_in_time:
             return None
-        parsed = _parse_time(self._clock_in_time, time(9, 30))
-        return datetime.combine(now.date(), parsed, tzinfo=now.tzinfo)
+        try:
+            recorded_date = date.fromisoformat(self._clock_in_date)
+            recorded_time = time.fromisoformat(self._clock_in_time)
+        except (TypeError, ValueError):
+            return None
+        return datetime.combine(recorded_date, recorded_time, tzinfo=now.tzinfo)
 
     def _handle_clock_in(self, selected_time: object) -> None:
         now = self._last_now or datetime.now().astimezone()
+        work_date = self._active_clock_in_date or now.date()
         if isinstance(selected_time, QTime):
             recorded = datetime.combine(
-                now.date(),
+                work_date,
                 time(selected_time.hour(), selected_time.minute()),
                 tzinfo=now.tzinfo,
             )
@@ -370,6 +441,7 @@ class WorkCountdownWindow(QObject):
         recorded = effective_clock_in_at(min(recorded, now), self.clock_in_start_time, self.clock_in_end_time)
         self._clock_in_date = recorded.date().isoformat()
         self._clock_in_time = recorded.strftime("%H:%M")
+        self._active_clock_in_date = None
         if self._on_clock_in is not None:
             try:
                 self._on_clock_in(recorded)
