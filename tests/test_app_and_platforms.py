@@ -204,6 +204,58 @@ def test_work_finish_choice_persists_and_reminder_closes_on_shutdown(
     assert not application.work_finish_reminder.control_window.isVisible()
 
 
+def test_work_finish_prompt_temporarily_hides_and_restores_visible_pet(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(daily_work_end_times={str(day): "18:00" for day in range(7)}))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    qtbot.addWidget(application.work_finish_reminder.animation_window)
+    qtbot.addWidget(application.work_finish_reminder.control_window)
+    application._configure_work_countdown()
+    application.window.show()
+
+    application.work_countdown.refresh(__import__("datetime").datetime(2026, 8, 14, 17, 59, 59))
+    application.work_countdown.refresh(__import__("datetime").datetime(2026, 8, 14, 18, 0))
+    assert not application.window.isVisible()
+
+    application.work_finish_reminder.control_window.continue_button.click()
+
+    assert application.window.isVisible()
+    application.shutdown()
+
+
+def test_work_finish_prompt_does_not_restore_pet_hidden_before_prompt(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(daily_work_end_times={str(day): "18:00" for day in range(7)}))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    qtbot.addWidget(application.work_finish_reminder.animation_window)
+    qtbot.addWidget(application.work_finish_reminder.control_window)
+    application._configure_work_countdown()
+    application.window.hide()
+
+    application.work_countdown.refresh(__import__("datetime").datetime(2026, 8, 14, 17, 59, 59))
+    application.work_countdown.refresh(__import__("datetime").datetime(2026, 8, 14, 18, 0))
+    application.work_finish_reminder.control_window.finish_button.click()
+
+    assert not application.window.isVisible()
+    application.shutdown()
+
+
 def test_empty_app_update_check_clears_stale_available_update(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
@@ -644,6 +696,7 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     app = QApplication.instance() or QApplication([])
     del app  # Qt 应用由 pytest-qt 生命周期管理。
     settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(work_countdown_enabled=False))
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",

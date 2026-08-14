@@ -171,6 +171,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
         self.setContextMenu(self.menu)
+        self.sync_visibility_action()
 
     def set_current_pet_name(self, name: str) -> None:
         """同步菜单顶部的当前宠物标题。"""
@@ -188,6 +189,10 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def set_always_on_top_enabled(self, enabled: bool) -> None:
         self.toggle_always_on_top_action.setChecked(enabled)
+
+    def sync_visibility_action(self) -> None:
+        """让动作文字始终反映桌宠窗口的真实可见状态。"""
+        self.toggle_visibility_action.setText("隐藏" if self.window.isVisible() else "显示")
 
     def set_codex_usage_unlocked(self, unlocked: bool) -> None:
         """按本地解锁状态显示或隐藏 Codex 用量入口。"""
@@ -223,16 +228,12 @@ class PetTrayIcon(QSystemTrayIcon):
         self.resource_update_action.setText(f"正在下载资源（{percentage}%）…")
 
     def _toggle_visibility(self) -> None:
-        if self.window.isVisible():
-            self.window.hide()
-            self.toggle_visibility_action.setText("显示")
-            if self._on_visibility_changed is not None:
-                self._on_visibility_changed(False)
+        target_visible = not self.window.isVisible()
+        if self._on_visibility_changed is not None:
+            self._on_visibility_changed(target_visible)
         else:
-            self.window.show()
-            self.toggle_visibility_action.setText("隐藏")
-            if self._on_visibility_changed is not None:
-                self._on_visibility_changed(True)
+            self.window.setVisible(target_visible)
+        self.sync_visibility_action()
 
     def _toggle_pause(self) -> None:
         paused = not self.window.player.is_paused
