@@ -56,6 +56,22 @@ def test_clock_in_card_position_minimizes_overlap_inside_safe_area() -> None:
     assert point == QPoint(119, 82)
 
 
+def test_clock_in_card_position_stays_on_one_pixel_available_area() -> None:
+    available = QRect(100, 50, 1, 1)
+
+    assert clock_in_card_position(available, QSize(240, 120), available) == QPoint(100, 50)
+
+
+def test_clock_in_card_position_contains_clipped_card_when_available_is_smaller_than_margins() -> None:
+    available = QRect(100, 50, 10, 12)
+    effective_safe = available.adjusted(4, 5, -4, -5)
+    point = clock_in_card_position(available, QSize(240, 120), available)
+    clipped_card = QRect(point, effective_safe.size())
+
+    assert available.contains(clipped_card)
+    assert effective_safe.contains(clipped_card)
+
+
 def test_fixed_countdown_stays_hidden_before_work_and_counts_down_after_start() -> None:
     monday = datetime(2026, 8, 10, 8, 30, 0)
     assert countdown_text(monday, "09:00", "18:00") is None

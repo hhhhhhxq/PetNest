@@ -22,7 +22,9 @@ def clock_in_card_position(
     margin: int = 8,
 ) -> QPoint:
     """返回打卡卡片在可用区域内、尽量避开桌宠的位置。"""
-    safe = available.adjusted(margin, margin, -margin, -margin)
+    horizontal_margin = min(max(0, margin), max(0, (available.width() - 1) // 2))
+    vertical_margin = min(max(0, margin), max(0, (available.height() - 1) // 2))
+    safe = available.adjusted(horizontal_margin, vertical_margin, -horizontal_margin, -vertical_margin)
     width = max(1, min(card_size.width(), safe.width()))
     height = max(1, min(card_size.height(), safe.height()))
     max_x = safe.right() - width + 1
