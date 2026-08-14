@@ -33,6 +33,8 @@ _TRIGGER_TEXT = {
     "error": "任务报错时", "waiting": "任务等待时", "working": "任务工作时",
     "hover": "鼠标移入时", "codex_running_left": "外部事件可触发",
     "bored": "系统长时间无输入时", "sleep": "系统无人操作更久时", "wake": "系统恢复输入时",
+    "work_finish_walk": "全屏下班提醒 · 走路循环",
+    "work_finish_lie_down": "全屏下班提醒 · 躺下过渡",
 }
 _PREVIEW_HIGHLIGHT_STYLE = f"background: {COLORS['accent_soft']}; border: 1px solid {COLORS['accent']}; border-radius: 8px;"
 
