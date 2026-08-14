@@ -8,8 +8,8 @@ from math import ceil
 from time import monotonic
 
 from PySide6.QtCore import QObject, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPaintEvent, QPainter, QPixmap
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QCloseEvent, QPaintEvent, QPainter, QPixmap
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from petnest.core.work_finish_animation import resolve_work_finish_animation
 from petnest.core.work_finish_state import PROMPT_TIMEOUT
@@ -133,6 +133,7 @@ class WorkFinishControlWindow(QFrame):
 
     finish_requested = Signal()
     continue_requested = Signal()
+    closed = Signal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -144,6 +145,7 @@ class WorkFinishControlWindow(QFrame):
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumWidth(320)
         self.setStyleSheet(
             f"""
             QFrame#workFinishControlWindow {{
@@ -151,31 +153,34 @@ class WorkFinishControlWindow(QFrame):
                 border: 1px solid {COLORS['border']};
                 border-radius: 14px;
             }}
-            QLabel#workFinishTitle {{ color: {COLORS['text']}; font-size: 17px; font-weight: 700; }}
-            QLabel#workFinishTimeout {{ color: {COLORS['muted_text']}; font-size: 12px; }}
-            QPushButton {{ border-radius: 9px; padding: 9px 16px; font-weight: 700; }}
+            QLabel#workFinishTitle {{ color: {COLORS['text']}; font-size: 20px; font-weight: 700; }}
+            QLabel#workFinishTimeout {{ color: {COLORS['muted_text']}; font-size: 14px; }}
+            QPushButton {{ border-radius: 12px; padding: 12px 20px; font-size: 18px; font-weight: 700; }}
             QPushButton#finishButton {{ background: {COLORS['accent']}; color: white; border: 1px solid {COLORS['accent']}; }}
             QPushButton#continueButton {{ background: {COLORS['surface_alt']}; color: {COLORS['text']}; border: 1px solid {COLORS['border']}; }}
             """
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(8)
+        layout.setContentsMargins(22, 20, 22, 22)
+        layout.setSpacing(12)
         title = QLabel("到下班时间啦", self)
         title.setObjectName("workFinishTitle")
         layout.addWidget(title)
         self.timeout_label = QLabel(self)
         self.timeout_label.setObjectName("workFinishTimeout")
         layout.addWidget(self.timeout_label)
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
         self.finish_button = QPushButton("下班", self)
         self.finish_button.setObjectName("finishButton")
         self.continue_button = QPushButton("再加一会", self)
         self.continue_button.setObjectName("continueButton")
-        buttons.addWidget(self.finish_button)
-        buttons.addWidget(self.continue_button)
-        layout.addLayout(buttons)
+        for button in (self.finish_button, self.continue_button):
+            button.setMinimumHeight(58)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            font = button.font()
+            font.setPointSize(18)
+            font.setBold(True)
+            button.setFont(font)
+            layout.addWidget(button)
         self.finish_button.clicked.connect(self.finish_requested.emit)
         self.continue_button.clicked.connect(self.continue_requested.emit)
         self.timer = QTimer(self)
@@ -195,6 +200,10 @@ class WorkFinishControlWindow(QFrame):
         self.timer.stop()
         self.hide()
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        super().closeEvent(event)
+        self.closed.emit()
+
     def _refresh_timeout(self) -> None:
         if self._prompt_started_at is None:
             self.timeout_label.setText("")
@@ -210,13 +219,16 @@ class WorkFinishReminder(QObject):
 
     finish_requested = Signal()
     continue_requested = Signal()
+    dismissed = Signal()
 
     def __init__(self, *, clock: Callable[[], float] = monotonic) -> None:
         super().__init__()
+        self._shutting_down = False
         self.animation_window = WorkFinishAnimationWindow(clock=clock)
         self.control_window = WorkFinishControlWindow()
         self.control_window.finish_requested.connect(self.finish_requested.emit)
         self.control_window.continue_requested.connect(self.continue_requested.emit)
+        self.control_window.closed.connect(self._control_closed)
 
     def show_for(
         self,
@@ -234,9 +246,17 @@ class WorkFinishReminder(QObject):
         self.control_window.stop()
 
     def shutdown(self) -> None:
-        self.hide()
-        self.animation_window.close()
-        self.control_window.close()
+        self._shutting_down = True
+        try:
+            self.hide()
+            self.animation_window.close()
+            self.control_window.close()
+        finally:
+            self._shutting_down = False
+
+    def _control_closed(self) -> None:
+        if not self._shutting_down:
+            self.dismissed.emit()
 
     @property
     def is_visible(self) -> bool:

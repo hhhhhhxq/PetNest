@@ -44,6 +44,7 @@ from petnest.core.lan_service import LanInteractionService
 from petnest.core.lottie_effects import EffectCatalog
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
+from petnest.core.pet_visibility_lease import PetVisibilityLease
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import (
@@ -270,8 +271,10 @@ class PetNest:
         self.remote_interaction_service.error.connect(lambda message: LOGGER.warning("%s", message))
         self.work_countdown = WorkCountdownWindow(self.window)
         self.work_finish_reminder = WorkFinishReminder()
+        self._work_finish_visibility_lease = PetVisibilityLease()
         self.work_finish_reminder.finish_requested.connect(self._finish_work)
         self.work_finish_reminder.continue_requested.connect(self._continue_overtime)
+        self.work_finish_reminder.dismissed.connect(self._dismiss_work_finish_reminder)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")
         self.pet_context_menu.setStyleSheet(_pet_context_menu_stylesheet(QApplication.palette()))
@@ -560,7 +563,33 @@ class PetNest:
 
     def _set_pet_visibility(self, visible: bool) -> None:
         """同步桌宠及其独立辅助窗口的显示状态。"""
-        self.work_countdown.set_pet_visible(visible)
+        reminder_takeover = self._work_finish_visibility_lease.is_active
+        self._work_finish_visibility_lease.user_took_control()
+        self._apply_pet_visibility(visible, sync_countdown=not reminder_takeover)
+
+    def _apply_pet_visibility(self, visible: bool, *, sync_countdown: bool = True) -> None:
+        """应用真实窗口状态；临时提醒隐藏时保持倒计时引擎继续运行。"""
+        try:
+            self.window.setVisible(visible)
+            if sync_countdown:
+                self.work_countdown.set_pet_visible(visible)
+        finally:
+            if self.tray is not None:
+                self.tray.sync_visibility_action()
+
+    def _hide_pet_for_work_finish(self) -> None:
+        if self._work_finish_visibility_lease.acquire(was_visible=self.window.isVisible()):
+            self._apply_pet_visibility(False, sync_countdown=False)
+
+    def _restore_pet_after_work_finish(self) -> None:
+        if not self._work_finish_visibility_lease.release():
+            return
+        try:
+            self._apply_pet_visibility(True, sync_countdown=False)
+        except Exception:  # noqa: BLE001 - 托盘“显示”必须在自动恢复失败后继续可用。
+            LOGGER.exception("下班提醒结束后恢复宠物失败，可从托盘菜单选择‘显示’")
+            if self.tray is not None:
+                self.tray.sync_visibility_action()
 
     def _toggle_context_always_on_top(self, enabled: bool) -> None:
         self.apply_settings(replace(self.settings, always_on_top=enabled))
@@ -829,7 +858,8 @@ class PetNest:
             self._run_shutdown_step("关闭 Codex 用量窗口", self._codex_usage_dialog.close)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
-        self._run_shutdown_step("隐藏打卡卡片", lambda: self._set_pet_visibility(False))
+        self._work_finish_visibility_lease.cancel()
+        self._run_shutdown_step("隐藏打卡卡片", lambda: self._apply_pet_visibility(False))
         self._run_shutdown_step("关闭下班全屏提醒", self.work_finish_reminder.shutdown)
         self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
         server, self.external_server = self.external_server, None
@@ -1365,32 +1395,52 @@ class PetNest:
         self.settings = replace(self.settings, work_finish_state=serialized)
         self.settings_manager.save(self.settings)
         if state is None or state.status == "finished":
-            self.work_finish_reminder.hide()
+            self._close_work_finish_reminder()
 
     def _show_work_finish_prompt(self, state: WorkFinishState) -> None:
         """在桌宠所在屏幕显示动画和独立按钮层。"""
         screen = self.window.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             LOGGER.warning("没有可用屏幕，无法显示下班全屏提醒")
+            self.work_countdown.set_work_finish_prompt_visible(False)
             return
         prompt_started_at = state.prompt_started_at or datetime.now().astimezone()
-        self.work_finish_reminder.show_for(
-            self.package,
-            screen.geometry(),
-            prompt_started_at,
-            available_geometry=screen.availableGeometry(),
-        )
+        self._hide_pet_for_work_finish()
+        try:
+            self.work_finish_reminder.show_for(
+                self.package,
+                screen.geometry(),
+                prompt_started_at,
+                available_geometry=screen.availableGeometry(),
+            )
+        except Exception:
+            self._close_work_finish_reminder()
+            raise
         self.work_countdown.set_work_finish_prompt_visible(True)
 
     def _continue_overtime(self) -> None:
-        self.work_finish_reminder.hide()
-        self.work_countdown.set_work_finish_prompt_visible(False)
+        self._hide_work_finish_reminder_layers()
         self.work_countdown.continue_overtime()
+        self._restore_pet_after_work_finish()
 
     def _finish_work(self) -> None:
+        self._hide_work_finish_reminder_layers()
+        self.work_countdown.finish_work()
+
+    def _dismiss_work_finish_reminder(self) -> None:
+        """把窗口管理器发起的关闭收敛为当天已下班，避免每秒重弹。"""
+        if self._shutdown:
+            return
+        self._hide_work_finish_reminder_layers()
+        self.work_countdown.finish_work()
+
+    def _hide_work_finish_reminder_layers(self) -> None:
         self.work_finish_reminder.hide()
         self.work_countdown.set_work_finish_prompt_visible(False)
-        self.work_countdown.finish_work()
+
+    def _close_work_finish_reminder(self) -> None:
+        self._hide_work_finish_reminder_layers()
+        self._restore_pet_after_work_finish()
 
     def _refresh_visible_work_finish_reminder(self) -> None:
         state = self.work_countdown.work_finish_state
