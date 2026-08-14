@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta
 import logging
 
 from PySide6.QtCore import QObject, QPoint, QRect, QSignalBlocker, QSize, QTime, QTimer, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QTimeEdit, QVBoxLayout, QWidget
 
 from petnest.ui.theme import COLORS
@@ -248,10 +249,11 @@ class ClockInCard(QFrame):
         layout.setSpacing(8)
         title = QLabel("上班打卡", self)
         title.setObjectName("clockInTitle")
-        hint = QLabel("默认当前时间，可在打卡范围内调整", self)
-        hint.setObjectName("clockInHint")
+        self.hint_label = QLabel("默认当前时间，可在打卡范围内调整", self)
+        self.hint_label.setObjectName("clockInHint")
+        self.hint_label.setWordWrap(True)
         layout.addWidget(title)
-        layout.addWidget(hint)
+        layout.addWidget(self.hint_label)
         controls = QHBoxLayout()
         self.time_input = MinuteStepTimeEdit(self)
         self.time_input.setDisplayFormat("HH:mm")
@@ -268,6 +270,36 @@ class ClockInCard(QFrame):
         self._draft_date: date | None = None
         self._draft_edited = False
         self._syncing_time = False
+
+    def fit_to_available_geometry(self, available: QRect, margin: int = 8) -> QSize:
+        """恢复内容驱动的紧凑尺寸，并限制在当前屏幕的可用区域内。"""
+        # setFixedSize 会留下最小/最大尺寸约束；每次展示前先清除，避免一次异常
+        # resize 或旧屏幕的约束持续污染后续布局计算。
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16_777_215, 16_777_215)
+
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+
+        natural = self.sizeHint().expandedTo(self.minimumSizeHint())
+        horizontal_margin = min(max(0, margin), max(0, (available.width() - 1) // 2))
+        vertical_margin = min(max(0, margin), max(0, (available.height() - 1) // 2))
+        maximum_width = max(1, available.width() - horizontal_margin * 2)
+        maximum_height = max(1, available.height() - vertical_margin * 2)
+        width = max(1, min(natural.width(), maximum_width))
+
+        height = natural.height()
+        if layout is not None and layout.hasHeightForWidth():
+            wrapped_height = layout.heightForWidth(width)
+            if wrapped_height >= 0:
+                height = max(height, wrapped_height)
+        height = max(1, min(height, maximum_height))
+
+        fitted = QSize(width, height)
+        self.setFixedSize(fitted)
+        return fitted
 
     def show_for(
         self,
@@ -444,13 +476,13 @@ class WorkCountdownWindow(QObject):
             self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
             return
         self._active_clock_in_date = work_date
-        self._position_card()
         self.clock_in_card.show_for(
             now,
             self.clock_in_start_time,
             self.clock_in_end_time,
             work_date,
         )
+        self._position_card()
         self.clock_in_card.show()
         self.pet_window.set_countdown_text(None)  # type: ignore[attr-defined]
 
@@ -501,8 +533,20 @@ class WorkCountdownWindow(QObject):
     def _position_card(self) -> None:
         if self.pet_window is None:
             return
-        point = self.pet_window.mapToGlobal(QPoint(self.pet_window.width() + 12, max(8, self.pet_window.height() // 3)))
-        self.clock_in_card.move(point)
+        pet_rect = QRect(self.pet_window.mapToGlobal(QPoint(0, 0)), self.pet_window.size())
+        screen = QGuiApplication.screenAt(pet_rect.center())
+        if screen is None:
+            screen = self.pet_window.screen()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.clock_in_card.adjustSize()
+            self.clock_in_card.move(pet_rect.right() + 13, pet_rect.top() + max(8, pet_rect.height() // 3))
+            return
+
+        available = screen.availableGeometry()
+        card_size = self.clock_in_card.fit_to_available_geometry(available)
+        self.clock_in_card.move(clock_in_card_position(pet_rect, card_size, available))
 
     def _pet_destroyed(self) -> None:
         self.timer.stop()

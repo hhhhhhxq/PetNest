@@ -4,10 +4,12 @@ from datetime import datetime
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, QSize, QTime
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QTimeEdit, QWidget
 from pytestqt.qtbot import QtBot
 
 from petnest.ui.work_countdown import (
+    ClockInCard,
     WorkCountdownWindow,
     clock_in_card_position,
     clock_in_is_available,
@@ -70,6 +72,90 @@ def test_clock_in_card_position_contains_clipped_card_when_available_is_smaller_
 
     assert available.contains(clipped_card)
     assert effective_safe.contains(clipped_card)
+
+
+def test_clock_in_card_recovers_from_accidental_full_screen_size(qtbot: QtBot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    card = ClockInCard(parent)
+    card.resize(1600, 700)
+
+    fitted = card.fit_to_available_geometry(QRect(0, 0, 1920, 1040))
+
+    assert card.size() == fitted
+    assert fitted.width() < 500
+    assert fitted.height() < 300
+    assert card.minimumSize() == card.maximumSize() == fitted
+
+
+def test_clock_in_card_size_is_capped_to_small_available_geometry(qtbot: QtBot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    card = ClockInCard(parent)
+
+    fitted = card.fit_to_available_geometry(QRect(0, 0, 210, 150))
+
+    assert fitted.width() <= 194
+    assert fitted.height() <= 134
+    assert card.size() == fitted
+    assert card.minimumSize() == card.maximumSize() == fitted
+
+
+def test_elastic_refresh_fits_and_places_clock_in_card_on_current_screen(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    pet.resize(min(120, max(1, available.width() // 4)), min(120, max(1, available.height() // 4)))
+    pet.move(
+        available.right() - pet.width() + 1,
+        available.top() + max(0, (available.height() - pet.height()) // 2),
+    )
+    pet.show()
+    QApplication.processEvents()
+
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+    )
+    countdown._enabled = True
+    countdown.clock_in_card.resize(max(1600, available.width()), max(700, available.height()))
+
+    countdown.refresh(datetime(2026, 8, 13, 9, 35))
+    QApplication.processEvents()
+
+    horizontal_margin = min(8, max(0, (available.width() - 1) // 2))
+    vertical_margin = min(8, max(0, (available.height() - 1) // 2))
+    safe = available.adjusted(horizontal_margin, vertical_margin, -horizontal_margin, -vertical_margin)
+    card_rect = QRect(countdown.clock_in_card.pos(), countdown.clock_in_card.size())
+    pet_rect = QRect(pet.mapToGlobal(QPoint(0, 0)), pet.size())
+    assert countdown.clock_in_card.isVisible()
+    assert countdown.clock_in_card.width() < 500
+    assert countdown.clock_in_card.height() < 300
+    assert safe.contains(card_rect)
+    if pet_rect.left() - 12 - countdown.clock_in_card.width() >= safe.left():
+        assert card_rect.right() < pet_rect.left()
+    countdown.timer.stop()
 
 
 def test_fixed_countdown_stays_hidden_before_work_and_counts_down_after_start() -> None:
