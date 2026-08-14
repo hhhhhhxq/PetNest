@@ -3,17 +3,43 @@
 from datetime import datetime
 
 import pytest
-from PySide6.QtCore import QTime
+from PySide6.QtCore import QPoint, QRect, QSize, QTime
 from PySide6.QtWidgets import QApplication, QTimeEdit, QWidget
 from pytestqt.qtbot import QtBot
 
 from petnest.ui.work_countdown import (
     WorkCountdownWindow,
+    clock_in_card_position,
     clock_in_is_available,
     countdown_text,
     effective_clock_in_at,
     elastic_work_end_at,
 )
+
+
+def test_clock_in_card_position_prefers_right_then_left() -> None:
+    available = QRect(0, 0, 1000, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(300, 200, 160, 160), card_size, available) == QPoint(472, 219)
+    assert clock_in_card_position(QRect(820, 200, 160, 160), card_size, available) == QPoint(568, 219)
+
+
+def test_clock_in_card_position_uses_below_then_above() -> None:
+    available = QRect(0, 0, 500, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(170, 180, 160, 160), card_size, available) == QPoint(129, 352)
+    assert clock_in_card_position(QRect(170, 560, 160, 120), card_size, available) == QPoint(129, 428)
+
+
+def test_clock_in_card_position_minimizes_overlap_inside_safe_area() -> None:
+    available = QRect(100, 50, 300, 240)
+    card_size = QSize(260, 200)
+    point = clock_in_card_position(QRect(140, 80, 220, 180), card_size, available)
+
+    assert available.adjusted(8, 8, -8, -8).contains(QRect(point, card_size))
+    assert point == QPoint(119, 82)
 
 
 def test_fixed_countdown_stays_hidden_before_work_and_counts_down_after_start() -> None:

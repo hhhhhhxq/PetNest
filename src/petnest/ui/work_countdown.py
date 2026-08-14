@@ -6,12 +6,53 @@ from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import logging
 
-from PySide6.QtCore import QObject, QPoint, QSignalBlocker, QTime, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSignalBlocker, QSize, QTime, QTimer, Qt, Signal
 from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QTimeEdit, QVBoxLayout, QWidget
 
 from petnest.ui.theme import COLORS
 
 LOGGER = logging.getLogger(__name__)
+
+
+def clock_in_card_position(
+    pet_rect: QRect,
+    card_size: QSize,
+    available: QRect,
+    gap: int = 12,
+    margin: int = 8,
+) -> QPoint:
+    """返回打卡卡片在可用区域内、尽量避开桌宠的位置。"""
+    safe = available.adjusted(margin, margin, -margin, -margin)
+    width = min(card_size.width(), safe.width())
+    height = min(card_size.height(), safe.height())
+    candidates = (
+        QPoint(pet_rect.right() + 1 + gap, pet_rect.center().y() - height // 2),
+        QPoint(pet_rect.left() - gap - width, pet_rect.center().y() - height // 2),
+        QPoint(pet_rect.center().x() - width // 2, pet_rect.bottom() + 1 + gap),
+        QPoint(pet_rect.center().x() - width // 2, pet_rect.top() - gap - height),
+    )
+
+    for point in candidates:
+        card_rect = QRect(point, QSize(width, height))
+        if safe.contains(card_rect) and not card_rect.intersects(pet_rect):
+            return point
+
+    max_x = safe.right() - width + 1
+    max_y = safe.bottom() - height + 1
+    constrained = tuple(
+        QPoint(
+            max(safe.left(), min(point.x(), max_x)),
+            max(safe.top(), min(point.y(), max_y)),
+        )
+        for point in candidates
+    )
+    return min(
+        constrained,
+        key=lambda point: (
+            QRect(point, QSize(width, height)).intersected(pet_rect).width()
+            * QRect(point, QSize(width, height)).intersected(pet_rect).height()
+        ),
+    )
 
 
 def countdown_text(
@@ -466,6 +507,7 @@ class WorkCountdownWindow(QObject):
 __all__ = [
     "ClockInCard",
     "WorkCountdownWindow",
+    "clock_in_card_position",
     "clock_in_is_available",
     "countdown_text",
     "effective_clock_in_at",
