@@ -780,3 +780,23 @@ def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp
     machine = PetWindow._make_state_machine(package)
 
     assert machine.handle(PetEvent("system.sleep", source="system")).current_action == "idle"
+
+
+def test_fullscreen_actions_are_excluded_from_desktop_pet_state_machine(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    fullscreen = replace(
+        package.animations["idle"],
+        name="work_finish_walk",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+    )
+    package = replace(
+        package,
+        animations={**package.animations, "work_finish_walk": fullscreen},
+        bindings={**package.bindings, "test.fullscreen": "work_finish_walk"},
+    )
+
+    machine = PetWindow._make_state_machine(package)
+
+    assert "work_finish_walk" not in machine.animations
+    assert machine.handle(PetEvent("test.fullscreen", source="test")).current_action == "idle"
