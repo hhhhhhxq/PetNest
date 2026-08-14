@@ -59,6 +59,7 @@ class PetWindow(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            | Qt.WindowType.NoDropShadowWindowHint
         )
         super().__init__(parent, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -493,6 +494,10 @@ class PetWindow(QWidget):
         if not self._dragging and hypot(delta.x(), delta.y()) >= self.drag_threshold:
             self._dragging = True
             self._handle_event("mouse.drag_start")
+            # Commit the new, differently shaped transparent frame before the
+            # native macOS window starts moving. Otherwise WindowServer can
+            # briefly composite the old idle surface behind the drag frame.
+            self.repaint()
         if self._dragging:
             self.move(self.clamp_position(self._window_origin + delta))
         event.accept()
@@ -554,6 +559,11 @@ class PetWindow(QWidget):
             | QPainter.RenderHint.TextAntialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
         )
+        # A translucent native window can retain pixels from the previous frame,
+        # especially while its NSPanel is being moved on macOS. Source composition
+        # replaces the backing store (including fully transparent pixels) instead
+        # of blending the new frame over stale contents.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
         if self._active_effect_layer == "under":
             self._draw_active_effect(painter, pet_rect)

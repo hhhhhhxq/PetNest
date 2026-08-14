@@ -106,6 +106,7 @@ def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: p
     assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
     assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
     assert window.windowFlags() & Qt.WindowType.Tool
+    assert window.windowFlags() & Qt.WindowType.NoDropShadowWindowHint
     assert window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert window.focusPolicy() == Qt.FocusPolicy.NoFocus
     assert window.size().width() == 15
