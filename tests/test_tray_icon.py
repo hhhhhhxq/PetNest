@@ -22,7 +22,7 @@ def test_tray_visibility_action_uses_actual_window_state(qtbot, tmp_path: Path) 
     tray.toggle_visibility_action.trigger()
 
     assert requested == [True]
-    assert not window.isVisible()
+    assert window.isVisible()
 
 
 def test_tray_visibility_action_labels_visible_window_as_hide(qtbot, tmp_path: Path) -> None:

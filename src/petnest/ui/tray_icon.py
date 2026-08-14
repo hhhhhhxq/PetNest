@@ -229,10 +229,9 @@ class PetTrayIcon(QSystemTrayIcon):
 
     def _toggle_visibility(self) -> None:
         target_visible = not self.window.isVisible()
+        self.window.setVisible(target_visible)
         if self._on_visibility_changed is not None:
             self._on_visibility_changed(target_visible)
-        else:
-            self.window.setVisible(target_visible)
         self.sync_visibility_action()
 
     def _toggle_pause(self) -> None:
