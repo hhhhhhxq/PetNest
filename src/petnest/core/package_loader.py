@@ -57,6 +57,8 @@ class PackageLoader:
                 frame_durations_ms=_frame_durations(definition.get("frame_durations_ms")),
                 speed_multiplier=float(definition.get("speed_multiplier", 1.0)),
                 frames=frames[name],
+                scope=str(definition.get("scope", "pet")),
+                canvas=_animation_canvas(definition),
             )
         display = _display_settings(config.get("display"))
         return PetPackage(
@@ -103,3 +105,10 @@ def _display_settings(value: object) -> DisplaySettings:
         max_scale=float(value.get("max_scale", 2.0)),
         alpha_hit_test_threshold=int(value.get("alpha_hit_test_threshold", 10)),
     )
+
+
+def _animation_canvas(definition: Mapping[str, Any]) -> Canvas | None:
+    if definition.get("scope", "pet") != "fullscreen":
+        return None
+    canvas = _mapping(definition.get("canvas"))
+    return Canvas(width=int(canvas["width"]), height=int(canvas["height"]))

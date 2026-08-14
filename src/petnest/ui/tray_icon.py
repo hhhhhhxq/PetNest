@@ -58,6 +58,7 @@ class PetTrayIcon(QSystemTrayIcon):
         on_switch: Callable[[str], object] | None = None,
         on_reload: Callable[[], object] | None = None,
         on_import: Callable[[], object] | None = None,
+        on_import_work_finish: Callable[[], object] | None = None,
         on_open_pets_folder: Callable[[], object] | None = None,
         on_refresh_pets: Callable[[], object] | None = None,
         on_edit_animations: Callable[[], object] | None = None,
@@ -79,6 +80,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_switch = on_switch
         self._on_reload = on_reload
         self._on_import = on_import
+        self._on_import_work_finish = on_import_work_finish
         self._on_open_pets_folder = on_open_pets_folder
         self._on_refresh_pets = on_refresh_pets
         self._on_edit_animations = on_edit_animations
@@ -115,6 +117,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.quit_action = QAction("退出 PetNest", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
+        self.import_work_finish_action = QAction("导入下班动画…", self.menu)
         self.open_pets_folder_action = QAction("打开宠物文件夹", self.menu)
         self.refresh_pets_action = QAction("刷新宠物列表", self.menu)
         self.edit_animations_action = QAction("编辑动画时长…", self.menu)
@@ -133,6 +136,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.quit_action.triggered.connect(self._quit)
         self.reload_action.triggered.connect(self._reload)
         self.import_action.triggered.connect(self._import)
+        self.import_work_finish_action.triggered.connect(self._import_work_finish)
         self.open_pets_folder_action.triggered.connect(self._open_pets_folder)
         self.refresh_pets_action.triggered.connect(self._refresh_pets)
         self.edit_animations_action.triggered.connect(self._edit_animations)
@@ -154,6 +158,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.pet_library_menu = self.menu.addMenu("宠物库")
         _apply_menu_skin(self.pet_library_menu, "traySubmenu")
         self.pet_library_menu.addAction(self.import_action)
+        self.pet_library_menu.addAction(self.import_work_finish_action)
         self.pet_library_menu.addAction(self.open_pets_folder_action)
         self.pet_library_menu.addAction(self.refresh_pets_action)
         self.pet_library_menu.addAction(self.edit_animations_action)
@@ -262,6 +267,10 @@ class PetTrayIcon(QSystemTrayIcon):
     def _import(self) -> None:
         if self._on_import is not None:
             self._on_import()
+
+    def _import_work_finish(self) -> None:
+        if self._on_import_work_finish is not None:
+            self._on_import_work_finish()
 
     def _open_pets_folder(self) -> None:
         if self._on_open_pets_folder is not None:

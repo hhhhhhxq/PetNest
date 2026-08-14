@@ -200,6 +200,35 @@ def test_codex_usage_unlock_defaults_migrates_and_round_trips(tmp_path) -> None:
     assert migrated.schema_version == Settings.SCHEMA_VERSION
     assert migrated.codex_usage_unlocked is False
 
+
+def test_schema_21_adds_empty_work_finish_state(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text('{"schema_version": 21}', encoding="utf-8")
+
+    migrated = SettingsManager(path).load()
+
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
+    assert migrated.work_finish_state is None
+
+
+def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    state = {
+        "work_date": "2026-08-14",
+        "end_at": "2026-08-14T18:00:00+08:00",
+        "status": "overtime",
+        "prompt_kind": None,
+        "prompt_started_at": None,
+        "next_prompt_at": "2026-08-14T19:00:00+08:00",
+    }
+
+    manager.save(Settings(work_finish_state=state))
+    assert manager.load().work_finish_state == state
+
+    malformed = Settings.from_dict({"work_finish_state": ["not", "a", "mapping"]})
+    assert malformed.work_finish_state is None
+
     manager.save(Settings(codex_usage_unlocked=True))
     assert manager.load().codex_usage_unlocked is True
 

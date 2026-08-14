@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 21
+    SCHEMA_VERSION = 22
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -81,6 +81,7 @@ class Settings:
     work_duration_minutes: int = 540
     clock_in_date: str | None = None
     clock_in_time: str | None = None
+    work_finish_state: dict[str, str | None] | None = None
     animation_overrides: dict[str, dict[str, AnimationOverride]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,6 +105,7 @@ class Settings:
         for name in ("clock_in_date", "clock_in_time"):
             if values.get(name) is not None and not isinstance(values[name], str):
                 values[name] = None
+        values["work_finish_state"] = _work_finish_state(values.get("work_finish_state"))
         if "animation_overrides" in values:
             values["animation_overrides"] = _animation_overrides(values["animation_overrides"])
         return cls(**values)
@@ -184,3 +186,20 @@ def _animation_overrides(value: object) -> dict[str, dict[str, AnimationOverride
         if action_overrides:
             overrides[pet_id] = action_overrides
     return overrides
+
+
+def _work_finish_state(value: object) -> dict[str, str | None] | None:
+    """只保留状态模块认识的字符串字段，损坏值不会拖垮全部设置。"""
+    if not isinstance(value, dict):
+        return None
+    keys = (
+        "work_date",
+        "end_at",
+        "status",
+        "prompt_kind",
+        "prompt_started_at",
+        "next_prompt_at",
+    )
+    if any(key not in value or value[key] is not None and not isinstance(value[key], str) for key in keys):
+        return None
+    return {key: value[key] for key in keys}
