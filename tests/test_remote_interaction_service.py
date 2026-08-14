@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 from time import time
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -137,7 +139,13 @@ def test_invalid_refresh_token_rotates_pair_code_with_new_anonymous_identity(
 
     def fake_request(url: str, **_kwargs):
         if "securetoken" in url:
-            raise ValueError("expired")
+            raise HTTPError(
+                url,
+                400,
+                "Bad Request",
+                {},
+                BytesIO(json.dumps({"error": {"message": "INVALID_REFRESH_TOKEN"}}).encode()),
+            )
         return {"idToken": "new-token", "localId": "new-uid", "refreshToken": "new-refresh"}
 
     monkeypatch.setattr("petnest.core.remote_interaction_service._request_json", fake_request)
@@ -145,6 +153,48 @@ def test_invalid_refresh_token_rotates_pair_code_with_new_anonymous_identity(
     assert service._authenticate() == ("new-token", "new-uid")
     assert service.pair_code != "23456789AB"
     assert store.load()["uid"] == "new-uid"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        URLError("timed out"),
+        HTTPError("https://securetoken.example", 503, "Unavailable", {}, BytesIO(b"{}")),
+        HTTPError(
+            "https://securetoken.example",
+            400,
+            "Bad Request",
+            {},
+            BytesIO(json.dumps({"error": {"message": "USER_DISABLED"}}).encode()),
+        ),
+    ],
+)
+def test_transient_refresh_failure_preserves_identity_and_pair_code(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    store = RemoteCredentialStore(tmp_path / "firebase-remote-credentials.json")
+    original = {"uid": "old-uid", "refresh_token": "old-refresh", "pair_code": "23456789AB"}
+    store.save(original)
+    service = FirebaseRemoteInteractionService(
+        display_name="小平安",
+        pet_name="平安",
+        config_directory=tmp_path,
+        config=FirebaseConfig("public-key", "https://petnest.example"),
+    )
+    requests: list[str] = []
+
+    def fake_request(url: str, **_kwargs):
+        requests.append(url)
+        raise failure
+
+    monkeypatch.setattr("petnest.core.remote_interaction_service._request_json", fake_request)
+
+    with pytest.raises((HTTPError, URLError)):
+        service._authenticate()
+
+    assert requests == ["https://securetoken.googleapis.com/v1/token?key=public-key"]
+    assert service.pair_code == "23456789AB"
+    assert store.load() == original
 
 
 def test_stream_changes_update_nested_account_without_mutating_source() -> None:

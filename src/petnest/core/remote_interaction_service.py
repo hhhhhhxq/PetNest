@@ -26,6 +26,13 @@ LOGGER = logging.getLogger(__name__)
 PAIR_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 PAIR_CODE_LENGTH = 10
 MESSAGE_TTL_SECONDS = 7 * 24 * 60 * 60
+REJECTED_REFRESH_TOKEN_ERRORS = frozenset(
+    {
+        "INVALID_REFRESH_TOKEN",
+        "TOKEN_EXPIRED",
+        "USER_NOT_FOUND",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -336,7 +343,7 @@ class FirebaseRemoteInteractionService(QObject):
     def _authenticate(self) -> tuple[str, str]:
         assert self.config is not None
         refresh_token = self._credentials.get("refresh_token", "")
-        refresh_failed = False
+        refresh_token_rejected = False
         if refresh_token:
             try:
                 response = _request_json(
@@ -349,9 +356,12 @@ class FirebaseRemoteInteractionService(QObject):
                 uid = str(response["user_id"])
                 self._save_credentials(uid=uid, refresh_token=str(response.get("refresh_token", refresh_token)))
                 return token, uid
-            except (KeyError, OSError, ValueError, HTTPError, URLError):
-                LOGGER.info("Firebase 匿名凭据刷新失败，将创建新的匿名身份")
-                refresh_failed = True
+            except HTTPError as error:
+                error_code = _firebase_auth_error_code(error)
+                if error_code not in REJECTED_REFRESH_TOKEN_ERRORS:
+                    raise
+                LOGGER.info("Firebase 匿名凭据已失效（%s），将创建新的匿名身份", error_code)
+                refresh_token_rejected = True
         response = _request_json(
             f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={self.config.api_key}",
             method="POST",
@@ -359,7 +369,7 @@ class FirebaseRemoteInteractionService(QObject):
         )
         token = str(response["idToken"])
         uid = str(response["localId"])
-        if refresh_failed:
+        if refresh_token_rejected:
             self._pair_code = _new_pair_code()
             self.pair_code_changed.emit(self._pair_code)
         self._save_credentials(uid=uid, refresh_token=str(response["refreshToken"]))
@@ -549,6 +559,24 @@ def normalize_pair_code(value: object) -> str | None:
 
 def _new_pair_code() -> str:
     return "".join(choice(PAIR_CODE_ALPHABET) for _ in range(PAIR_CODE_LENGTH))
+
+
+def _firebase_auth_error_code(error: HTTPError) -> str:
+    """从 Firebase Auth 的 HTTP 错误中提取稳定错误码。"""
+    try:
+        raw = json.loads(error.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    detail = raw.get("error")
+    if isinstance(detail, dict):
+        message = detail.get("message")
+    else:
+        message = detail
+    if not isinstance(message, str):
+        return ""
+    return message.partition(":")[0].strip().upper()
 
 
 def _request_json(
