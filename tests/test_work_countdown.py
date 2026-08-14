@@ -1,6 +1,6 @@
 """上下班倒计时文字与窗口配置。"""
 
-from datetime import datetime
+from datetime import date, datetime, time
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, QSize, QTime
@@ -714,6 +714,9 @@ def test_elastic_countdown_prompt_uses_recorded_work_end(qtbot: QtBot) -> None:
     qtbot.addWidget(pet)
     prompts: list[WorkFinishState] = []
     countdown = WorkCountdownWindow(pet)
+    work_date = date.today()
+    before_end = datetime.combine(work_date, time(18, 39, 59))
+    end_at = datetime.combine(work_date, time(18, 40))
     countdown.configure(
         enabled=True,
         start_time="09:00",
@@ -728,18 +731,18 @@ def test_elastic_countdown_prompt_uses_recorded_work_end(qtbot: QtBot) -> None:
         clock_in_start_time="09:30",
         clock_in_end_time="10:00",
         work_duration_minutes=540,
-        clock_in_date="2026-08-14",
+        clock_in_date=work_date.isoformat(),
         clock_in_time="09:40",
         on_work_finish_prompt=prompts.append,
     )
     prompts.clear()
 
-    countdown.refresh(datetime(2026, 8, 14, 18, 39, 59))
+    countdown.refresh(before_end)
     assert not prompts
-    countdown.refresh(datetime(2026, 8, 14, 18, 40))
+    countdown.refresh(end_at)
 
     assert len(prompts) == 1
-    assert prompts[0].end_at == datetime(2026, 8, 14, 18, 40)
+    assert prompts[0].end_at == end_at
     countdown.timer.stop()
 
 

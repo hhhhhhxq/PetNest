@@ -286,6 +286,8 @@ def test_countdown_time_editors_step_by_minute_and_allow_today_adjustment(qtbot)
     dialog.clock_in_start_input.stepBy(1)
     assert dialog.clock_in_start_input.time().toString("HH:mm") == "09:31"
 
+    # 本测试只验证分钟步进；显式固定可编辑上限，避免结果依赖测试运行时刻。
+    dialog.today_clock_in_input.setMaximumTime(QTime(10, 0))
     dialog.today_clock_in_input.setTime(QTime(9, 52))
     dialog.today_clock_in_input.stepBy(-1)
     assert dialog.today_clock_in_input.time().toString("HH:mm") == "09:51"
