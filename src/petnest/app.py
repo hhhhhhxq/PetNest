@@ -274,6 +274,7 @@ class PetNest:
         self._work_finish_visibility_lease = PetVisibilityLease()
         self.work_finish_reminder.finish_requested.connect(self._finish_work)
         self.work_finish_reminder.continue_requested.connect(self._continue_overtime)
+        self.work_finish_reminder.dismissed.connect(self._dismiss_work_finish_reminder)
         self.pet_context_menu = QMenu(self.window)
         self.pet_context_menu.setObjectName("petContextMenu")
         self.pet_context_menu.setStyleSheet(_pet_context_menu_stylesheet(QApplication.palette()))
@@ -562,8 +563,9 @@ class PetNest:
 
     def _set_pet_visibility(self, visible: bool) -> None:
         """同步桌宠及其独立辅助窗口的显示状态。"""
+        reminder_takeover = self._work_finish_visibility_lease.is_active
         self._work_finish_visibility_lease.user_took_control()
-        self._apply_pet_visibility(visible)
+        self._apply_pet_visibility(visible, sync_countdown=not reminder_takeover)
 
     def _apply_pet_visibility(self, visible: bool, *, sync_countdown: bool = True) -> None:
         """应用真实窗口状态；临时提醒隐藏时保持倒计时引擎继续运行。"""
@@ -856,7 +858,8 @@ class PetNest:
             self._run_shutdown_step("关闭 Codex 用量窗口", self._codex_usage_dialog.close)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
-        self._run_shutdown_step("隐藏打卡卡片", lambda: self._set_pet_visibility(False))
+        self._work_finish_visibility_lease.cancel()
+        self._run_shutdown_step("隐藏打卡卡片", lambda: self._apply_pet_visibility(False))
         self._run_shutdown_step("关闭下班全屏提醒", self.work_finish_reminder.shutdown)
         self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
         server, self.external_server = self.external_server, None
@@ -1399,15 +1402,20 @@ class PetNest:
         screen = self.window.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             LOGGER.warning("没有可用屏幕，无法显示下班全屏提醒")
+            self.work_countdown.set_work_finish_prompt_visible(False)
             return
         prompt_started_at = state.prompt_started_at or datetime.now().astimezone()
         self._hide_pet_for_work_finish()
-        self.work_finish_reminder.show_for(
-            self.package,
-            screen.geometry(),
-            prompt_started_at,
-            available_geometry=screen.availableGeometry(),
-        )
+        try:
+            self.work_finish_reminder.show_for(
+                self.package,
+                screen.geometry(),
+                prompt_started_at,
+                available_geometry=screen.availableGeometry(),
+            )
+        except Exception:
+            self._close_work_finish_reminder()
+            raise
         self.work_countdown.set_work_finish_prompt_visible(True)
 
     def _continue_overtime(self) -> None:
@@ -1416,6 +1424,13 @@ class PetNest:
         self._restore_pet_after_work_finish()
 
     def _finish_work(self) -> None:
+        self._hide_work_finish_reminder_layers()
+        self.work_countdown.finish_work()
+
+    def _dismiss_work_finish_reminder(self) -> None:
+        """把窗口管理器发起的关闭收敛为当天已下班，避免每秒重弹。"""
+        if self._shutdown:
+            return
         self._hide_work_finish_reminder_layers()
         self.work_countdown.finish_work()
 

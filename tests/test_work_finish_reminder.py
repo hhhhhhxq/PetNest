@@ -93,3 +93,29 @@ def test_missing_animation_still_shows_controls(qtbot, tmp_path: Path) -> None:
     assert reminder.control_window.isVisible()
     assert "29:" in reminder.control_window.timeout_label.text()
     reminder.hide()
+
+
+def test_external_control_window_close_emits_dismissed(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    dismissed: list[bool] = []
+    reminder.dismissed.connect(lambda: dismissed.append(True))
+    reminder.show_for(_package(tmp_path), QRect(0, 0, 1000, 800), datetime.now())
+
+    reminder.control_window.close()
+
+    assert dismissed == [True]
+
+
+def test_shutdown_does_not_emit_external_dismissal(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    dismissed: list[bool] = []
+    reminder.dismissed.connect(lambda: dismissed.append(True))
+    reminder.show_for(_package(tmp_path), QRect(0, 0, 1000, 800), datetime.now())
+
+    reminder.shutdown()
+
+    assert dismissed == []

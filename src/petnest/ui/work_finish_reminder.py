@@ -8,7 +8,7 @@ from math import ceil
 from time import monotonic
 
 from PySide6.QtCore import QObject, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPaintEvent, QPainter, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from petnest.core.work_finish_animation import resolve_work_finish_animation
@@ -133,6 +133,7 @@ class WorkFinishControlWindow(QFrame):
 
     finish_requested = Signal()
     continue_requested = Signal()
+    closed = Signal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -195,6 +196,10 @@ class WorkFinishControlWindow(QFrame):
         self.timer.stop()
         self.hide()
 
+    def closeEvent(self, event: QCloseEvent) -> None:
+        super().closeEvent(event)
+        self.closed.emit()
+
     def _refresh_timeout(self) -> None:
         if self._prompt_started_at is None:
             self.timeout_label.setText("")
@@ -210,13 +215,16 @@ class WorkFinishReminder(QObject):
 
     finish_requested = Signal()
     continue_requested = Signal()
+    dismissed = Signal()
 
     def __init__(self, *, clock: Callable[[], float] = monotonic) -> None:
         super().__init__()
+        self._shutting_down = False
         self.animation_window = WorkFinishAnimationWindow(clock=clock)
         self.control_window = WorkFinishControlWindow()
         self.control_window.finish_requested.connect(self.finish_requested.emit)
         self.control_window.continue_requested.connect(self.continue_requested.emit)
+        self.control_window.closed.connect(self._control_closed)
 
     def show_for(
         self,
@@ -234,9 +242,17 @@ class WorkFinishReminder(QObject):
         self.control_window.stop()
 
     def shutdown(self) -> None:
-        self.hide()
-        self.animation_window.close()
-        self.control_window.close()
+        self._shutting_down = True
+        try:
+            self.hide()
+            self.animation_window.close()
+            self.control_window.close()
+        finally:
+            self._shutting_down = False
+
+    def _control_closed(self) -> None:
+        if not self._shutting_down:
+            self.dismissed.emit()
 
     @property
     def is_visible(self) -> bool:
