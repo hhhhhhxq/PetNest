@@ -196,6 +196,10 @@ class SettingsManager:
             version = 20
         if version == 20:
             migrated.setdefault("codex_usage_unlocked", False)
+            migrated["schema_version"] = 21
+            version = 21
+        if version == 21:
+            migrated.setdefault("work_finish_state", None)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
