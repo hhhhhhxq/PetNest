@@ -91,6 +91,7 @@ def test_control_buttons_are_large_full_width_and_stacked(qtbot) -> None:
 
     finish = reminder.control_window.finish_button
     continue_button = reminder.control_window.continue_button
+    assert finish.text() == "下班啦🎉"
     assert reminder.control_window.width() >= 300
     assert finish.height() >= 56
     assert continue_button.height() >= 56

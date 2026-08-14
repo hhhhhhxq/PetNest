@@ -169,7 +169,7 @@ class WorkFinishControlWindow(QFrame):
         self.timeout_label = QLabel(self)
         self.timeout_label.setObjectName("workFinishTimeout")
         layout.addWidget(self.timeout_label)
-        self.finish_button = QPushButton("下班", self)
+        self.finish_button = QPushButton("下班啦🎉", self)
         self.finish_button.setObjectName("finishButton")
         self.continue_button = QPushButton("再加一会", self)
         self.continue_button.setObjectName("continueButton")
