@@ -81,6 +81,25 @@ def test_control_buttons_emit_actions_and_hide_stops_timers(qtbot, tmp_path: Pat
     assert not reminder.control_window.timer.isActive()
 
 
+def test_control_buttons_are_large_full_width_and_stacked(qtbot) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.control_window.show_for(QRect(0, 0, 1000, 800), datetime.now())
+    qtbot.wait(10)
+
+    finish = reminder.control_window.finish_button
+    continue_button = reminder.control_window.continue_button
+    assert reminder.control_window.width() >= 300
+    assert finish.height() >= 56
+    assert continue_button.height() >= 56
+    assert finish.width() == continue_button.width()
+    assert finish.width() >= 250
+    assert finish.geometry().bottom() < continue_button.geometry().top()
+    reminder.hide()
+
+
 def test_missing_animation_still_shows_controls(qtbot, tmp_path: Path) -> None:
     package = replace(_package(tmp_path), animations={})
     reminder = WorkFinishReminder()
