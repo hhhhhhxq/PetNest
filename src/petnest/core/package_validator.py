@@ -99,12 +99,20 @@ class PackageValidator:
     @staticmethod
     def _validate_canvas(config: Mapping[str, Any], result: ValidationResult) -> tuple[int, int] | None:
         canvas = config.get("canvas")
+        return PackageValidator._validate_canvas_mapping(canvas, result, "canvas")
+
+    @staticmethod
+    def _validate_canvas_mapping(
+        canvas: object,
+        result: ValidationResult,
+        label: str,
+    ) -> tuple[int, int] | None:
         if not isinstance(canvas, Mapping):
-            result.errors.append("canvas 必须是对象")
+            result.errors.append(f"{label} 必须是对象")
             return None
         width, height = canvas.get("width"), canvas.get("height")
         if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
-            result.errors.append("canvas.width 和 canvas.height 必须是正整数")
+            result.errors.append(f"{label}.width 和 {label}.height 必须是正整数")
             return None
         return width, height
 
@@ -124,6 +132,8 @@ class PackageValidator:
             result.errors.append(f"动画 {name} 的 FPS 必须大于 0")
         if not isinstance(definition.get("loop"), bool):
             result.errors.append(f"动画 {name} 的 loop 必须是布尔值")
+
+        animation_canvas = self._animation_canvas(name, definition, canvas, result)
 
         animation_path = self._safe_path(root, definition.get("path"), name, result)
         if animation_path is None:
@@ -147,7 +157,28 @@ class PackageValidator:
         result.frames[name] = frames
         self._validate_timeline(name, definition, len(frames), result)
         for frame in frames:
-            self._validate_frame(name, frame, canvas, result)
+            self._validate_frame(name, frame, animation_canvas, result)
+
+    @staticmethod
+    def _animation_canvas(
+        name: str,
+        definition: Mapping[str, object],
+        package_canvas: tuple[int, int] | None,
+        result: ValidationResult,
+    ) -> tuple[int, int] | None:
+        scope = definition.get("scope", "pet")
+        if scope not in {"pet", "fullscreen"}:
+            result.errors.append(f"动画 {name} 的 scope 必须是 pet 或 fullscreen")
+            return package_canvas
+        if scope == "pet":
+            if "canvas" in definition:
+                result.errors.append(f"动画 {name}：只有全屏动画可以声明独立 canvas")
+            return package_canvas
+        return PackageValidator._validate_canvas_mapping(
+            definition.get("canvas"),
+            result,
+            f"动画 {name} 的 canvas",
+        )
 
     @staticmethod
     def _validate_timeline(name: str, definition: Mapping[str, object], frame_count: int, result: ValidationResult) -> None:

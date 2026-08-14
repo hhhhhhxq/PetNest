@@ -782,8 +782,13 @@ class PetWindow(QWidget):
             "sleep": ("idle",),
             "wake": ("idle",),
         }
+        desktop_animations = {
+            name: definition
+            for name, definition in package.animations.items()
+            if definition.scope == "pet"
+        }
         return PetStateMachine(
-            package.animations,
+            desktop_animations,
             {**standard_bindings, **package.bindings, **(extra_bindings or {})},
             {**standard_fallbacks, **package.fallbacks},
         )

@@ -6,12 +6,69 @@ from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import logging
 
-from PySide6.QtCore import QObject, QPoint, QSignalBlocker, QTime, QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRect, QSignalBlocker, QSize, QTime, QTimer, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QTimeEdit, QVBoxLayout, QWidget
 
 from petnest.ui.theme import COLORS
+from petnest.core.work_finish_state import (
+    WorkFinishState,
+    advance_work_finish,
+    continue_overtime as continue_overtime_state,
+    finish_work as finish_work_state,
+    overtime_duration,
+)
 
 LOGGER = logging.getLogger(__name__)
+
+
+def clock_in_card_position(
+    pet_rect: QRect,
+    card_size: QSize,
+    available: QRect,
+    gap: int = 12,
+    margin: int = 8,
+) -> QPoint:
+    """返回打卡卡片在可用区域内、尽量避开桌宠的位置。"""
+    horizontal_margin = min(max(0, margin), max(0, (available.width() - 1) // 2))
+    vertical_margin = min(max(0, margin), max(0, (available.height() - 1) // 2))
+    safe = available.adjusted(horizontal_margin, vertical_margin, -horizontal_margin, -vertical_margin)
+    width = max(1, min(card_size.width(), safe.width()))
+    height = max(1, min(card_size.height(), safe.height()))
+    max_x = safe.right() - width + 1
+    max_y = safe.bottom() - height + 1
+
+    def constrain(value: int, minimum: int, maximum: int) -> int:
+        return max(minimum, min(value, maximum))
+
+    horizontal_y = constrain(pet_rect.center().y() - height // 2, safe.top(), max_y)
+    vertical_x = constrain(pet_rect.center().x() - width // 2, safe.left(), max_x)
+    candidates = (
+        QPoint(pet_rect.right() + 1 + gap, horizontal_y),
+        QPoint(pet_rect.left() - gap - width, horizontal_y),
+        QPoint(vertical_x, pet_rect.bottom() + 1 + gap),
+        QPoint(vertical_x, pet_rect.top() - gap - height),
+    )
+
+    for point in candidates:
+        card_rect = QRect(point, QSize(width, height))
+        if safe.contains(card_rect) and not card_rect.intersects(pet_rect):
+            return point
+
+    constrained = tuple(
+        QPoint(
+            constrain(point.x(), safe.left(), max_x),
+            constrain(point.y(), safe.top(), max_y),
+        )
+        for point in candidates
+    )
+    return min(
+        constrained,
+        key=lambda point: (
+            QRect(point, QSize(width, height)).intersected(pet_rect).width()
+            * QRect(point, QSize(width, height)).intersected(pet_rect).height()
+        ),
+    )
 
 
 def countdown_text(
@@ -39,6 +96,25 @@ def countdown_text(
     if now < end_at:
         return f"距离下班 {_duration(end_at - now)}"
     return "下班啦 🎉"
+
+
+def _fixed_work_end_at(
+    now: datetime,
+    start_text: str,
+    end_text: str,
+    daily_end_times: dict[str, str | None] | None,
+) -> datetime | None:
+    """返回当天固定排班的绝对下班时刻；休息日没有时刻。"""
+    if daily_end_times is not None:
+        selected = daily_end_times.get(str(now.weekday()))
+        if selected is None:
+            return None
+        end_text = selected
+    elif now.weekday() >= 5:
+        return None
+    del start_text
+    end = _parse_time(end_text, time(18))
+    return datetime.combine(now.date(), end, tzinfo=now.tzinfo)
 
 
 def _parse_time(value: str, fallback: time) -> time:
@@ -199,10 +275,11 @@ class ClockInCard(QFrame):
         layout.setSpacing(8)
         title = QLabel("上班打卡", self)
         title.setObjectName("clockInTitle")
-        hint = QLabel("默认当前时间，可在打卡范围内调整", self)
-        hint.setObjectName("clockInHint")
+        self.hint_label = QLabel("默认当前时间，可在打卡范围内调整", self)
+        self.hint_label.setObjectName("clockInHint")
+        self.hint_label.setWordWrap(True)
         layout.addWidget(title)
-        layout.addWidget(hint)
+        layout.addWidget(self.hint_label)
         controls = QHBoxLayout()
         self.time_input = MinuteStepTimeEdit(self)
         self.time_input.setDisplayFormat("HH:mm")
@@ -219,6 +296,36 @@ class ClockInCard(QFrame):
         self._draft_date: date | None = None
         self._draft_edited = False
         self._syncing_time = False
+
+    def fit_to_available_geometry(self, available: QRect, margin: int = 8) -> QSize:
+        """恢复内容驱动的紧凑尺寸，并限制在当前屏幕的可用区域内。"""
+        # setFixedSize 会留下最小/最大尺寸约束；每次展示前先清除，避免一次异常
+        # resize 或旧屏幕的约束持续污染后续布局计算。
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16_777_215, 16_777_215)
+
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+
+        natural = self.sizeHint().expandedTo(self.minimumSizeHint())
+        horizontal_margin = min(max(0, margin), max(0, (available.width() - 1) // 2))
+        vertical_margin = min(max(0, margin), max(0, (available.height() - 1) // 2))
+        maximum_width = max(1, available.width() - horizontal_margin * 2)
+        maximum_height = max(1, available.height() - vertical_margin * 2)
+        width = max(1, min(natural.width(), maximum_width))
+
+        height = natural.height()
+        if layout is not None and layout.hasHeightForWidth():
+            wrapped_height = layout.heightForWidth(width)
+            if wrapped_height >= 0:
+                height = max(height, wrapped_height)
+        height = max(1, min(height, maximum_height))
+
+        fitted = QSize(width, height)
+        self.setFixedSize(fitted)
+        return fitted
 
     def show_for(
         self,
@@ -269,6 +376,10 @@ class WorkCountdownWindow(QObject):
         self._clock_in_date: str | None = None
         self._clock_in_time: str | None = None
         self._on_clock_in: Callable[[datetime], object] | None = None
+        self._work_finish_state: WorkFinishState | None = None
+        self._on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None
+        self._on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None
+        self._work_finish_prompt_visible = False
         self._last_now: datetime | None = None
         self._active_clock_in_date: date | None = None
         self.clock_in_card = ClockInCard(pet_window)
@@ -299,6 +410,9 @@ class WorkCountdownWindow(QObject):
         clock_in_date: str | None = None,
         clock_in_time: str | None = None,
         on_clock_in: Callable[[datetime], object] | None = None,
+        work_finish_state: WorkFinishState | None = None,
+        on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None,
+        on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None,
     ) -> None:
         del always_on_top
         self._enabled = bool(enabled)
@@ -312,6 +426,10 @@ class WorkCountdownWindow(QObject):
         self._clock_in_date = clock_in_date
         self._clock_in_time = clock_in_time
         self._on_clock_in = on_clock_in
+        self._work_finish_state = work_finish_state
+        self._on_work_finish_state = on_work_finish_state
+        self._on_work_finish_prompt = on_work_finish_prompt
+        self._work_finish_prompt_visible = False
         if self.pet_window is not None:
             self.pet_window.set_countdown_appearance(  # type: ignore[attr-defined]
                 gap=gap, width=width, height=height, theme=theme
@@ -325,7 +443,12 @@ class WorkCountdownWindow(QObject):
         else:
             self.timer.stop()
             self.clock_in_card.hide()
+            self._work_finish_prompt_visible = False
             self.pet_window.set_countdown_text(None) if self.pet_window is not None else None
+
+    @property
+    def work_finish_state(self) -> WorkFinishState | None:
+        return self._work_finish_state
 
     def refresh(self, now: datetime | None = None) -> None:
         if self.pet_window is None:
@@ -335,8 +458,27 @@ class WorkCountdownWindow(QObject):
             return
         current = now or datetime.now().astimezone()
         self._last_now = current
+        if (
+            self._work_finish_state is not None
+            and self._work_finish_state.work_date < current.date()
+            and self._work_finish_state.status in {"prompting", "overtime"}
+        ):
+            self._refresh_work_finish(
+                current,
+                self._work_finish_state.end_at,
+                self._work_finish_state.work_date,
+            )
+            return
         if self.schedule_mode != "elastic":
             self.clock_in_card.hide()
+            end_at = _fixed_work_end_at(current, self.start_time, self.end_time, self.daily_end_times)
+            if end_at is not None:
+                state = self._refresh_work_finish(current, end_at, current.date())
+                if current >= end_at:
+                    self.pet_window.set_countdown_text(self._work_finish_text(state, current))  # type: ignore[attr-defined]
+                    return
+            elif self._work_finish_state is not None and self._work_finish_state.work_date != current.date():
+                self._set_work_finish_state(None)
             self.pet_window.set_countdown_text(  # type: ignore[attr-defined]
                 countdown_text(current, self.start_time, self.end_time, self.daily_end_times)
             )
@@ -375,7 +517,8 @@ class WorkCountdownWindow(QObject):
             if is_today or is_active_overnight:
                 self._active_clock_in_date = None
                 self.clock_in_card.hide()
-                text = f"距离下班 {_duration(end_at - now)}" if now < end_at else "下班啦 🎉"
+                state = self._refresh_work_finish(now, end_at, recorded.date())
+                text = f"距离下班 {_duration(end_at - now)}" if now < end_at else self._work_finish_text(state, now)
                 self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
                 return
             self._clock_in_date = None
@@ -395,15 +538,81 @@ class WorkCountdownWindow(QObject):
             self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
             return
         self._active_clock_in_date = work_date
-        self._position_card()
         self.clock_in_card.show_for(
             now,
             self.clock_in_start_time,
             self.clock_in_end_time,
             work_date,
         )
+        self._position_card()
         self.clock_in_card.show()
         self.pet_window.set_countdown_text(None)  # type: ignore[attr-defined]
+
+    def continue_overtime(self, now: datetime | None = None) -> None:
+        """响应“再加一会”，关闭当前提示并安排下一个相对小时节点。"""
+        state = self._work_finish_state
+        if state is None or state.status != "prompting":
+            return
+        current = now or self._last_now or datetime.now().astimezone()
+        self._work_finish_prompt_visible = False
+        self._set_work_finish_state(continue_overtime_state(state, current))
+        if self.pet_window is not None and self._work_finish_state is not None:
+            self.pet_window.set_countdown_text(self._work_finish_text(self._work_finish_state, current))  # type: ignore[attr-defined]
+
+    def finish_work(self, now: datetime | None = None) -> None:
+        """响应“下班”或超时，把当天标为已完成。"""
+        del now
+        state = self._work_finish_state
+        if state is None:
+            return
+        self._work_finish_prompt_visible = False
+        self._set_work_finish_state(finish_work_state(state))
+        if self.pet_window is not None:
+            self.pet_window.set_countdown_text("下班啦 🎉")  # type: ignore[attr-defined]
+
+    def set_work_finish_prompt_visible(self, visible: bool) -> None:
+        """同步独立提醒窗口是否仍在屏幕上，防止重复创建。"""
+        self._work_finish_prompt_visible = bool(visible)
+
+    def _refresh_work_finish(self, now: datetime, end_at: datetime, work_date: date) -> WorkFinishState | None:
+        transition = advance_work_finish(
+            self._work_finish_state,
+            now,
+            end_at,
+            work_date=work_date,
+            prompt_visible=self._work_finish_prompt_visible,
+        )
+        if transition.changed:
+            self._set_work_finish_state(transition.state)
+        if transition.should_prompt and transition.state is not None:
+            self._work_finish_prompt_visible = True
+            if self._on_work_finish_prompt is not None:
+                try:
+                    self._on_work_finish_prompt(transition.state)
+                except Exception:  # noqa: BLE001 - 提醒 UI 失败不能中断倒计时。
+                    LOGGER.exception("显示下班全屏提醒失败")
+        if transition.state is None or transition.state.status == "finished":
+            self._work_finish_prompt_visible = False
+        return transition.state
+
+    def _set_work_finish_state(self, state: WorkFinishState | None) -> None:
+        if state == self._work_finish_state:
+            return
+        self._work_finish_state = state
+        if self._on_work_finish_state is not None:
+            try:
+                self._on_work_finish_state(state)
+            except Exception:  # noqa: BLE001 - 设置保存失败不能中断倒计时。
+                LOGGER.exception("保存下班提醒状态失败")
+
+    @staticmethod
+    def _work_finish_text(state: WorkFinishState | None, now: datetime) -> str:
+        if state is not None and (
+            state.status == "overtime"
+            or state.status == "prompting" and state.prompt_kind == "hourly"
+        ):
+            return f"你已加班 {_duration(overtime_duration(state, now))}"
+        return "下班啦 🎉"
 
     def set_pet_visible(self, visible: bool) -> None:
         """同步宠物窗口可见性，避免独立打卡卡片脱离主窗口残留。"""
@@ -452,8 +661,20 @@ class WorkCountdownWindow(QObject):
     def _position_card(self) -> None:
         if self.pet_window is None:
             return
-        point = self.pet_window.mapToGlobal(QPoint(self.pet_window.width() + 12, max(8, self.pet_window.height() // 3)))
-        self.clock_in_card.move(point)
+        pet_rect = QRect(self.pet_window.mapToGlobal(QPoint(0, 0)), self.pet_window.size())
+        screen = QGuiApplication.screenAt(pet_rect.center())
+        if screen is None:
+            screen = self.pet_window.screen()
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.clock_in_card.adjustSize()
+            self.clock_in_card.move(pet_rect.right() + 13, pet_rect.top() + max(8, pet_rect.height() // 3))
+            return
+
+        available = screen.availableGeometry()
+        card_size = self.clock_in_card.fit_to_available_geometry(available)
+        self.clock_in_card.move(clock_in_card_position(pet_rect, card_size, available))
 
     def _pet_destroyed(self) -> None:
         self.timer.stop()
@@ -466,6 +687,7 @@ class WorkCountdownWindow(QObject):
 __all__ = [
     "ClockInCard",
     "WorkCountdownWindow",
+    "clock_in_card_position",
     "clock_in_is_available",
     "countdown_text",
     "effective_clock_in_at",

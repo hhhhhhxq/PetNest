@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -12,6 +13,7 @@ from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QHeaderView
 
 from tests.test_pet_window import _package
+from petnest.models.pet_package import Canvas
 from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.ui.theme import COLORS
 
@@ -69,6 +71,40 @@ def test_action_list_description_column_expands_with_the_dialog(qtbot: object, t
     assert dialog.action_table.wordWrap()
     assert dialog.action_table.verticalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
     assert dialog.action_table.columnWidth(1) > 180
+
+
+def test_fullscreen_work_finish_actions_use_specific_editor_labels(qtbot: object, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    walk = replace(
+        package.animations["idle"],
+        name="work_finish_walk",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+    )
+    lie_down = replace(
+        package.animations["click"],
+        name="work_finish_lie_down",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+    )
+    package = replace(
+        package,
+        animations={
+            **package.animations,
+            "work_finish_walk": walk,
+            "work_finish_lie_down": lie_down,
+        },
+    )
+    dialog = AnimationEditorDialog(package)
+    qtbot.addWidget(dialog)
+
+    descriptions = [
+        dialog.action_table.item(row, 1).text()
+        for row in range(dialog.action_table.rowCount())
+    ]
+
+    assert any("全屏下班提醒 · 走路循环" in text for text in descriptions)
+    assert any("全屏下班提醒 · 躺下过渡" in text for text in descriptions)
 
 
 def test_editor_minimum_size_keeps_all_columns_and_frame_list_inside_their_cards(

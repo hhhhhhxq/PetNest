@@ -3,17 +3,160 @@
 from datetime import datetime
 
 import pytest
-from PySide6.QtCore import QTime
+from PySide6.QtCore import QPoint, QRect, QSize, QTime
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication, QTimeEdit, QWidget
 from pytestqt.qtbot import QtBot
 
 from petnest.ui.work_countdown import (
+    ClockInCard,
     WorkCountdownWindow,
+    clock_in_card_position,
     clock_in_is_available,
     countdown_text,
     effective_clock_in_at,
     elastic_work_end_at,
 )
+from petnest.core.work_finish_state import WorkFinishState
+
+
+def test_clock_in_card_position_prefers_right_then_left() -> None:
+    available = QRect(0, 0, 1000, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(300, 200, 160, 160), card_size, available) == QPoint(472, 219)
+    assert clock_in_card_position(QRect(820, 200, 160, 160), card_size, available) == QPoint(568, 219)
+
+
+def test_clock_in_card_position_uses_below_then_above() -> None:
+    available = QRect(0, 0, 500, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(170, 180, 160, 160), card_size, available) == QPoint(129, 352)
+    assert clock_in_card_position(QRect(170, 560, 160, 120), card_size, available) == QPoint(129, 428)
+
+
+def test_clock_in_card_position_preserves_right_priority_when_y_is_constrained() -> None:
+    available = QRect(0, 0, 1000, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(300, 0, 160, 40), card_size, available) == QPoint(472, 8)
+
+
+def test_clock_in_card_position_preserves_below_priority_when_x_is_constrained() -> None:
+    available = QRect(0, 0, 500, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(-20, 180, 270, 160), card_size, available) == QPoint(8, 352)
+
+
+def test_clock_in_card_position_minimizes_overlap_inside_safe_area() -> None:
+    available = QRect(100, 50, 300, 240)
+    card_size = QSize(260, 200)
+    point = clock_in_card_position(QRect(140, 80, 220, 180), card_size, available)
+
+    assert available.adjusted(8, 8, -8, -8).contains(QRect(point, card_size))
+    assert point == QPoint(119, 82)
+
+
+def test_clock_in_card_position_stays_on_one_pixel_available_area() -> None:
+    available = QRect(100, 50, 1, 1)
+
+    assert clock_in_card_position(available, QSize(240, 120), available) == QPoint(100, 50)
+
+
+def test_clock_in_card_position_contains_clipped_card_when_available_is_smaller_than_margins() -> None:
+    available = QRect(100, 50, 10, 12)
+    effective_safe = available.adjusted(4, 5, -4, -5)
+    point = clock_in_card_position(available, QSize(240, 120), available)
+    clipped_card = QRect(point, effective_safe.size())
+
+    assert available.contains(clipped_card)
+    assert effective_safe.contains(clipped_card)
+
+
+def test_clock_in_card_recovers_from_accidental_full_screen_size(qtbot: QtBot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    card = ClockInCard(parent)
+    card.resize(1600, 700)
+
+    fitted = card.fit_to_available_geometry(QRect(0, 0, 1920, 1040))
+
+    assert card.size() == fitted
+    assert fitted.width() < 500
+    assert fitted.height() < 300
+    assert card.minimumSize() == card.maximumSize() == fitted
+
+
+def test_clock_in_card_size_is_capped_to_small_available_geometry(qtbot: QtBot) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    card = ClockInCard(parent)
+
+    fitted = card.fit_to_available_geometry(QRect(0, 0, 210, 150))
+
+    assert fitted.width() <= 194
+    assert fitted.height() <= 134
+    assert card.size() == fitted
+    assert card.minimumSize() == card.maximumSize() == fitted
+
+
+def test_elastic_refresh_fits_and_places_clock_in_card_on_current_screen(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, _text: str | None) -> None:
+            pass
+
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    pet.resize(min(120, max(1, available.width() // 4)), min(120, max(1, available.height() // 4)))
+    pet.move(
+        available.right() - pet.width() + 1,
+        available.top() + max(0, (available.height() - pet.height()) // 2),
+    )
+    pet.show()
+    QApplication.processEvents()
+
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={"0": "18:00", "1": "18:00", "2": "18:00", "3": "18:00", "4": "18:00", "5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+    )
+    countdown._enabled = True
+    countdown.clock_in_card.resize(max(1600, available.width()), max(700, available.height()))
+
+    countdown.refresh(datetime(2026, 8, 13, 9, 35))
+    QApplication.processEvents()
+
+    horizontal_margin = min(8, max(0, (available.width() - 1) // 2))
+    vertical_margin = min(8, max(0, (available.height() - 1) // 2))
+    safe = available.adjusted(horizontal_margin, vertical_margin, -horizontal_margin, -vertical_margin)
+    card_rect = QRect(countdown.clock_in_card.pos(), countdown.clock_in_card.size())
+    pet_rect = QRect(pet.mapToGlobal(QPoint(0, 0)), pet.size())
+    assert countdown.clock_in_card.isVisible()
+    assert countdown.clock_in_card.width() < 500
+    assert countdown.clock_in_card.height() < 300
+    assert safe.contains(card_rect)
+    if pet_rect.left() - 12 - countdown.clock_in_card.width() >= safe.left():
+        assert card_rect.right() < pet_rect.left()
+    countdown.timer.stop()
 
 
 def test_fixed_countdown_stays_hidden_before_work_and_counts_down_after_start() -> None:
@@ -319,7 +462,12 @@ def test_elastic_countdown_keeps_previous_days_overnight_clock_in_until_work_end
 
     countdown.refresh(datetime(2026, 8, 14, 1, 30))
     assert not countdown.clock_in_card.isVisible()
-    assert pet.texts[-1] == "今天休息 ☕"
+    assert pet.texts[-1] == "下班啦 🎉"
+
+    countdown.refresh(datetime(2026, 8, 14, 1, 45))
+    assert countdown.work_finish_state is not None
+    assert countdown.work_finish_state.status == "finished"
+    assert pet.texts[-1] == "下班啦 🎉"
     countdown.timer.stop()
 
 
@@ -450,6 +598,148 @@ def test_elastic_countdown_switches_to_finished_at_exact_work_end(qtbot: QtBot) 
 
     countdown.refresh(datetime(2026, 8, 13, 18, 40))
     assert pet.texts[-1] == "下班啦 🎉"
+    countdown.timer.stop()
+
+
+def test_fixed_countdown_prompts_once_then_counts_overtime_from_original_end(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    saved: list[WorkFinishState | None] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={str(day): "18:00" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        on_work_finish_prompt=prompts.append,
+        on_work_finish_state=saved.append,
+    )
+    prompts.clear()
+    saved.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 17, 59, 59))
+    countdown.refresh(datetime(2026, 8, 14, 18, 0))
+    countdown.refresh(datetime(2026, 8, 14, 18, 0, 1))
+
+    assert len(prompts) == 1
+    assert prompts[0].prompt_kind == "initial"
+    assert pet.texts[-1] == "下班啦 🎉"
+
+    countdown.continue_overtime(datetime(2026, 8, 14, 18, 1))
+    countdown.refresh(datetime(2026, 8, 14, 18, 2))
+
+    assert pet.texts[-1] == "你已加班 00:02:00"
+    assert saved[-1] is not None
+    assert saved[-1].status == "overtime"
+    countdown.timer.stop()
+
+
+def test_overtime_prompts_again_at_relative_hour_and_times_out_as_finished(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:40",
+        daily_end_times={str(day): "18:40" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        on_work_finish_prompt=prompts.append,
+    )
+    prompts.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 18, 40))
+    countdown.continue_overtime(datetime(2026, 8, 14, 18, 41))
+    countdown.refresh(datetime(2026, 8, 14, 19, 39, 59))
+    assert len(prompts) == 1
+
+    countdown.refresh(datetime(2026, 8, 14, 19, 40))
+    assert len(prompts) == 2
+    assert prompts[-1].prompt_kind == "hourly"
+    assert pet.texts[-1] == "你已加班 01:00:00"
+
+    countdown.refresh(datetime(2026, 8, 14, 20, 10))
+    assert countdown.work_finish_state is not None
+    assert countdown.work_finish_state.status == "finished"
+    assert pet.texts[-1] == "下班啦 🎉"
+    countdown.timer.stop()
+
+
+def test_elastic_countdown_prompt_uses_recorded_work_end(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={str(day): "18:00" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+        clock_in_date="2026-08-14",
+        clock_in_time="09:40",
+        on_work_finish_prompt=prompts.append,
+    )
+    prompts.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 18, 39, 59))
+    assert not prompts
+    countdown.refresh(datetime(2026, 8, 14, 18, 40))
+
+    assert len(prompts) == 1
+    assert prompts[0].end_at == datetime(2026, 8, 14, 18, 40)
     countdown.timer.stop()
 
 

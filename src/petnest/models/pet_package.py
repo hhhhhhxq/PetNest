@@ -39,6 +39,8 @@ class AnimationDefinition:
     frame_durations_ms: tuple[int, ...] | None = None
     speed_multiplier: float = 1.0
     frames: tuple[Path, ...] = field(default_factory=tuple)
+    scope: str = "pet"
+    canvas: Canvas | None = None
 
 
 @dataclass(frozen=True, slots=True)

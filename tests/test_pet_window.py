@@ -631,6 +631,7 @@ def test_tray_exposes_a_local_spritesheet_import_action(qtbot: pytest.QtBot, tmp
     tray = PetTrayIcon(window, on_import=lambda: None)
 
     assert tray.import_action.text() == "导入精灵图…"
+    assert tray.import_work_finish_action.text() == "导入下班动画…"
 
 
 def test_tray_menu_groups_application_and_pet_library_actions(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -641,6 +642,7 @@ def test_tray_menu_groups_application_and_pet_library_actions(qtbot: pytest.QtBo
     assert tray.current_pet_action.text() == "当前宠物：小猫"
     assert tray.pet_library_menu.title() == "宠物库"
     assert tray.import_action in tray.pet_library_menu.actions()
+    assert tray.import_work_finish_action in tray.pet_library_menu.actions()
     assert tray.edit_animations_action in tray.pet_library_menu.actions()
     assert tray.import_action not in tray.menu.actions()
     assert "动画播放中" not in [action.text() for action in tray.menu.actions()]
@@ -780,3 +782,23 @@ def test_system_idle_actions_have_safe_default_bindings(qtbot: pytest.QtBot, tmp
     machine = PetWindow._make_state_machine(package)
 
     assert machine.handle(PetEvent("system.sleep", source="system")).current_action == "idle"
+
+
+def test_fullscreen_actions_are_excluded_from_desktop_pet_state_machine(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    fullscreen = replace(
+        package.animations["idle"],
+        name="work_finish_walk",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+    )
+    package = replace(
+        package,
+        animations={**package.animations, "work_finish_walk": fullscreen},
+        bindings={**package.bindings, "test.fullscreen": "work_finish_walk"},
+    )
+
+    machine = PetWindow._make_state_machine(package)
+
+    assert "work_finish_walk" not in machine.animations
+    assert machine.handle(PetEvent("test.fullscreen", source="test")).current_action == "idle"
