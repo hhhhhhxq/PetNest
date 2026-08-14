@@ -33,6 +33,20 @@ def test_clock_in_card_position_uses_below_then_above() -> None:
     assert clock_in_card_position(QRect(170, 560, 160, 120), card_size, available) == QPoint(129, 428)
 
 
+def test_clock_in_card_position_preserves_right_priority_when_y_is_constrained() -> None:
+    available = QRect(0, 0, 1000, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(300, 0, 160, 40), card_size, available) == QPoint(472, 8)
+
+
+def test_clock_in_card_position_preserves_below_priority_when_x_is_constrained() -> None:
+    available = QRect(0, 0, 500, 700)
+    card_size = QSize(240, 120)
+
+    assert clock_in_card_position(QRect(-20, 180, 270, 160), card_size, available) == QPoint(8, 352)
+
+
 def test_clock_in_card_position_minimizes_overlap_inside_safe_area() -> None:
     available = QRect(100, 50, 300, 240)
     card_size = QSize(260, 200)

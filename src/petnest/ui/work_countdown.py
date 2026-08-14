@@ -23,13 +23,21 @@ def clock_in_card_position(
 ) -> QPoint:
     """返回打卡卡片在可用区域内、尽量避开桌宠的位置。"""
     safe = available.adjusted(margin, margin, -margin, -margin)
-    width = min(card_size.width(), safe.width())
-    height = min(card_size.height(), safe.height())
+    width = max(1, min(card_size.width(), safe.width()))
+    height = max(1, min(card_size.height(), safe.height()))
+    max_x = safe.right() - width + 1
+    max_y = safe.bottom() - height + 1
+
+    def constrain(value: int, minimum: int, maximum: int) -> int:
+        return max(minimum, min(value, maximum))
+
+    horizontal_y = constrain(pet_rect.center().y() - height // 2, safe.top(), max_y)
+    vertical_x = constrain(pet_rect.center().x() - width // 2, safe.left(), max_x)
     candidates = (
-        QPoint(pet_rect.right() + 1 + gap, pet_rect.center().y() - height // 2),
-        QPoint(pet_rect.left() - gap - width, pet_rect.center().y() - height // 2),
-        QPoint(pet_rect.center().x() - width // 2, pet_rect.bottom() + 1 + gap),
-        QPoint(pet_rect.center().x() - width // 2, pet_rect.top() - gap - height),
+        QPoint(pet_rect.right() + 1 + gap, horizontal_y),
+        QPoint(pet_rect.left() - gap - width, horizontal_y),
+        QPoint(vertical_x, pet_rect.bottom() + 1 + gap),
+        QPoint(vertical_x, pet_rect.top() - gap - height),
     )
 
     for point in candidates:
@@ -37,12 +45,10 @@ def clock_in_card_position(
         if safe.contains(card_rect) and not card_rect.intersects(pet_rect):
             return point
 
-    max_x = safe.right() - width + 1
-    max_y = safe.bottom() - height + 1
     constrained = tuple(
         QPoint(
-            max(safe.left(), min(point.x(), max_x)),
-            max(safe.top(), min(point.y(), max_y)),
+            constrain(point.x(), safe.left(), max_x),
+            constrain(point.y(), safe.top(), max_y),
         )
         for point in candidates
     )
