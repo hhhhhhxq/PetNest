@@ -14,6 +14,7 @@ from petnest.ui.work_countdown import (
     effective_clock_in_at,
     elastic_work_end_at,
 )
+from petnest.core.work_finish_state import WorkFinishState
 
 
 def test_fixed_countdown_stays_hidden_before_work_and_counts_down_after_start() -> None:
@@ -319,7 +320,12 @@ def test_elastic_countdown_keeps_previous_days_overnight_clock_in_until_work_end
 
     countdown.refresh(datetime(2026, 8, 14, 1, 30))
     assert not countdown.clock_in_card.isVisible()
-    assert pet.texts[-1] == "今天休息 ☕"
+    assert pet.texts[-1] == "下班啦 🎉"
+
+    countdown.refresh(datetime(2026, 8, 14, 1, 45))
+    assert countdown.work_finish_state is not None
+    assert countdown.work_finish_state.status == "finished"
+    assert pet.texts[-1] == "下班啦 🎉"
     countdown.timer.stop()
 
 
@@ -450,6 +456,148 @@ def test_elastic_countdown_switches_to_finished_at_exact_work_end(qtbot: QtBot) 
 
     countdown.refresh(datetime(2026, 8, 13, 18, 40))
     assert pet.texts[-1] == "下班啦 🎉"
+    countdown.timer.stop()
+
+
+def test_fixed_countdown_prompts_once_then_counts_overtime_from_original_end(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    saved: list[WorkFinishState | None] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={str(day): "18:00" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        on_work_finish_prompt=prompts.append,
+        on_work_finish_state=saved.append,
+    )
+    prompts.clear()
+    saved.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 17, 59, 59))
+    countdown.refresh(datetime(2026, 8, 14, 18, 0))
+    countdown.refresh(datetime(2026, 8, 14, 18, 0, 1))
+
+    assert len(prompts) == 1
+    assert prompts[0].prompt_kind == "initial"
+    assert pet.texts[-1] == "下班啦 🎉"
+
+    countdown.continue_overtime(datetime(2026, 8, 14, 18, 1))
+    countdown.refresh(datetime(2026, 8, 14, 18, 2))
+
+    assert pet.texts[-1] == "你已加班 00:02:00"
+    assert saved[-1] is not None
+    assert saved[-1].status == "overtime"
+    countdown.timer.stop()
+
+
+def test_overtime_prompts_again_at_relative_hour_and_times_out_as_finished(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:40",
+        daily_end_times={str(day): "18:40" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        on_work_finish_prompt=prompts.append,
+    )
+    prompts.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 18, 40))
+    countdown.continue_overtime(datetime(2026, 8, 14, 18, 41))
+    countdown.refresh(datetime(2026, 8, 14, 19, 39, 59))
+    assert len(prompts) == 1
+
+    countdown.refresh(datetime(2026, 8, 14, 19, 40))
+    assert len(prompts) == 2
+    assert prompts[-1].prompt_kind == "hourly"
+    assert pet.texts[-1] == "你已加班 01:00:00"
+
+    countdown.refresh(datetime(2026, 8, 14, 20, 10))
+    assert countdown.work_finish_state is not None
+    assert countdown.work_finish_state.status == "finished"
+    assert pet.texts[-1] == "下班啦 🎉"
+    countdown.timer.stop()
+
+
+def test_elastic_countdown_prompt_uses_recorded_work_end(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    prompts: list[WorkFinishState] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=True,
+        start_time="09:00",
+        end_time="18:00",
+        daily_end_times={str(day): "18:00" for day in range(7)},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+        clock_in_date="2026-08-14",
+        clock_in_time="09:40",
+        on_work_finish_prompt=prompts.append,
+    )
+    prompts.clear()
+
+    countdown.refresh(datetime(2026, 8, 14, 18, 39, 59))
+    assert not prompts
+    countdown.refresh(datetime(2026, 8, 14, 18, 40))
+
+    assert len(prompts) == 1
+    assert prompts[0].end_at == datetime(2026, 8, 14, 18, 40)
     countdown.timer.stop()
 
 

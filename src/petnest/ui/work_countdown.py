@@ -10,6 +10,13 @@ from PySide6.QtCore import QObject, QPoint, QSignalBlocker, QTime, QTimer, Qt, S
 from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QTimeEdit, QVBoxLayout, QWidget
 
 from petnest.ui.theme import COLORS
+from petnest.core.work_finish_state import (
+    WorkFinishState,
+    advance_work_finish,
+    continue_overtime as continue_overtime_state,
+    finish_work as finish_work_state,
+    overtime_duration,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +46,25 @@ def countdown_text(
     if now < end_at:
         return f"距离下班 {_duration(end_at - now)}"
     return "下班啦 🎉"
+
+
+def _fixed_work_end_at(
+    now: datetime,
+    start_text: str,
+    end_text: str,
+    daily_end_times: dict[str, str | None] | None,
+) -> datetime | None:
+    """返回当天固定排班的绝对下班时刻；休息日没有时刻。"""
+    if daily_end_times is not None:
+        selected = daily_end_times.get(str(now.weekday()))
+        if selected is None:
+            return None
+        end_text = selected
+    elif now.weekday() >= 5:
+        return None
+    del start_text
+    end = _parse_time(end_text, time(18))
+    return datetime.combine(now.date(), end, tzinfo=now.tzinfo)
 
 
 def _parse_time(value: str, fallback: time) -> time:
@@ -269,6 +295,10 @@ class WorkCountdownWindow(QObject):
         self._clock_in_date: str | None = None
         self._clock_in_time: str | None = None
         self._on_clock_in: Callable[[datetime], object] | None = None
+        self._work_finish_state: WorkFinishState | None = None
+        self._on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None
+        self._on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None
+        self._work_finish_prompt_visible = False
         self._last_now: datetime | None = None
         self._active_clock_in_date: date | None = None
         self.clock_in_card = ClockInCard(pet_window)
@@ -299,6 +329,9 @@ class WorkCountdownWindow(QObject):
         clock_in_date: str | None = None,
         clock_in_time: str | None = None,
         on_clock_in: Callable[[datetime], object] | None = None,
+        work_finish_state: WorkFinishState | None = None,
+        on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None,
+        on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None,
     ) -> None:
         del always_on_top
         self._enabled = bool(enabled)
@@ -312,6 +345,10 @@ class WorkCountdownWindow(QObject):
         self._clock_in_date = clock_in_date
         self._clock_in_time = clock_in_time
         self._on_clock_in = on_clock_in
+        self._work_finish_state = work_finish_state
+        self._on_work_finish_state = on_work_finish_state
+        self._on_work_finish_prompt = on_work_finish_prompt
+        self._work_finish_prompt_visible = False
         if self.pet_window is not None:
             self.pet_window.set_countdown_appearance(  # type: ignore[attr-defined]
                 gap=gap, width=width, height=height, theme=theme
@@ -325,7 +362,12 @@ class WorkCountdownWindow(QObject):
         else:
             self.timer.stop()
             self.clock_in_card.hide()
+            self._work_finish_prompt_visible = False
             self.pet_window.set_countdown_text(None) if self.pet_window is not None else None
+
+    @property
+    def work_finish_state(self) -> WorkFinishState | None:
+        return self._work_finish_state
 
     def refresh(self, now: datetime | None = None) -> None:
         if self.pet_window is None:
@@ -335,8 +377,27 @@ class WorkCountdownWindow(QObject):
             return
         current = now or datetime.now().astimezone()
         self._last_now = current
+        if (
+            self._work_finish_state is not None
+            and self._work_finish_state.work_date < current.date()
+            and self._work_finish_state.status in {"prompting", "overtime"}
+        ):
+            self._refresh_work_finish(
+                current,
+                self._work_finish_state.end_at,
+                self._work_finish_state.work_date,
+            )
+            return
         if self.schedule_mode != "elastic":
             self.clock_in_card.hide()
+            end_at = _fixed_work_end_at(current, self.start_time, self.end_time, self.daily_end_times)
+            if end_at is not None:
+                state = self._refresh_work_finish(current, end_at, current.date())
+                if current >= end_at:
+                    self.pet_window.set_countdown_text(self._work_finish_text(state, current))  # type: ignore[attr-defined]
+                    return
+            elif self._work_finish_state is not None and self._work_finish_state.work_date != current.date():
+                self._set_work_finish_state(None)
             self.pet_window.set_countdown_text(  # type: ignore[attr-defined]
                 countdown_text(current, self.start_time, self.end_time, self.daily_end_times)
             )
@@ -375,7 +436,8 @@ class WorkCountdownWindow(QObject):
             if is_today or is_active_overnight:
                 self._active_clock_in_date = None
                 self.clock_in_card.hide()
-                text = f"距离下班 {_duration(end_at - now)}" if now < end_at else "下班啦 🎉"
+                state = self._refresh_work_finish(now, end_at, recorded.date())
+                text = f"距离下班 {_duration(end_at - now)}" if now < end_at else self._work_finish_text(state, now)
                 self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
                 return
             self._clock_in_date = None
@@ -404,6 +466,72 @@ class WorkCountdownWindow(QObject):
         )
         self.clock_in_card.show()
         self.pet_window.set_countdown_text(None)  # type: ignore[attr-defined]
+
+    def continue_overtime(self, now: datetime | None = None) -> None:
+        """响应“再加一会”，关闭当前提示并安排下一个相对小时节点。"""
+        state = self._work_finish_state
+        if state is None or state.status != "prompting":
+            return
+        current = now or self._last_now or datetime.now().astimezone()
+        self._work_finish_prompt_visible = False
+        self._set_work_finish_state(continue_overtime_state(state, current))
+        if self.pet_window is not None and self._work_finish_state is not None:
+            self.pet_window.set_countdown_text(self._work_finish_text(self._work_finish_state, current))  # type: ignore[attr-defined]
+
+    def finish_work(self, now: datetime | None = None) -> None:
+        """响应“下班”或超时，把当天标为已完成。"""
+        del now
+        state = self._work_finish_state
+        if state is None:
+            return
+        self._work_finish_prompt_visible = False
+        self._set_work_finish_state(finish_work_state(state))
+        if self.pet_window is not None:
+            self.pet_window.set_countdown_text("下班啦 🎉")  # type: ignore[attr-defined]
+
+    def set_work_finish_prompt_visible(self, visible: bool) -> None:
+        """同步独立提醒窗口是否仍在屏幕上，防止重复创建。"""
+        self._work_finish_prompt_visible = bool(visible)
+
+    def _refresh_work_finish(self, now: datetime, end_at: datetime, work_date: date) -> WorkFinishState | None:
+        transition = advance_work_finish(
+            self._work_finish_state,
+            now,
+            end_at,
+            work_date=work_date,
+            prompt_visible=self._work_finish_prompt_visible,
+        )
+        if transition.changed:
+            self._set_work_finish_state(transition.state)
+        if transition.should_prompt and transition.state is not None:
+            self._work_finish_prompt_visible = True
+            if self._on_work_finish_prompt is not None:
+                try:
+                    self._on_work_finish_prompt(transition.state)
+                except Exception:  # noqa: BLE001 - 提醒 UI 失败不能中断倒计时。
+                    LOGGER.exception("显示下班全屏提醒失败")
+        if transition.state is None or transition.state.status == "finished":
+            self._work_finish_prompt_visible = False
+        return transition.state
+
+    def _set_work_finish_state(self, state: WorkFinishState | None) -> None:
+        if state == self._work_finish_state:
+            return
+        self._work_finish_state = state
+        if self._on_work_finish_state is not None:
+            try:
+                self._on_work_finish_state(state)
+            except Exception:  # noqa: BLE001 - 设置保存失败不能中断倒计时。
+                LOGGER.exception("保存下班提醒状态失败")
+
+    @staticmethod
+    def _work_finish_text(state: WorkFinishState | None, now: datetime) -> str:
+        if state is not None and (
+            state.status == "overtime"
+            or state.status == "prompting" and state.prompt_kind == "hourly"
+        ):
+            return f"你已加班 {_duration(overtime_duration(state, now))}"
+        return "下班啦 🎉"
 
     def set_pet_visible(self, visible: bool) -> None:
         """同步宠物窗口可见性，避免独立打卡卡片脱离主窗口残留。"""
