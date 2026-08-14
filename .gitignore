@@ -8,6 +8,7 @@ htmlcov/
 # Virtual environments and build outputs
 .venv/
 venv/
+.worktrees/
 build/
 dist/
 *.spec
