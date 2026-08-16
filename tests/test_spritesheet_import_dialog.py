@@ -9,8 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
 from PySide6.QtGui import QDropEvent
+from PySide6.QtWidgets import QDialog, QMessageBox
 
 from tests.test_spritesheet_importer import _spritesheet
+from petnest.ui.spritesheet_import_content import SpriteSheetImportContent
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
 
 
@@ -18,6 +20,7 @@ def test_dialog_explains_local_only_format_and_default_mapping(qtbot: object, tm
     dialog = SpriteSheetImportDialog(tmp_path / "pets")
     qtbot.addWidget(dialog)
 
+    assert isinstance(dialog.content, SpriteSheetImportContent)
     rules = dialog.rules_label.text()
     assert "不上传" in rules
     assert "1536 × 1872" in rules
@@ -129,3 +132,49 @@ def test_dialog_accepts_a_local_png_dropped_on_the_source_zone(qtbot: object, tm
     dialog.source_dropzone.dropEvent(event)
 
     assert Path(dialog.source_input.text()).resolve() == source.resolve()
+
+
+def test_dialog_warns_without_accepting_when_required_fields_are_missing(
+    qtbot: object, tmp_path: Path, monkeypatch: object
+) -> None:
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.pet_id_input.setText("draft_cat")
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    dialog.import_selected()
+
+    assert warnings == [("无法导入", "请选择 PNG 文件并填写宠物 ID。")]
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.pet_id_input.text() == "draft_cat"
+
+
+def test_dialog_warns_and_preserves_form_when_importer_rejects_png(
+    qtbot: object, tmp_path: Path, monkeypatch: object
+) -> None:
+    source = tmp_path / "invalid.png"
+    source.write_bytes(b"not a PNG")
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.source_input.setText(str(source))
+    dialog.pet_id_input.setText("invalid_cat")
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    dialog.import_selected()
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "无法导入"
+    assert "无法读取 PNG 精灵图" in warnings[0][1]
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert dialog.source_input.text() == str(source)
+    assert dialog.pet_id_input.text() == "invalid_cat"
