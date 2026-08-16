@@ -11,6 +11,7 @@ from PIL import Image
 from petnest.core.action_pack import export_action_pack
 from petnest.core.package_loader import PackageLoader
 from petnest.ui.action_import_page import ActionImportPage
+from petnest.ui.exchange_page import ExchangePage
 from tests.test_package_validator import _write_package, _write_png
 
 
@@ -76,3 +77,35 @@ def test_action_import_page_blocks_locked_current_pet(qtbot: object, tmp_path: P
     page.install_selected()
 
     assert "提醒" in page.status_label.text()
+
+
+def test_action_import_page_uses_shared_footer_and_routes_primary(qtbot: object, tmp_path: Path, monkeypatch: object) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.show()
+
+    assert isinstance(page, ExchangePage)
+    assert page.footer_state().status == "导入完整宠物时可只选择其中部分动作。"
+    assert page.footer_state().primary_text == "安装选中动作"
+    assert not page.install_button.isVisible()
+    assert not page.status_label.isVisible()
+
+    called: list[bool] = []
+    monkeypatch.setattr(page, "install_selected", lambda: called.append(True))
+    page.trigger_primary()
+
+    assert called == [True]
+
+
+def test_action_import_page_refresh_packages_rebuilds_target_selector(qtbot: object, tmp_path: Path) -> None:
+    first = PackageLoader().load(_write_package(tmp_path / "first", id="first"))
+    second = PackageLoader().load(_write_package(tmp_path / "second", id="second"))
+    page = ActionImportPage([first], tmp_path / "pets")
+    qtbot.addWidget(page)
+
+    page.refresh_packages([first, second], "second")
+
+    assert page.target_combo.currentData() == "second"
+    assert [page.target_combo.itemData(i) for i in range(page.target_combo.count())] == ["first", "second"]
+    assert page.footer_state().primary_text == "安装选中动作"

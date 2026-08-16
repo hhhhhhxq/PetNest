@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,13 +34,16 @@ from petnest.core.action_transfer import (
 )
 from petnest.core.exchange_source import ExchangeSource
 from petnest.models.pet_package import PetPackage
+from petnest.ui.exchange_page import ExchangePage
 from petnest.ui.theme import dialog_stylesheet
 
 
-class ActionImportPage(QWidget):
+class ActionImportPage(ExchangePage):
     """选择来源和动作，按目标宠物逐项处理冲突后事务性安装。"""
 
     actions_installed = Signal(str, object)
+
+    _DEFAULT_STATUS = "导入完整宠物时可只选择其中部分动作。"
 
     def __init__(
         self,
@@ -57,6 +60,7 @@ class ActionImportPage(QWidget):
         self._pets_root = Path(pets_root)
         self._is_pet_locked = is_pet_locked or (lambda _identifier: False)
         self._pack: ActionPack | None = None
+        self._status_text = self._DEFAULT_STATUS
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -105,19 +109,20 @@ class ActionImportPage(QWidget):
         body.addWidget(self.conflict_table, 3)
         layout.addLayout(body, 1)
 
-        footer = QHBoxLayout()
         self.import_bindings = QCheckBox("同时导入相关绑定", self)
-        footer.addWidget(self.import_bindings)
-        self.status_label = QLabel("导入完整宠物时可只选择其中部分动作。", self)
+        info_row.insertWidget(0, self.import_bindings)
+
+        # These controls remain as hidden compatibility attributes for callers
+        # that used the old dialog page directly.  The visible command area is
+        # owned by PetActionExchangeDialog.
+        self.status_label = QLabel(self)
         self.status_label.setObjectName("mutedLabel")
-        self.status_label.setWordWrap(True)
-        footer.addWidget(self.status_label, 1)
+        self.status_label.hide()
         self.install_button = QPushButton("安装选中动作", self)
-        self.install_button.setObjectName("primaryButton")
-        self.install_button.setEnabled(False)
+        self.install_button.setObjectName("legacyInstallButton")
         self.install_button.clicked.connect(self.install_selected)
-        footer.addWidget(self.install_button)
-        layout.addLayout(footer)
+        self.install_button.hide()
+        self._sync_footer()
 
     def available_action_names(self) -> set[str]:
         return {
@@ -177,6 +182,7 @@ class ActionImportPage(QWidget):
                 item = QListWidgetItem(f"{name} · {'全屏动作' if action.scope == 'fullscreen' else '普通动作'} · {len(action.asset_paths)} 帧", self.action_list)
                 item.setData(Qt.ItemDataRole.UserRole, name)
                 item.setSelected(True)
+            self._status_text = self._DEFAULT_STATUS
             self._refresh_conflicts()
         except Exception as error:
             if not adopted and materialized is not None:
@@ -184,20 +190,19 @@ class ActionImportPage(QWidget):
             self._close_pack()
             self.source_kind_label.setText("读取失败")
             self.source_summary_label.setText(str(error))
-            self.status_label.setText(f"无法读取来源：{error}")
-            self.install_button.setEnabled(False)
+            self._sync_footer(f"无法读取来源：{error}")
 
     def install_selected(self) -> None:
         package = self._target_package()
         if self._pack is None or package is None:
-            self.status_label.setText("请先读取来源并选择目标宠物。")
+            self._sync_footer("请先读取来源并选择目标宠物。")
             return
         if self._is_pet_locked(package.identifier):
-            self.status_label.setText("当前宠物正在显示下班提醒，请先结束提醒后再导入动作。")
+            self._sync_footer("当前宠物正在显示下班提醒，请先结束提醒后再导入动作。")
             return
         selected = self.selected_action_names()
         if not selected:
-            self.status_label.setText("至少选择一个动作。")
+            self._sync_footer("至少选择一个动作。")
             return
         try:
             selected_pack = self._selected_pack(selected)
@@ -208,9 +213,9 @@ class ActionImportPage(QWidget):
                 import_bindings=self.import_bindings.isChecked(),
             )
         except (ActionInstallError, ActionPackError) as error:
-            self.status_label.setText(f"安装失败：{error}")
+            self._sync_footer(f"安装失败：{error}")
             return
-        self.status_label.setText(f"已导入 {len(result.installed)} 个动作。")
+        self._sync_footer(f"已导入 {len(result.installed)} 个动作。")
         self.actions_installed.emit(package.identifier, result)
 
     def _selected_pack(self, selected: set[str]) -> ActionPack:
@@ -237,7 +242,7 @@ class ActionImportPage(QWidget):
         package = self._target_package()
         selected = self.selected_action_names()
         if package is None or self._pack is None:
-            self.install_button.setEnabled(False)
+            self._sync_footer()
             return
         for name in sorted(selected):
             if not any(_action_name_key(name) == _action_name_key(existing) for existing in package.animations):
@@ -256,7 +261,51 @@ class ActionImportPage(QWidget):
                 lambda _index, editor=rename, mode=decision: editor.setEnabled(mode.currentData() == "rename")
             )
             rename.setEnabled(False)
-        self.install_button.setEnabled(bool(selected))
+        self._sync_footer()
+
+    def trigger_primary(self) -> None:
+        self.install_selected()
+
+    def refresh_packages(self, packages: Sequence[PetPackage], current_pet_id: str) -> None:
+        """Refresh target pets while keeping the currently loaded source pack."""
+
+        previous_id = self.target_combo.currentData()
+        self._packages = tuple(packages)
+        desired_id = current_pet_id or previous_id
+        with QSignalBlocker(self.target_combo):
+            self.target_combo.clear()
+            for package in self._packages:
+                self.target_combo.addItem(package.name, package.identifier)
+            index = self.target_combo.findData(desired_id)
+            if index < 0 and self.target_combo.count():
+                index = 0
+            self.target_combo.setCurrentIndex(index)
+        self._refresh_conflicts()
+
+    def close_pack(self) -> None:
+        """Release a materialized source package before the shell closes."""
+
+        self._close_pack()
+
+    def deactivate(self) -> None:
+        return
+
+    def _sync_footer(self, message: str | None = None) -> None:
+        if message is not None:
+            self._status_text = message
+        status = self._status_text
+        enabled = (
+            self._pack is not None
+            and bool(self.selected_action_names())
+            and self._target_package() is not None
+        )
+        self.status_label.setText(status)
+        self.install_button.setEnabled(enabled)
+        self.set_footer(
+            status=status,
+            primary_text="安装选中动作",
+            primary_enabled=enabled,
+        )
 
     def _conflict_decisions(self, selected: set[str]) -> dict[str, ConflictDecision]:
         decisions: dict[str, ConflictDecision] = {}

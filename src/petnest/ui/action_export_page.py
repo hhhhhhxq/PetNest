@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -23,10 +23,11 @@ from PySide6.QtWidgets import (
 from petnest.core.action_pack import ActionPackError, export_action_pack
 from petnest.models.pet_package import PetPackage
 from petnest.ui.animation_preview_widget import AnimationPreviewWidget
+from petnest.ui.exchange_page import ExchangePage
 from petnest.ui.theme import dialog_stylesheet
 
 
-class ActionExportPage(QWidget):
+class ActionExportPage(ExchangePage):
     """列出宠物全部动作，支持筛选、多选、预览和 ZIP 导出。"""
 
     def __init__(self, packages: Sequence[PetPackage], parent: QWidget | None = None) -> None:
@@ -37,6 +38,7 @@ class ActionExportPage(QWidget):
         self._rows: dict[str, QListWidgetItem] = {}
         self._selected_names: set[str] = set()
         self._filtering = False
+        self._status_override: str | None = None
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -85,23 +87,22 @@ class ActionExportPage(QWidget):
         body.addWidget(self.preview, 1)
         layout.addLayout(body, 1)
 
-        footer = QHBoxLayout()
         self.include_bindings = QCheckBox("同时分享相关绑定", self)
         self.include_bindings.setToolTip("默认关闭，避免覆盖接收方已有快捷绑定")
-        footer.addWidget(self.include_bindings)
-        self.selection_label = QLabel("已选 0 项", self)
+        layout.insertWidget(2, self.include_bindings)
+
+        # Compatibility controls from the former page-local footer.  The
+        # unified dialog owns the visible footer and mirrors this state.
+        self.selection_label = QLabel(self)
         self.selection_label.setObjectName("mutedLabel")
-        footer.addWidget(self.selection_label)
-        footer.addStretch(1)
-        self.status_label = QLabel("", self)
+        self.selection_label.hide()
+        self.status_label = QLabel(self)
         self.status_label.setObjectName("mutedLabel")
-        footer.addWidget(self.status_label)
+        self.status_label.hide()
         self.export_button = QPushButton("导出 ZIP…", self)
-        self.export_button.setObjectName("primaryButton")
+        self.export_button.setObjectName("legacyExportButton")
         self.export_button.clicked.connect(self._choose_output)
-        self.export_button.setEnabled(False)
-        footer.addWidget(self.export_button)
-        layout.addLayout(footer)
+        self.export_button.hide()
         self._load_package_actions()
 
     def current_package(self) -> PetPackage | None:
@@ -141,7 +142,7 @@ class ActionExportPage(QWidget):
             Path(output),
             include_bindings=self.include_bindings.isChecked(),
         )
-        self.status_label.setText(f"已导出：{result}")
+        self._sync_footer(f"已导出：{result}")
         return result
 
     def _load_package_actions(self) -> None:
@@ -150,8 +151,8 @@ class ActionExportPage(QWidget):
         self._selected_names.clear()
         package = self.current_package()
         if package is None:
-            self.export_button.setEnabled(False)
             self.preview.clear()
+            self._sync_footer()
             return
         for name, definition in package.animations.items():
             label = f"{name} · {'全屏动作' if definition.scope == 'fullscreen' else '普通动作'} · {len(definition.frames)} 帧"
@@ -203,8 +204,7 @@ class ActionExportPage(QWidget):
     def _refresh_preview(self) -> None:
         package = self.current_package()
         selected_names = self.selected_action_names()
-        self.selection_label.setText(f"已选 {len(selected_names)} 项")
-        self.export_button.setEnabled(bool(selected_names) and package is not None)
+        self._sync_footer()
         if package is None or not selected_names:
             self.preview.clear()
             return
@@ -226,7 +226,43 @@ class ActionExportPage(QWidget):
         try:
             self.export_selected(Path(selected))
         except ActionPackError as error:
-            self.status_label.setText(f"导出失败：{error}")
+            self._sync_footer(f"导出失败：{error}")
+
+    def trigger_primary(self) -> None:
+        self._choose_output()
+
+    def refresh_packages(self, packages: Sequence[PetPackage], current_pet_id: str) -> None:
+        """Replace the pet selector contents and refresh the selected package."""
+
+        self._packages = tuple(packages)
+        with QSignalBlocker(self.pet_combo):
+            self.pet_combo.clear()
+            for package in self._packages:
+                self.pet_combo.addItem(package.name, package.identifier)
+            index = self.pet_combo.findData(current_pet_id)
+            if index < 0 and self.pet_combo.count():
+                index = 0
+            self.pet_combo.setCurrentIndex(index)
+        self._load_package_actions()
+
+    def deactivate(self) -> None:
+        self.preview.set_playing(False)
+
+    def _sync_footer(self, message: str | None = None) -> None:
+        if message is not None:
+            self._status_override = message
+        elif self._status_override is not None:
+            # A new selection/filter should expose the current selection state
+            # instead of an old export result.
+            self._status_override = None
+        package = self.current_package()
+        count = len(self.selected_action_names())
+        status = self._status_override or (f"已选 {count} 项" if count else "选择要分享的动作")
+        enabled = bool(count) and package is not None
+        self.selection_label.setText(status)
+        self.status_label.setText(status)
+        self.export_button.setEnabled(enabled)
+        self.set_footer(status=status, primary_text="导出 ZIP…", primary_enabled=enabled)
 
 
 __all__ = ["ActionExportPage"]

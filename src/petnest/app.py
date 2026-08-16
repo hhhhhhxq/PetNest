@@ -64,13 +64,13 @@ from petnest.models.event import PetEvent
 from petnest.models.lan_interaction import ChatMessageKind, InteractionKind
 from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
-from petnest.ui.animation_editor_dialog import AnimationEditorDialog
 from petnest.ui.app_update_dialog import AppUpdateDialog
 from petnest.ui.codex_usage_dialog import CodexUsageDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
+from petnest.ui.animation_editor_page import AnimationSaveResult
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
@@ -339,11 +339,8 @@ class PetNest:
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
                 on_exchange=self.show_pet_action_exchange_dialog,
-                on_import=self.show_spritesheet_import_dialog,
-                on_import_work_finish=self.show_work_finish_import_dialog,
                 on_open_pets_folder=self.open_pets_folder,
                 on_refresh_pets=self.refresh_pets,
-                on_edit_animations=self.show_animation_editor_dialog,
                 on_settings=self.show_settings_dialog,
                 on_codex_usage=self.show_codex_usage_dialog,
                 codex_usage_unlocked=self.settings.codex_usage_unlocked,
@@ -502,6 +499,56 @@ class PetNest:
             self.tray.showMessage("PetNest", f"已同步逐帧时长：{summary}")
         self._refresh_visible_work_finish_reminder()
         return True
+
+    def _save_animation_timelines(
+        self,
+        package: PetPackage,
+        timelines: dict[str, tuple[int, ...]],
+    ) -> AnimationSaveResult:
+        """安全保存动作时长，并在运行时重载成功后返回最新宠物包。"""
+        if self._is_pet_locked_for_exchange(package.identifier):
+            return AnimationSaveResult(False, "当前宠物正在显示下班提醒，请先结束提醒。")
+
+        try:
+            original_config = self.action_synchronizer.snapshot_config_bytes(package.root)
+            self.action_synchronizer.update_frame_durations(package.root, timelines)
+        except AnimationActionSyncError as error:
+            return AnimationSaveResult(False, f"无法保存动画时长：{error}")
+        except Exception as error:  # noqa: BLE001 - compatibility with injected synchronizers.
+            return AnimationSaveResult(False, f"无法保存动画时长：{error}")
+
+        is_current = package.identifier == self.package.identifier
+        try:
+            if is_current:
+                if not self.reload_current_pet():
+                    raise AnimationActionSyncError("当前宠物重新载入失败")
+                refreshed = self.package
+            else:
+                refreshed = self.loader.load(package.root)
+                replaced = False
+                next_packages: list[PetPackage] = []
+                for item in self.packages:
+                    if item.identifier == refreshed.identifier:
+                        next_packages.append(refreshed)
+                        replaced = True
+                    else:
+                        next_packages.append(item)
+                if not replaced:
+                    next_packages.append(refreshed)
+                self.packages = next_packages
+        except Exception as error:  # noqa: BLE001 - reload/load errors must trigger rollback.
+            try:
+                self.action_synchronizer.restore_config_bytes(package.root, original_config)
+            except Exception as restore_error:  # noqa: BLE001 - preserve the explicit double-failure result.
+                return AnimationSaveResult(False, f"重载失败且配置恢复失败：{restore_error}")
+            if is_current:
+                try:
+                    self.reload_current_pet()
+                except Exception:  # noqa: BLE001 - restored bytes are still reported below.
+                    LOGGER.exception("恢复动作时长后重新载入当前宠物失败：%s", package.identifier)
+            return AnimationSaveResult(False, f"保存未生效，已恢复原配置：{error}")
+
+        return AnimationSaveResult(True, "已保存并重载", refreshed)
 
     def apply_settings(self, settings: Settings) -> None:
         """立即应用可安全即时修改的设置，并持久化其非敏感值。"""
@@ -793,6 +840,8 @@ class PetNest:
             dialog = PetActionExchangeDialog(
                 self.packages,
                 self.pets_root,
+                current_pet_id=self.package.identifier,
+                save_animation_timelines=self._save_animation_timelines,
                 is_pet_locked=self._is_pet_locked_for_exchange,
                 parent=self.window,
             )
@@ -828,7 +877,7 @@ class PetNest:
             else:
                 QMessageBox.warning(self.window, "无法载入宠物", f"宠物 {identifier} 已导入，但当前运行时未能载入。")
         if self._pet_action_exchange_dialog is not None:
-            self._pet_action_exchange_dialog.close()
+            self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
 
     def _handle_actions_exchange_installed(self, identifier: str, _result: object) -> None:
         self._synchronize_pet_library()
@@ -838,7 +887,7 @@ class PetNest:
         if identifier == self.package.identifier and not self.reload_current_pet():
             QMessageBox.warning(self.window, "无法载入动作", "动作已安装，但当前宠物重新载入失败；原运行状态已保留。")
         if self._pet_action_exchange_dialog is not None:
-            self._pet_action_exchange_dialog.close()
+            self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
 
     def _restore_pet_from_exchange_backup(self, result: PetImportResult) -> None:
         if result.backup_path is None:
@@ -888,23 +937,8 @@ class PetNest:
                 LOGGER.warning("跳过无法同步的宠物包：%s", candidate, exc_info=True)
 
     def show_animation_editor_dialog(self) -> None:
-        """编辑并保存当前宠物包的可分享动画时长。"""
-        if not self.reload_current_pet():
-            QMessageBox.warning(self.window, "无法编辑动画时长", "当前宠物资源无法重新载入，请检查新增图片后重试。")
-            return
-        dialog = AnimationEditorDialog(self.package, self.window)
-        if dialog.exec():
-            try:
-                self.action_synchronizer.update_frame_durations(self.package.root, dialog.updated_frame_durations())
-            except AnimationActionSyncError as error:
-                QMessageBox.critical(
-                    self.window,
-                    "无法保存动画时长",
-                    f"未写入 {self.package.root / 'pet.json'}。\n原因：{error}",
-                )
-                return
-            if self.reload_current_pet() and self.tray is not None:
-                self.tray.showMessage("PetNest", dialog.applied_summary())
+        """兼容旧入口，定位到统一中心的动作编辑页。"""
+        self.show_pet_action_exchange_dialog("编辑动作")
 
     def shutdown(self) -> None:
         """按可控顺序停止服务、保存状态并请求 Qt 事件循环退出。"""

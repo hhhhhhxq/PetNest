@@ -1329,31 +1329,17 @@ def test_animation_editor_shows_a_clear_error_when_pet_json_cannot_be_written(
     )
     qtbot.addWidget(application.window)
 
-    class _AcceptedEditor:
-        def __init__(self, *_args: object) -> None:
-            pass
-
-        def exec(self) -> bool:
-            return True
-
-        def updated_frame_durations(self) -> dict[str, tuple[int, ...]]:
-            return {"idle": (200, 80, 120, 160)}
-
-        def applied_summary(self) -> str:
-            return "unused"
-
-    messages: list[tuple[str, str]] = []
-    monkeypatch.setattr("petnest.app.AnimationEditorDialog", _AcceptedEditor)
     monkeypatch.setattr(
         application.action_synchronizer,
         "update_frame_durations",
         lambda *_args: (_ for _ in ()).throw(AnimationActionSyncError("访问被拒绝")),
     )
-    monkeypatch.setattr("petnest.app.QMessageBox.critical", lambda _parent, title, message: messages.append((title, message)))
 
-    application.show_animation_editor_dialog()
+    result = application._save_animation_timelines(application.package, {"idle": (200, 80, 120, 160)})
 
-    assert messages == [("无法保存动画时长", f"未写入 {application.package.root / 'pet.json'}。\n原因：访问被拒绝")]
+    assert not result.success
+    assert result.message == "无法保存动画时长：访问被拒绝"
+    application.shutdown()
 
 
 def test_reload_current_pet_syncs_new_action_and_notifies_tray(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -1411,8 +1397,8 @@ def test_reload_current_pet_without_added_actions_does_not_notify_tray(qtbot: py
     assert messages == []
 
 
-def test_animation_editor_reloads_and_syncs_frames_added_while_the_app_is_running(
-    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_animation_editor_legacy_entry_routes_to_exchange_page(
+    qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
     app = QApplication.instance() or QApplication([])
     del app
@@ -1424,24 +1410,12 @@ def test_animation_editor_reloads_and_syncs_frames_added_while_the_app_is_runnin
         pets_root=tmp_path / "pets", settings_manager=SettingsManager(tmp_path / "settings.json"), enable_tray=False
     )
     qtbot.addWidget(application.window)
-    Image.new("RGBA", (16, 16), (1, 0, 0, 255)).save(package_root / "animations" / "idle" / "002.png")
-
-    received_packages = []
-
-    class _CancelledEditor:
-        def __init__(self, package: object, _parent: object) -> None:
-            received_packages.append(package)
-
-        def exec(self) -> bool:
-            return False
-
-    monkeypatch.setattr("petnest.app.AnimationEditorDialog", _CancelledEditor)
-
     application.show_animation_editor_dialog()
 
-    assert len(received_packages[0].animations["idle"].frames) == 2
-    saved = json.loads((package_root / "pet.json").read_text(encoding="utf-8"))
-    assert saved["animations"]["idle"]["frame_durations_ms"] == [120, 120]
+    assert application._pet_action_exchange_dialog is not None
+    assert application._pet_action_exchange_dialog.current_page_name() == "编辑动作"
+    application._pet_action_exchange_dialog.close()
+    application.shutdown()
 
 
 def test_refresh_pets_syncs_frames_added_to_a_newly_copied_pet_before_discovery(
