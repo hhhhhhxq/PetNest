@@ -75,3 +75,21 @@ def test_preview_missing_frame_stops_timer_and_shows_error(qtbot: object, tmp_pa
 
     assert not widget.preview_timer.isActive()
     assert "无法读取" in widget.preview_label.text()
+
+
+def test_preview_can_seek_and_replay_with_public_api(qtbot: object, tmp_path: Path) -> None:
+    first = tmp_path / "1.png"
+    second = tmp_path / "2.png"
+    write_png(first, (255, 0, 0, 255))
+    write_png(second, (0, 255, 0, 255))
+    widget = AnimationPreviewWidget()
+    qtbot.addWidget(widget)
+    widget.set_frames((first, second), frame_durations_ms=(100, 100))
+
+    widget.set_current_frame(1, pause=True)
+    assert widget.preview_frame_index == 1
+    assert not widget.preview_timer.isActive()
+
+    widget.replay()
+    assert widget.preview_frame_index == 0
+    assert widget.preview_timer.isActive()

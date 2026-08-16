@@ -168,13 +168,6 @@ class AnimationEditorDialog(QDialog):
     def _select_preview_frame(self, item: object) -> None:
         self.editor._select_preview_frame(item)  # type: ignore[arg-type]
 
-    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature.
-        super().resizeEvent(event)  # type: ignore[arg-type]
-        self._sync_responsive_preview()
-
-    def _sync_responsive_preview(self) -> None:
-        self.editor._sync_responsive_preview()
-
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override signature.
         self.editor._cleanup_preview()
         super().closeEvent(event)

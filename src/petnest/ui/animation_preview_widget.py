@@ -127,6 +127,25 @@ class AnimationPreviewWidget(QWidget):
             self.preview_play_button.setText("暂停预览")
             self._start_timer()
 
+    def set_current_frame(self, index: int, *, pause: bool = False) -> None:
+        """定位到指定帧；需要用户检查单帧时可同时暂停播放。"""
+
+        if not self._pixmaps or self._invalid_frame:
+            return
+        if pause:
+            self.set_playing(False)
+        self.preview_frame_index = max(0, min(int(index), len(self._pixmaps) - 1))
+        self._render()
+        self.frame_changed.emit(self.preview_frame_index)
+
+    def replay(self) -> None:
+        """从第一帧重新开始循环播放。"""
+
+        if not self._pixmaps or self._invalid_frame:
+            return
+        self.set_current_frame(0)
+        self.set_playing(True)
+
     def next_delay_ms(self) -> int | None:
         if not self._durations or self.preview_frame_index >= len(self._durations):
             return None

@@ -13,12 +13,14 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QRadioButton,
+    QPushButton,
     QSizePolicy,
     QSpinBox,
     QTableWidget,
@@ -77,6 +79,7 @@ class AnimationTimingEditor(QWidget):
         self._loading = False
         self._duration_spins: list[QSpinBox] = []
         self._preview_pixmaps: dict[str, tuple[QPixmap, ...]] = {}
+        self._action_icons: dict[str, QIcon] = {}
         self._highlighted_frame_index: int | None = None
 
         root = QHBoxLayout(self)
@@ -85,7 +88,8 @@ class AnimationTimingEditor(QWidget):
 
         self.action_card = QFrame(self)
         self.action_card.setObjectName("settingsCard")
-        self.action_card.setMinimumWidth(450)
+        self.action_card.setMinimumWidth(205)
+        self.action_card.setMaximumWidth(250)
         action_card_layout = QVBoxLayout(self.action_card)
         action_card_layout.setContentsMargins(14, 12, 14, 12)
         action_card_layout.addWidget(QLabel("动作列表", self.action_card))
@@ -106,16 +110,19 @@ class AnimationTimingEditor(QWidget):
         for column in (2, 3, 4):
             self.action_table.setColumnHidden(column, True)
         action_header = self.action_table.horizontalHeader()
-        action_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        action_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.action_table.setColumnWidth(0, 58)
         action_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.action_table.setWordWrap(True)
         self.action_table.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.action_table.setIconSize(QSize(38, 38))
         self.action_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.action_table.itemSelectionChanged.connect(self._load_selected_action)
         action_card_layout.addWidget(self.action_table, 1)
 
         self.editor_card = QFrame(self)
         self.editor_card.setObjectName("settingsCard")
+        self.editor_card.setMinimumWidth(360)
         editor_card_layout = QVBoxLayout(self.editor_card)
         editor_card_layout.setContentsMargins(14, 12, 14, 12)
         self.editor_heading_label = QLabel("选择动作", self.editor_card)
@@ -194,11 +201,15 @@ class AnimationTimingEditor(QWidget):
         self.preview_card = QFrame(self)
         self.preview_card.setObjectName("previewCard")
         self.preview_card.setMinimumWidth(260)
+        self.preview_card.setMaximumWidth(320)
         preview_card_layout = QVBoxLayout(self.preview_card)
         preview_card_layout.setContentsMargins(14, 14, 14, 14)
         preview_title = QLabel("实时动作预览", self.preview_card)
         preview_title.setStyleSheet("color: #B07962; font-size: 13px; font-weight: 700;")
         preview_card_layout.addWidget(preview_title)
+        preview_hint = QLabel("按实际播放速度循环", self.preview_card)
+        preview_hint.setObjectName("mutedLabel")
+        preview_card_layout.addWidget(preview_hint)
         self.preview = AnimationPreviewWidget(self.preview_card)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.preview.preview_label.setMinimumSize(220, 300)
@@ -210,13 +221,44 @@ class AnimationTimingEditor(QWidget):
         self.preview_play_button = self.preview.preview_play_button
         self.preview_timer = self.preview.preview_timer
         self.preview.frame_changed.connect(self._on_preview_frame_changed)
+        self.preview.layout().removeWidget(self.preview_play_button)
+        preview_controls = QHBoxLayout()
+        preview_controls.setSpacing(8)
+        preview_controls.addWidget(self.preview_play_button, 1)
+        self.preview_replay_button = QPushButton("重播", self.preview_card)
+        self.preview_replay_button.setObjectName("previewReplayButton")
+        self.preview_replay_button.clicked.connect(self.preview.replay)
+        preview_controls.addWidget(self.preview_replay_button, 1)
+        preview_card_layout.addLayout(preview_controls)
 
-        root.addWidget(self.action_card, 4)
-        root.addWidget(self.editor_card, 5)
-        root.addWidget(self.preview_card, 3)
+        preview_meta = QGridLayout()
+        preview_meta.setHorizontalSpacing(12)
+        preview_meta.setVerticalSpacing(6)
+        self.preview_action_value = QLabel("—", self.preview_card)
+        self.preview_frame_count_value = QLabel("—", self.preview_card)
+        self.preview_loop_value = QLabel("—", self.preview_card)
+        for row, (label, value) in enumerate(
+            (
+                ("动作", self.preview_action_value),
+                ("帧数", self.preview_frame_count_value),
+                ("循环", self.preview_loop_value),
+            )
+        ):
+            key = QLabel(label, self.preview_card)
+            key.setObjectName("mutedLabel")
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            preview_meta.addWidget(key, row, 0)
+            preview_meta.addWidget(value, row, 1)
+        preview_card_layout.addLayout(preview_meta)
+
+        root.addWidget(self.action_card)
+        root.addWidget(self.editor_card)
+        root.addWidget(self.preview_card)
+        root.setStretch(0, 0)
+        root.setStretch(1, 1)
+        root.setStretch(2, 0)
 
         self._populate_action_table()
-        self._sync_responsive_preview()
         if self.action_table.rowCount():
             self.action_table.selectRow(0)
 
@@ -294,6 +336,7 @@ class AnimationTimingEditor(QWidget):
         self._initial_modes = dict(self._modes)
         self._changed_actions.clear()
         self._preview_pixmaps.clear()
+        self._action_icons.clear()
         self._populate_action_table()
         if current_action in package.animations:
             self._current_action = current_action
@@ -311,23 +354,14 @@ class AnimationTimingEditor(QWidget):
 
         self.preview.set_playing(False)
 
-    def resizeEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature.
-        super().resizeEvent(event)  # type: ignore[arg-type]
-        self._sync_responsive_preview()
-
-    def _sync_responsive_preview(self) -> None:
-        """窄窗口隐藏预览，优先保证动作列表和编辑控件完整可用。"""
-
-        self.preview_card.setVisible(self.width() >= 1180)
-
     def _populate_action_table(self) -> None:
         selected_row = self.action_table.currentRow()
         with QSignalBlocker(self.action_table):
             self.action_table.setRowCount(len(self._package.animations))
             for row, (action, definition) in enumerate(self._package.animations.items()):
                 values = (
-                    action,
-                    f"{_TRIGGER_TEXT.get(action, '自定义动作')} · {len(definition.frames)} 帧 · "
+                    "",
+                    f"{action}\n{_TRIGGER_TEXT.get(action, '自定义动作')} · {len(definition.frames)} 帧 · "
                     f"{sum(self._timelines.get(action, ()))} ms",
                     str(len(definition.frames)),
                     _mode_label(self._modes.get(action, "total")),
@@ -337,6 +371,8 @@ class AnimationTimingEditor(QWidget):
                     item = QTableWidgetItem(value)
                     if column == 0:
                         item.setData(Qt.ItemDataRole.UserRole, action)
+                        item.setIcon(self._action_icon(action))
+                        item.setSizeHint(QSize(0, 58))
                     self.action_table.setItem(row, column, item)
             if 0 <= selected_row < self.action_table.rowCount():
                 self.action_table.selectRow(selected_row)
@@ -358,6 +394,9 @@ class AnimationTimingEditor(QWidget):
             f"共 {len(definition.frames)} 帧 · "
             f"{'只调整整体播放速度' if self._modes[action] == 'total' else '每帧单独设置播放时长'}"
         )
+        self.preview_action_value.setText(action)
+        self.preview_frame_count_value.setText(str(len(definition.frames)))
+        self.preview_loop_value.setText("是" if definition.loop else "否")
         self._loading = True
         try:
             with (
@@ -505,6 +544,21 @@ class AnimationTimingEditor(QWidget):
             self._preview_pixmaps[action] = cached
         return cached
 
+    def _action_icon(self, action: str) -> QIcon:
+        cached = self._action_icons.get(action)
+        if cached is not None:
+            return cached
+        frames = self._package.animations[action].frames
+        pixmap = QPixmap(str(frames[0])) if frames else QPixmap()
+        thumbnail = pixmap.scaled(
+            self.action_table.iconSize(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        cached = QIcon(thumbnail) if not thumbnail.isNull() else QIcon()
+        self._action_icons[action] = cached
+        return cached
+
     def _restart_preview(self) -> None:
         if self._current_action is None or self._current_action not in self._package.animations:
             self.preview.clear()
@@ -529,13 +583,7 @@ class AnimationTimingEditor(QWidget):
         self._set_preview_frame(self.preview.preview_frame_index)
 
     def _set_preview_frame(self, index: int) -> None:
-        pixmaps = self.preview._pixmaps
-        if not pixmaps:
-            return
-        bounded = max(0, min(int(index), len(pixmaps) - 1))
-        self.preview.preview_frame_index = bounded
-        self.preview._render()
-        self._set_preview_highlight()
+        self.preview.set_current_frame(index, pause=True)
 
     def _set_preview_highlight(self) -> None:
         """只更新前后两行的视觉高亮，不改变列表选择或滚动位置。"""
@@ -572,6 +620,7 @@ class AnimationTimingEditor(QWidget):
 
         self.stop_preview()
         self._preview_pixmaps.clear()
+        self._action_icons.clear()
         self.preview.clear()
         self._highlighted_frame_index = None
 

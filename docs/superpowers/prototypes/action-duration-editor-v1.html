@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PetNest · 编辑动作</title>
+  <style>
+    :root {
+      --bg:#f4eee7; --surface:#fffdf9; --surface-alt:#fbf7f2;
+      --accent:#d98663; --accent-dark:#b96445; --accent-soft:#fff0e8;
+      --text:#4b4641; --muted:#8f8680; --border:#e8ded5;
+      --green:#6d9a7a; --shadow:0 18px 55px rgba(97,69,50,.13);
+    }
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;padding:28px;background:radial-gradient(circle at 15% 12%,#fff8f1 0,transparent 30%),var(--bg);color:var(--text);font-family:"Microsoft YaHei UI","PingFang SC",sans-serif}
+    button,input,select{font:inherit}.note{max-width:1220px;margin:0 auto 14px;color:var(--muted);font-size:13px}
+    .app{width:min(1220px,calc(100vw - 40px));min-height:740px;margin:auto;background:var(--surface);border:1px solid var(--border);border-radius:22px;box-shadow:var(--shadow);overflow:hidden;display:grid;grid-template-columns:180px 1fr}
+    .sidebar{background:#faf4ee;border-right:1px solid var(--border);padding:24px 14px}.brand{font-weight:800;font-size:19px;padding:0 12px 22px;color:#a85d3e}.nav{padding:12px 14px;border-radius:12px;color:var(--muted);margin-bottom:7px;font-size:14px}.nav.active{background:var(--accent-soft);color:#a85d3e;font-weight:700}
+    .main{min-width:0;display:flex;flex-direction:column}.header{padding:21px 26px 17px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}.header h1{margin:0;font-size:23px}.header p{margin:5px 0 0;color:var(--muted);font-size:13px}.head-actions{display:flex;align-items:center;gap:10px}.pet-select{border:1px solid var(--border);background:white;border-radius:10px;padding:9px 34px 9px 12px;color:var(--text)}.close{color:var(--muted);font-size:22px;margin-left:8px}
+    .workspace{padding:19px 22px;display:grid;grid-template-columns:205px minmax(360px,1fr) 260px;gap:15px;flex:1;min-height:0}.card{border:1px solid var(--border);background:var(--surface-alt);border-radius:15px;padding:16px;min-width:0}.card h2{font-size:15px;margin:0}.hint{color:var(--muted);font-size:12px;margin-top:4px}.list-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}.count{background:white;border:1px solid var(--border);border-radius:8px;padding:4px 7px;color:var(--muted);font-size:11px}
+    .action{display:flex;align-items:center;gap:10px;padding:10px;border-radius:11px;margin-bottom:6px;cursor:pointer}.action:hover{background:white}.action.active{background:var(--accent-soft);color:#a85d3e}.thumb{width:38px;height:38px;border-radius:9px;background:#efe2d7;display:grid;place-items:center;font-size:21px}.action b{display:block;font-size:13px}.action small{color:var(--muted);font-size:11px}.active small{color:#c17b5e}
+    .section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:13px}.status{color:var(--green);font-weight:700;font-size:12px}.mode-tabs{display:flex;background:#f1e9e2;border-radius:10px;padding:3px;margin-bottom:15px}.mode{flex:1;text-align:center;padding:8px;border-radius:8px;color:var(--muted);font-size:12px;font-weight:700}.mode.active{background:white;color:#a85d3e;box-shadow:0 2px 8px rgba(100,70,50,.08)}
+    .duration{display:grid;grid-template-columns:1fr 135px;gap:12px;align-items:end;padding:14px;border:1px solid var(--border);border-radius:12px;background:white}.duration label{font-size:12px;color:var(--muted)}.duration strong{display:block;margin-top:5px}.input{display:flex;align-items:center;border:1px solid var(--border);border-radius:9px;overflow:hidden}.input input{border:0;width:90px;padding:9px;text-align:right;background:white;color:var(--text)}.input span{padding:9px;color:var(--muted);font-size:12px;background:#faf7f3}
+    .timeline-title{display:flex;justify-content:space-between;align-items:center;margin:17px 0 9px;font-size:12px;color:var(--muted)}.timeline{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}.frame{aspect-ratio:1;border:1px solid var(--border);border-radius:9px;background:white;display:grid;place-items:center;position:relative;font-size:23px}.frame:first-child{border:2px solid var(--accent)}.frame i{position:absolute;left:5px;top:4px;font-style:normal;font-size:9px;color:var(--muted)}.frame-time{font-size:10px;text-align:center;color:var(--muted);margin-top:4px}
+    .tip{margin-top:15px;padding:10px 12px;border-radius:10px;background:#fff8ef;color:#9a765e;font-size:12px;line-height:1.6}
+    .preview{height:245px;margin:14px 0 12px;border:1px solid var(--border);border-radius:13px;background-color:#fff;background-image:linear-gradient(45deg,#eee 25%,transparent 25%),linear-gradient(-45deg,#eee 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#eee 75%),linear-gradient(-45deg,transparent 75%,#eee 75%);background-size:18px 18px;background-position:0 0,0 9px,9px -9px,-9px 0;display:grid;place-items:center;font-size:86px}.preview-controls{display:flex;gap:8px}.btn{border:1px solid var(--border);background:white;color:var(--text);border-radius:10px;padding:9px 15px;cursor:pointer;font-weight:700}.btn.icon{flex:1}.btn.primary{border-color:var(--accent);background:var(--accent);color:white}.btn.primary:hover{background:var(--accent-dark)}
+    .meta{margin-top:15px;border-top:1px solid var(--border);padding-top:13px}.meta-row{display:flex;justify-content:space-between;padding:5px 0;font-size:11px}.meta-row span{color:var(--muted)}
+    .footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface)}.footer-note{font-size:12px;color:var(--muted)}.footer-note b{color:var(--green)}.footer-actions{display:flex;gap:9px}
+    .approval{width:min(1220px,calc(100vw - 40px));margin:16px auto 0;padding:14px 18px;border:1px solid var(--border);border-radius:14px;background:white;cursor:pointer;display:flex;align-items:center;justify-content:space-between}.approval:hover{border-color:var(--accent)}.approval b{color:#a85d3e}.selected{border-color:var(--accent)!important;background:#fff8f3!important}
+    @media(max-width:980px){.workspace{grid-template-columns:190px 1fr}.preview-card{display:none}}@media(max-width:720px){body{padding:10px}.app{grid-template-columns:1fr}.sidebar{display:none}.workspace{grid-template-columns:1fr}.action-list{display:none}}
+  </style>
+</head>
+<body>
+  <div class="note">补充原型：确认“编辑动作”作为统一中心中的一个页面，不再打开独立弹窗。</div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">PetNest</div>
+      <div class="nav">导入宠物</div>
+      <div class="nav">导入动作</div>
+      <div class="nav active">编辑动作</div>
+      <div class="nav">导出动作</div>
+    </aside>
+    <main class="main">
+      <header class="header">
+        <div><h1>编辑动作</h1><p>预览并调整动作播放速度，保存后立即应用</p></div>
+        <div class="head-actions"><select class="pet-select"><option>当前宠物 · 平安</option><option>橘猫</option></select><span class="close">×</span></div>
+      </header>
+      <section class="workspace">
+        <div class="card action-list">
+          <div class="list-head"><div><h2>选择动作</h2><div class="hint">当前宠物的全部动作</div></div><span class="count">12 个</span></div>
+          <div class="action active"><span class="thumb">🐈</span><div><b>idle</b><small>6 帧 · 1.20 秒</small></div></div>
+          <div class="action"><span class="thumb">🐾</span><div><b>walk</b><small>8 帧 · 0.80 秒</small></div></div>
+          <div class="action"><span class="thumb">🖐️</span><div><b>drag</b><small>8 帧 · 0.96 秒</small></div></div>
+          <div class="action"><span class="thumb">✨</span><div><b>click</b><small>5 帧 · 0.75 秒</small></div></div>
+          <div class="action"><span class="thumb">💻</span><div><b>working</b><small>8 帧 · 1.44 秒</small></div></div>
+          <div class="action"><span class="thumb">🎉</span><div><b>work_finish</b><small>18 帧 · 2.70 秒</small></div></div>
+        </div>
+        <div class="card editor-card">
+          <div class="section-title"><div><h2>idle · 动作时长</h2><div class="hint">修改只影响当前动作</div></div><span class="status">预览中</span></div>
+          <div class="mode-tabs"><div class="mode active">统一设置总时长</div><div class="mode">逐帧设置时长</div></div>
+          <div class="duration"><div><label>动作总时长</label><strong>6 帧将均匀分配播放时间</strong></div><div class="input"><input value="1.20"><span>秒</span></div></div>
+          <div class="timeline-title"><span>帧时间线</span><span>每帧约 200 ms</span></div>
+          <div class="timeline">
+            <div><div class="frame"><i>1</i>🐈</div><div class="frame-time">200 ms</div></div><div><div class="frame"><i>2</i>🐈</div><div class="frame-time">200 ms</div></div><div><div class="frame"><i>3</i>🐈</div><div class="frame-time">200 ms</div></div><div><div class="frame"><i>4</i>🐈</div><div class="frame-time">200 ms</div></div><div><div class="frame"><i>5</i>🐈</div><div class="frame-time">200 ms</div></div><div><div class="frame"><i>6</i>🐈</div><div class="frame-time">200 ms</div></div>
+          </div>
+          <div class="tip">切换到“逐帧设置时长”后，可直接修改每一帧的停留时间；返回统一设置时仍会保留本次编辑，直到保存或放弃。</div>
+        </div>
+        <div class="card preview-card">
+          <h2>实时预览</h2><div class="hint">按实际播放速度循环</div>
+          <div class="preview">🐈</div>
+          <div class="preview-controls"><button class="btn icon">▶ 播放</button><button class="btn icon">↺ 重播</button></div>
+          <div class="meta"><div class="meta-row"><span>动作</span><b>idle</b></div><div class="meta-row"><span>帧数</span><b>6</b></div><div class="meta-row"><span>循环</span><b>是</b></div></div>
+        </div>
+      </section>
+      <footer class="footer">
+        <div class="footer-note"><b>●</b> 有未保存的修改 · 切换宠物前会提示</div>
+        <div class="footer-actions"><button class="btn">恢复当前动作</button><button class="btn primary">保存并重载</button></div>
+      </footer>
+    </main>
+  </div>
+  <div class="approval" data-choice="approve-action-editor" onclick="toggleSelect(this)">
+    <span><b>采用这个编辑页布局</b><br><small style="color:var(--muted)">四项统一导航 · 三栏编辑 · 单一底部操作区</small></span><span>点击选择</span>
+  </div>
+  <script>
+    function toggleSelect(el){el.classList.toggle('selected');el.querySelector('span:last-child').textContent=el.classList.contains('selected')?'已选择':'点击选择'}
+  </script>
+</body>
+</html>
+

@@ -8,9 +8,11 @@ from dataclasses import dataclass, replace
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QStackedWidget,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -54,14 +56,17 @@ class AnimationEditorPage(ExchangePage):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(12)
 
-        selector_row = QVBoxLayout()
-        selector_row.setSpacing(4)
+        selector_row = QHBoxLayout()
+        selector_row.setSpacing(16)
+        selector_copy = QVBoxLayout()
+        selector_copy.setSpacing(4)
         title = QLabel("编辑动作时长", self)
         title.setObjectName("pageTitle")
-        selector_row.addWidget(title)
+        selector_copy.addWidget(title)
         subtitle = QLabel("调整每个动作的播放节奏，保存后立即应用到当前宠物。", self)
         subtitle.setObjectName("mutedLabel")
-        selector_row.addWidget(subtitle)
+        selector_copy.addWidget(subtitle)
+        selector_row.addLayout(selector_copy, 1)
         pet_row = QVBoxLayout()
         pet_row.setSpacing(4)
         pet_label = QLabel("当前宠物", self)
@@ -69,6 +74,8 @@ class AnimationEditorPage(ExchangePage):
         pet_row.addWidget(pet_label)
         self.pet_combo = QComboBox(self)
         self.pet_combo.setObjectName("animationEditorPetCombo")
+        self.pet_combo.setMinimumWidth(180)
+        self.pet_combo.setMaximumWidth(260)
         self.pet_combo.currentIndexChanged.connect(self._on_pet_combo_changed)
         pet_row.addWidget(self.pet_combo)
         selector_row.addLayout(pet_row)
@@ -76,6 +83,7 @@ class AnimationEditorPage(ExchangePage):
 
         self.editor_stack = QStackedWidget(self)
         self.editor_stack.setObjectName("animationEditorStack")
+        self.editor_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._empty_label = QLabel("暂无可编辑的宠物动作", self.editor_stack)
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setObjectName("mutedLabel")

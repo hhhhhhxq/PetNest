@@ -22,6 +22,21 @@ def test_exchange_dialog_has_four_pages_and_single_shell_footer(qtbot: object, t
     assert len(dialog.window_shell.findChildren(type(dialog.primary_button), "primaryButton")) == 1
 
 
+def test_editor_page_keeps_preview_visible_at_standard_dialog_size(qtbot: object, tmp_path: Path) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("编辑动作")
+    dialog.show()
+    qtbot.wait(10)
+
+    editor = dialog.animation_editor_page.editor
+    assert dialog.width() >= 1220
+    assert editor is not None
+    assert editor.preview_card.isVisible()
+    assert editor.preview_card.width() >= 260
+
+
 def test_exchange_dialog_can_route_to_each_page(qtbot: object, tmp_path: Path) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")

@@ -58,7 +58,7 @@ def test_action_list_selection_uses_petnest_accent_instead_of_system_blue(qtbot:
     assert palette.color(QPalette.ColorGroup.Inactive, QPalette.ColorRole.Highlight).name().lower() == COLORS["accent_soft"].lower()
 
 
-def test_action_list_description_column_expands_with_the_dialog(qtbot: object, tmp_path: Path) -> None:
+def test_action_list_stays_compact_while_description_uses_remaining_column(qtbot: object, tmp_path: Path) -> None:
     dialog = AnimationEditorDialog(_package(tmp_path))
     qtbot.addWidget(dialog)
     dialog.show()
@@ -66,11 +66,13 @@ def test_action_list_description_column_expands_with_the_dialog(qtbot: object, t
     __import__("PySide6").QtWidgets.QApplication.processEvents()
 
     header = dialog.action_table.horizontalHeader()
-    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Fixed
+    assert dialog.action_table.columnWidth(0) >= dialog.action_table.iconSize().width() + 12
     assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
     assert dialog.action_table.wordWrap()
     assert dialog.action_table.verticalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
-    assert dialog.action_table.columnWidth(1) > 180
+    assert 205 <= dialog.action_card.width() <= 250
+    assert dialog.action_table.columnWidth(1) > 100
 
 
 def test_fullscreen_work_finish_actions_use_specific_editor_labels(qtbot: object, tmp_path: Path) -> None:
@@ -117,7 +119,8 @@ def test_editor_minimum_size_keeps_all_columns_and_frame_list_inside_their_cards
     __import__("PySide6").QtWidgets.QApplication.processEvents()
 
     assert dialog.minimumWidth() == 1080
-    assert dialog.preview_card.isHidden()
+    assert dialog.preview_card.isVisible()
+    assert dialog.preview_card.width() >= 260
     assert dialog.action_card.geometry().right() < dialog.editor_card.geometry().left()
 
     dialog.per_frame_radio.click()

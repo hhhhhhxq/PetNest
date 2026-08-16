@@ -43,3 +43,49 @@ def test_timing_editor_syncs_frame_highlight_on_real_preview_tick(qtbot: object,
     qtbot.waitUntil(lambda: editor.preview_frame_index == 1, timeout=1000)
 
     assert editor._highlighted_frame_index == editor.preview_frame_index == 1
+
+
+def test_timing_editor_uses_prototype_three_column_minimums(qtbot: object, tmp_path: Path) -> None:
+    editor = AnimationTimingEditor(_package(tmp_path))
+    qtbot.addWidget(editor)
+    editor.resize(1000, 620)
+    editor.show()
+    qtbot.wait(10)
+
+    assert editor.action_card.minimumWidth() == 205
+    assert editor.editor_card.minimumWidth() == 360
+    assert editor.preview_card.minimumWidth() == 260
+    assert editor.preview_card.isVisible()
+
+
+def test_action_selection_syncs_thumbnail_and_preview_metadata(qtbot: object, tmp_path: Path) -> None:
+    editor = AnimationTimingEditor(_package(tmp_path))
+    qtbot.addWidget(editor)
+    editor.action_table.selectRow(0)
+
+    action_item = editor.action_table.item(0, 0)
+    assert action_item is not None
+    assert not action_item.icon().isNull()
+    assert editor.preview_action_value.text() == "idle"
+    assert editor.preview_frame_count_value.text() == "2"
+    assert editor.preview_loop_value.text() == "是"
+    assert editor.preview_replay_button.text() == "重播"
+
+
+def test_action_thumbnails_do_not_decode_every_animation_upfront(qtbot: object, tmp_path: Path) -> None:
+    editor = AnimationTimingEditor(_package(tmp_path))
+    qtbot.addWidget(editor)
+
+    assert set(editor._preview_pixmaps) == {"idle"}
+
+
+def test_action_thumbnail_column_is_wide_enough_for_complete_icon(qtbot: object, tmp_path: Path) -> None:
+    editor = AnimationTimingEditor(_package(tmp_path))
+    qtbot.addWidget(editor)
+    editor.show()
+    qtbot.wait(10)
+
+    assert editor.action_table.columnWidth(0) >= editor.action_table.iconSize().width() + 12
+    assert editor.action_table.horizontalScrollBar().maximum() == 0
+    assert editor.action_table.item(0, 0).text() == ""
+    assert editor.action_table.item(0, 1).text().startswith("idle\n")

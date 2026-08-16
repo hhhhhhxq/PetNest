@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox, QSizePolicy
 
 from tests.test_pet_window import _package
 from petnest.ui.animation_editor_page import AnimationEditorPage, AnimationSaveResult
@@ -208,6 +208,13 @@ def test_success_without_reloaded_package_preserves_timings_across_switch_and_re
     page.set_current_pet("dog")
     page.set_current_pet("cat")
     assert page.editor.total_duration_spin.value() == 100
-
     page.refresh_packages((page.current_package(), dog), "cat")
     assert page.editor.total_duration_spin.value() == 100
+
+
+def test_editor_page_places_pet_selector_in_compact_header(qtbot: object, tmp_path: Path) -> None:
+    page = _page(tmp_path)
+    qtbot.addWidget(page)
+
+    assert page.pet_combo.maximumWidth() == 260
+    assert page.editor_stack.sizePolicy().verticalPolicy() == QSizePolicy.Policy.Expanding
