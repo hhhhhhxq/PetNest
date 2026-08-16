@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PureWindowsPath
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -43,6 +43,8 @@ class CheckerboardLabel(QLabel):
 
 class AnimationPreviewWidget(QWidget):
     """播放 PNG 帧并按逐帧时长或 FPS 驱动计时器。"""
+
+    frame_changed = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -143,6 +145,7 @@ class AnimationPreviewWidget(QWidget):
             return
         self.preview_frame_index = (self.preview_frame_index + 1) % len(self._pixmaps)
         self._render()
+        self.frame_changed.emit(self.preview_frame_index)
         self._start_timer()
 
     def _render(self) -> None:

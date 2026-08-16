@@ -31,6 +31,22 @@ def test_preview_uses_frame_durations_when_present(qtbot: object, tmp_path: Path
     assert widget.next_delay_ms() == 120
 
 
+def test_preview_emits_frame_changed_from_real_timer_tick(qtbot: object, tmp_path: Path) -> None:
+    first = tmp_path / "001.png"
+    second = tmp_path / "002.png"
+    write_png(first, (255, 0, 0, 255))
+    write_png(second, (0, 255, 0, 255))
+    widget = AnimationPreviewWidget()
+    qtbot.addWidget(widget)
+    changed: list[int] = []
+    widget.frame_changed.connect(changed.append)
+
+    widget.set_frames((first, second), frame_durations_ms=(25, 25))
+    qtbot.waitUntil(lambda: bool(changed), timeout=1000)
+
+    assert changed[0] == 1
+
+
 def test_preview_can_load_definition_relative_to_root_and_pause(qtbot: object, tmp_path: Path) -> None:
     root = tmp_path / "pet"
     first = root / "animations" / "idle" / "001.png"
