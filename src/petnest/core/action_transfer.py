@@ -8,6 +8,10 @@ from enum import StrEnum
 import json
 from pathlib import Path, PureWindowsPath
 
+from PIL import Image, UnidentifiedImageError
+
+from .package_validator import natural_sort_key
+
 
 class SourceKind(StrEnum):
     PET_PACKAGE = "pet-package"
@@ -98,6 +102,82 @@ def extract_pet_actions(pet_root: Path) -> dict[str, TransferAction]:
     return actions
 
 
+def load_legacy_work_finish_pack(root: Path):
+    """把旧版 `manifest.json` 下班包适配为两个标准全屏动作。"""
+
+    from .action_pack import ActionPack, SourcePetInfo
+
+    package_root = Path(root).expanduser().resolve()
+    manifest = _read_json_object(package_root / "manifest.json", "manifest.json")
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ActionTransferError("manifest.name 必须是非空字符串")
+    canvas_value = manifest.get("canvas")
+    if not isinstance(canvas_value, Mapping):
+        raise ActionTransferError("manifest.canvas 必须是对象")
+    width, height = canvas_value.get("width"), canvas_value.get("height")
+    if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in (width, height)):
+        raise ActionTransferError("manifest.canvas 尺寸必须是正整数")
+    phases: dict[str, tuple[Path, float, tuple[Path, ...], list[int] | None]] = {}
+    for label in ("walk", "lie_down"):
+        value = manifest.get(label)
+        if not isinstance(value, Mapping):
+            raise ActionTransferError(f"manifest.{label} 必须是对象")
+        phase_path = _safe_directory(package_root, value.get("path"), label)
+        fps = value.get("fps")
+        if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+            raise ActionTransferError(f"manifest.{label}.fps 必须大于 0")
+        frames = tuple(sorted((item for item in phase_path.iterdir() if item.is_file() and item.suffix.casefold() == ".png"), key=natural_sort_key))
+        if not frames:
+            raise ActionTransferError(f"{label} 没有 PNG 帧")
+        for frame in frames:
+            try:
+                with Image.open(frame) as image:
+                    image.load()
+                    if "A" not in image.getbands() or image.size != (width, height):
+                        raise ActionTransferError(f"PNG 帧 {frame.name} 必须是 {width}×{height} RGBA")
+            except (OSError, UnidentifiedImageError) as error:
+                raise ActionTransferError(f"PNG 帧 {frame.name} 无法读取：{error}") from error
+        durations = value.get("frame_durations_ms")
+        parsed_durations: list[int] | None = None
+        if durations is not None:
+            if not isinstance(durations, list) or len(durations) != len(frames) or any(
+                isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in durations
+            ):
+                raise ActionTransferError(f"{label} 的逐帧时长必须与 PNG 帧一一对应")
+            parsed_durations = list(durations)
+        phases[label] = (phase_path, float(fps), frames, parsed_durations)
+    actions: dict[str, TransferAction] = {}
+    for label, action_name, loop in (
+        ("walk", "work_finish_walk", True),
+        ("lie_down", "work_finish_lie_down", False),
+    ):
+        phase_path, fps, frames, durations = phases[label]
+        definition: dict[str, object] = {
+            "path": phase_path.relative_to(package_root).as_posix(),
+            "scope": "fullscreen",
+            "canvas": {"width": width, "height": height},
+            "fps": fps,
+            "loop": loop,
+            "priority": 20,
+        }
+        if durations is not None:
+            definition["frame_durations_ms"] = durations
+        actions[action_name] = TransferAction(
+            name=action_name,
+            definition=definition,
+            asset_paths=frames,
+            scope="fullscreen",
+            source_root=package_root,
+        )
+    return ActionPack(
+        name=name.strip(),
+        source_pet=SourcePetInfo("legacy-work-finish", name.strip(), "legacy"),
+        actions=actions,
+        root=package_root,
+    )
+
+
 def _detect_directory_kind(root: Path) -> SourceKind:
     markers = [
         (root / "pet.json", SourceKind.PET_PACKAGE),
@@ -145,4 +225,5 @@ __all__ = [
     "UnknownExchangeSourceError",
     "detect_source_kind",
     "extract_pet_actions",
+    "load_legacy_work_finish_pack",
 ]

@@ -13,6 +13,7 @@ from petnest.core.action_transfer import (
     SourceKind,
     detect_source_kind,
     extract_pet_actions,
+    load_legacy_work_finish_pack,
 )
 
 
@@ -105,3 +106,29 @@ def test_extract_actions_rejects_path_escape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="路径"):
         extract_pet_actions(root)
+
+
+def test_legacy_work_finish_pack_adapts_to_transfer_actions(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "平安下班",
+                "canvas": {"width": 8, "height": 8},
+                "walk": {"path": "walk", "fps": 10},
+                "lie_down": {"path": "lie-down", "fps": 8, "frame_durations_ms": [100, 200]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_png(root / "walk" / "001.png")
+    write_png(root / "lie-down" / "001.png")
+    write_png(root / "lie-down" / "002.png")
+
+    pack = load_legacy_work_finish_pack(root)
+
+    assert set(pack.actions) == {"work_finish_walk", "work_finish_lie_down"}
+    assert pack.actions["work_finish_lie_down"].definition["scope"] == "fullscreen"
+    assert pack.actions["work_finish_lie_down"].definition["frame_durations_ms"] == [100, 200]
+    pack.close()

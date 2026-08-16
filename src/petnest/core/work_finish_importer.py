@@ -17,6 +17,11 @@ from PIL import Image, UnidentifiedImageError
 
 from petnest.core.package_validator import PackageValidator, natural_sort_key
 
+from .action_installer import ConflictDecision, ActionInstallError, install_actions
+from .action_pack import ActionPack, ActionPackError
+from .action_transfer import ActionTransferError, load_legacy_work_finish_pack
+from .exchange_source import ExchangeSource, UnsafeExchangeSourceError
+
 
 MAX_FILES = 256
 MAX_UNPACKED_BYTES = 128 * 1024 * 1024
@@ -64,33 +69,53 @@ class WorkFinishImporter:
     """检查和安装标准下班动画包，不依赖源文件继续存在。"""
 
     def inspect(self, source: Path) -> WorkFinishBundleSummary:
-        with tempfile.TemporaryDirectory(prefix="petnest-work-finish-inspect-") as temporary:
-            root = self._materialize(Path(source), Path(temporary))
-            return self._parse_bundle(root).summary()
+        try:
+            with self.open_action_pack(source) as pack:
+                return _summary_from_action_pack(pack)
+        except WorkFinishImportError:
+            raise
+        except (ActionPackError, ActionTransferError, UnsafeExchangeSourceError) as error:
+            raise WorkFinishImportError(str(error)) from error
 
     def install(self, source: Path, pet_root: Path) -> WorkFinishImportResult:
         pet = Path(pet_root).expanduser().resolve()
         if not (pet / "pet.json").is_file():
             raise WorkFinishImportError("目标宠物缺少 pet.json")
-        with tempfile.TemporaryDirectory(prefix=f".{pet.name}-work-finish-", dir=pet.parent) as temporary:
-            temporary_root = Path(temporary)
-            source_root = self._materialize(Path(source), temporary_root / "source")
-            bundle = self._parse_bundle(source_root)
-            candidate = temporary_root / "candidate"
-            shutil.copytree(pet, candidate)
-            self._install_in_candidate(bundle, candidate)
-            validation = PackageValidator().validate(candidate)
-            if not validation.is_valid:
-                raise WorkFinishImportError("候选宠物包校验失败：" + "；".join(validation.errors))
-            self._apply_candidate(candidate, pet)
-        summary = bundle.summary()
-        return WorkFinishImportResult(
-            summary.name,
-            summary.canvas,
-            summary.walk_frames,
-            summary.lie_down_frames,
-            pet,
-        )
+        try:
+            with self.open_action_pack(source) as pack:
+                summary = _summary_from_action_pack(pack)
+                install_actions(
+                    pet,
+                    pack,
+                    decisions={
+                        "work_finish_walk": ConflictDecision.replace(),
+                        "work_finish_lie_down": ConflictDecision.replace(),
+                    },
+                )
+                return WorkFinishImportResult(
+                    summary.name,
+                    summary.canvas,
+                    summary.walk_frames,
+                    summary.lie_down_frames,
+                    pet,
+                )
+        except WorkFinishImportError:
+            raise
+        except (ActionPackError, ActionTransferError, ActionInstallError, UnsafeExchangeSourceError) as error:
+            raise WorkFinishImportError(str(error)) from error
+
+    def open_action_pack(self, source: Path) -> ActionPack:
+        """打开旧版来源并返回通用动作包；调用方负责关闭返回对象。"""
+
+        try:
+            materialized = ExchangeSource.open(Path(source))
+            pack = load_legacy_work_finish_pack(materialized.root)
+            pack._source = materialized
+            return pack
+        except Exception:
+            if "materialized" in locals():
+                materialized.__exit__(None, None, None)
+            raise
 
     def _materialize(self, source: Path, destination: Path) -> Path:
         destination.mkdir(parents=True, exist_ok=True)
@@ -248,6 +273,25 @@ class WorkFinishImporter:
         for backup in backups.values():
             if backup.exists():
                 shutil.rmtree(backup)
+
+
+def _summary_from_action_pack(pack: ActionPack) -> WorkFinishBundleSummary:
+    walk = pack.actions.get("work_finish_walk")
+    lie_down = pack.actions.get("work_finish_lie_down")
+    if walk is None or lie_down is None:
+        raise WorkFinishImportError("下班动画包必须包含进入和躺下动作")
+    canvas = walk.definition.get("canvas")
+    if not isinstance(canvas, Mapping):
+        raise WorkFinishImportError("下班动画动作缺少 canvas")
+    width, height = canvas.get("width"), canvas.get("height")
+    if not isinstance(width, int) or not isinstance(height, int):
+        raise WorkFinishImportError("下班动画 canvas 尺寸无效")
+    return WorkFinishBundleSummary(
+        pack.name,
+        (width, height),
+        len(walk.asset_paths),
+        len(lie_down.asset_paths),
+    )
 
 
 def _safe_zip_path(item: ZipInfo) -> PurePosixPath:
