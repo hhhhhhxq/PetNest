@@ -59,6 +59,14 @@ class _InstallPlan:
 
 
 _SAFE_NAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]+$")
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 
 
 def install_actions(
@@ -70,7 +78,10 @@ def install_actions(
 ) -> InstallResult:
     """按冲突决策事务性安装动作，失败时保留目标宠物原样。"""
 
-    target = Path(target_pet).expanduser().resolve()
+    raw_target = Path(target_pet).expanduser()
+    if raw_target.is_symlink():
+        raise ActionInstallError("目标宠物不能是符号链接")
+    target = raw_target.resolve()
     config = _read_config(target / "pet.json")
     animations = config.get("animations")
     if not isinstance(animations, Mapping):
@@ -88,7 +99,13 @@ def install_actions(
             for plan in plans:
                 _install_one(candidate, candidate_animations, plan, renamed)
             if import_bindings:
-                _merge_bindings(candidate_config, pack, renamed, candidate_animations)
+                _merge_bindings(
+                    candidate_config,
+                    pack,
+                    renamed,
+                    candidate_animations,
+                    {plan.source_name for plan in plans},
+                )
             (candidate / "pet.json").write_text(
                 json.dumps(candidate_config, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
@@ -114,30 +131,41 @@ def _build_plans(
     plans: list[_InstallPlan] = []
     skipped: list[str] = []
     renamed: dict[str, str] = {}
-    occupied = {str(name) for name in existing}
+    occupied: dict[str, str] = {}
+    for name in existing:
+        if not isinstance(name, str):
+            raise ActionInstallError("目标宠物动作名称必须是字符串")
+        safe_existing = _safe_name(name)
+        key = _action_key(safe_existing)
+        if key in occupied:
+            raise ActionInstallError(f"目标宠物包含大小写不一致的重复动作：{name}")
+        occupied[key] = safe_existing
     planned_targets: set[str] = set()
     for source_name, action in pack.actions.items():
         if not isinstance(source_name, str):
             raise ActionInstallError("分享包动作名称必须是字符串")
-        exists = source_name in occupied
-        decision = decisions.get(source_name, ConflictDecision.replace() if exists else ConflictDecision.replace())
+        source_name = _safe_name(source_name)
+        source_key = _action_key(source_name)
+        existing_name = occupied.get(source_key)
+        decision = decisions.get(source_name, ConflictDecision.replace())
         if not isinstance(decision, ConflictDecision):
             raise ActionInstallError(f"动作 {source_name} 的冲突决定无效")
         if decision.kind is ConflictKind.SKIP:
             skipped.append(source_name)
             continue
-        target_name = source_name
-        replace_existing = exists and decision.kind is ConflictKind.REPLACE
+        target_name = existing_name if existing_name is not None else source_name
+        replace_existing = existing_name is not None and decision.kind is ConflictKind.REPLACE
         if decision.kind is ConflictKind.RENAME:
             if not decision.name:
                 raise ActionInstallError(f"动作 {source_name} 的新名称不能为空")
             target_name = _safe_name(decision.name)
             replace_existing = False
-        if target_name in planned_targets:
+        target_key = _action_key(target_name)
+        if target_key in planned_targets:
             raise ActionInstallError(f"多个动作使用了同一个目标名称：{target_name}")
-        if target_name in occupied and not replace_existing:
+        if target_key in occupied and not replace_existing:
             raise ActionInstallError(f"动作目标名称已存在：{target_name}")
-        planned_targets.add(target_name)
+        planned_targets.add(target_key)
         if target_name != source_name:
             renamed[source_name] = target_name
         plans.append(_InstallPlan(source_name, target_name, action, replace_existing))
@@ -157,7 +185,7 @@ def _install_one(
     if not isinstance(definition, dict) or not isinstance(source_root, Path) or not isinstance(asset_paths, tuple):
         raise ActionInstallError(f"动作 {plan.source_name} 数据不完整")
     if plan.replace_existing:
-        old_definition = animations.get(plan.source_name)
+        old_definition = animations.get(plan.target_name)
         if isinstance(old_definition, Mapping):
             _remove_animation_directory(candidate, old_definition.get("path"))
     target_dir = candidate / "animations" / _safe_name(plan.target_name)
@@ -192,12 +220,15 @@ def _merge_bindings(
     pack: ActionPack,
     renamed: Mapping[str, str],
     animations: Mapping[str, object],
+    enabled_sources: set[str],
 ) -> None:
     bindings = config.get("bindings")
     if not isinstance(bindings, dict):
         bindings = {}
         config["bindings"] = bindings
     for event, action in pack.bindings.items():
+        if action not in enabled_sources:
+            continue
         mapped = renamed.get(action, action)
         if mapped in animations:
             bindings[event] = mapped
@@ -206,8 +237,16 @@ def _merge_bindings(
         fallbacks = {}
         config["fallbacks"] = fallbacks
     for action, candidates in pack.fallbacks.items():
+        if action not in enabled_sources:
+            continue
         mapped_action = renamed.get(action, action)
-        mapped_candidates = [renamed.get(item, item) for item in candidates]
+        mapped_candidates = []
+        for item in candidates:
+            if item in pack.actions and item not in enabled_sources:
+                continue
+            mapped_item = renamed.get(item, item)
+            if mapped_item in animations and mapped_item not in mapped_candidates:
+                mapped_candidates.append(mapped_item)
         if mapped_action in animations:
             fallbacks[mapped_action] = mapped_candidates
 
@@ -238,9 +277,21 @@ def _read_config(path: Path) -> dict[str, object]:
 
 
 def _safe_name(name: str) -> str:
-    if not _SAFE_NAME.fullmatch(name) or name in {".", ".."} or PureWindowsPath(name).drive:
+    stem = name.split(".", 1)[0].casefold()
+    if (
+        not _SAFE_NAME.fullmatch(name)
+        or name in {".", ".."}
+        or name != name.rstrip(" .")
+        or stem in _WINDOWS_RESERVED_NAMES
+        or PureWindowsPath(name).drive
+    ):
         raise ActionInstallError(f"动作名称不安全：{name}")
     return name
+
+
+def _action_key(name: str) -> str:
+    """返回 Windows 文件系统下用于冲突判断的动作目录键。"""
+    return name.rstrip(" .").casefold()
 
 
 __all__ = [

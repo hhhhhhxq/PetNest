@@ -46,6 +46,7 @@ from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_visibility_lease import PetVisibilityLease
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
+from petnest.core.pet_package_importer import PetImportOptions, PetPackageImportError, PetImportResult, import_pet_package
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import (
     RemoteResourceApplyResult,
@@ -69,6 +70,7 @@ from petnest.ui.codex_usage_dialog import CodexUsageDialog
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
+from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 from petnest.ui.settings_dialog import SettingsDialog
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
@@ -203,6 +205,7 @@ class PetNest:
         self._app_update_worker: Thread | None = None
         self._app_update_dialog: AppUpdateDialog | None = None
         self._settings_center_dialog: SettingsDialog | None = None
+        self._pet_action_exchange_dialog: PetActionExchangeDialog | None = None
         self._codex_usage_dialog: CodexUsageDialog | None = None
         self._codex_usage_history_path = self.settings_manager.path.parent / "codex-usage-history.json"
         self._codex_account_observations = CodexAccountObservationStore(
@@ -335,6 +338,7 @@ class PetNest:
                 current_pet_name=self.package.name,
                 on_switch=self.switch_pet,
                 on_reload=self.reload_current_pet,
+                on_exchange=self.show_pet_action_exchange_dialog,
                 on_import=self.show_spritesheet_import_dialog,
                 on_import_work_finish=self.show_work_finish_import_dialog,
                 on_open_pets_folder=self.open_pets_folder,
@@ -776,23 +780,81 @@ class PetNest:
         return sorted(by_identifier.values(), key=lambda item: str(getattr(item, "identifier", "")).casefold())
 
     def show_spritesheet_import_dialog(self) -> None:
-        """从本机文件导入成功后重新扫描，并立即切换到新宠物包。"""
-        dialog = SpriteSheetImportDialog(self.pets_root, self.window)
-        if dialog.exec() and dialog.imported_result is not None:
-            self.packages = self.loader.discover(self.pets_root)
-            self.switch_pet(dialog.imported_result.package_id)
+        """兼容旧托盘调用，定位到统一窗口的精灵图导入页。"""
+        self.show_pet_action_exchange_dialog("导入宠物")
 
     def show_work_finish_import_dialog(self) -> None:
-        """把 ZIP 或文件夹下班动画安装到当前宠物并立即重载。"""
-        dialog = WorkFinishImportDialog(self.package, self.window)
-        if not dialog.exec() or dialog.imported_result is None:
-            return
-        if not self.reload_current_pet():
-            QMessageBox.critical(self.window, "无法启用下班动画", "动画已安装，但当前宠物重新载入失败。")
-            return
+        """兼容旧托盘调用，定位到统一窗口的动作导入页。"""
+        self.show_pet_action_exchange_dialog("导入动作")
+
+    def show_pet_action_exchange_dialog(self, page: str = "导入宠物") -> None:
+        """打开统一宠物/动作交换中心，并连接安装后的运行时重载。"""
+        if self._pet_action_exchange_dialog is None:
+            dialog = PetActionExchangeDialog(
+                self.packages,
+                self.pets_root,
+                is_pet_locked=self._is_pet_locked_for_exchange,
+                parent=self.window,
+            )
+            dialog.pet_installed.connect(self._handle_pet_exchange_installed)
+            dialog.actions_installed.connect(self._handle_actions_exchange_installed)
+            dialog.finished.connect(lambda _result: self._clear_exchange_dialog(dialog))
+            self._pet_action_exchange_dialog = dialog
+        dialog = self._pet_action_exchange_dialog
+        try:
+            dialog.select_page(page)
+        except ValueError:
+            dialog.select_page("导入宠物")
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_exchange_dialog(self, dialog: PetActionExchangeDialog) -> None:
+        if self._pet_action_exchange_dialog is dialog:
+            self._pet_action_exchange_dialog = None
+
+    def _is_pet_locked_for_exchange(self, identifier: str) -> bool:
+        return identifier == self.package.identifier and self.work_finish_reminder.is_visible
+
+    def _handle_pet_exchange_installed(self, identifier: str, result: object) -> None:
+        """刷新宠物库并在当前宠物更新后安全重载；失败时尝试从导入前备份恢复。"""
+        self._synchronize_pet_library()
+        self.packages = self.loader.discover(self.pets_root)
         if self.tray is not None:
-            result = dialog.imported_result
-            self.tray.showMessage("PetNest", f"已导入 {result.name}：走路 {result.walk_frames} 帧，躺下 {result.lie_down_frames} 帧")
+            self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
+        if not self.switch_pet(identifier):
+            if identifier == self.package.identifier and isinstance(result, PetImportResult):
+                self._restore_pet_from_exchange_backup(result)
+            else:
+                QMessageBox.warning(self.window, "无法载入宠物", f"宠物 {identifier} 已导入，但当前运行时未能载入。")
+        if self._pet_action_exchange_dialog is not None:
+            self._pet_action_exchange_dialog.close()
+
+    def _handle_actions_exchange_installed(self, identifier: str, _result: object) -> None:
+        self._synchronize_pet_library()
+        self.packages = self.loader.discover(self.pets_root)
+        if self.tray is not None:
+            self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
+        if identifier == self.package.identifier and not self.reload_current_pet():
+            QMessageBox.warning(self.window, "无法载入动作", "动作已安装，但当前宠物重新载入失败；原运行状态已保留。")
+        if self._pet_action_exchange_dialog is not None:
+            self._pet_action_exchange_dialog.close()
+
+    def _restore_pet_from_exchange_backup(self, result: PetImportResult) -> None:
+        if result.backup_path is None:
+            QMessageBox.critical(self.window, "无法恢复宠物", "重载失败且没有可用备份，请从托盘菜单重新显示宠物。")
+            return
+        try:
+            import_pet_package(
+                result.backup_path,
+                self.pets_root,
+                PetImportOptions(create_backup=False),
+            )
+            self.packages = self.loader.discover(self.pets_root)
+            self.reload_current_pet()
+        except PetPackageImportError as error:
+            LOGGER.exception("从宠物导入备份恢复失败：%s", error)
+            QMessageBox.critical(self.window, "无法恢复宠物", f"已保留备份文件：{result.backup_path}\n原因：{error}")
 
     def open_pets_folder(self) -> None:
         """打开用户放置目录式宠物包的位置。"""

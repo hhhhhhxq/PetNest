@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QCloseEvent, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.models.pet_package import AnimationDefinition, PetPackage
+from petnest.ui.animation_preview_widget import CheckerboardLabel
 from petnest.ui.theme import COLORS, dialog_stylesheet
 
 
@@ -37,34 +38,6 @@ _TRIGGER_TEXT = {
     "work_finish_lie_down": "全屏下班提醒 · 躺下过渡",
 }
 _PREVIEW_HIGHLIGHT_STYLE = f"background: {COLORS['accent_soft']}; border: 1px solid {COLORS['accent']}; border-radius: 8px;"
-
-
-class CheckerboardLabel(QLabel):
-    """透明帧预览的棋盘格画布，避免用纯色块冒充透明背景。"""
-
-    def paintEvent(self, event: object) -> None:  # noqa: ARG002 - Qt event signature
-        painter = QPainter(self)
-        tile = 18
-        light = QColor("#FBF5F0")
-        dark = QColor("#F2E7DF")
-        for y in range(0, self.height(), tile):
-            for x in range(0, self.width(), tile):
-                painter.fillRect(x, y, tile, tile, light if (x // tile + y // tile) % 2 == 0 else dark)
-        pixmap = self.pixmap()
-        if pixmap is not None and not pixmap.isNull():
-            scaled = pixmap.scaled(
-                self.contentsRect().size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap(
-                (self.width() - scaled.width()) // 2,
-                (self.height() - scaled.height()) // 2,
-                scaled,
-            )
-        elif self.text():
-            painter.setPen(QColor(COLORS["muted_text"]))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
 
 
 class AnimationEditorDialog(QDialog):

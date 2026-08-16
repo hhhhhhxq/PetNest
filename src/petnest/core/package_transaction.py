@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -19,7 +20,10 @@ class PackageTransaction:
     """目录级事务；提交前的任何失败都不会触碰正式目录。"""
 
     def __init__(self, target: Path, validator: Callable[[Path], object] | None = None) -> None:
-        self.target = Path(target).expanduser().resolve()
+        raw_target = Path(target).expanduser()
+        if raw_target.is_symlink():
+            raise PackageTransactionError("事务目标不能是符号链接")
+        self.target = raw_target.resolve()
         self._validator = validator or PackageValidator().validate
         self._candidate: Path | None = None
         self._backup: Path | None = None
@@ -47,6 +51,8 @@ class PackageTransaction:
     def prepare(self) -> Path:
         if self._candidate is not None:
             return self._candidate
+        if self.target.is_symlink():
+            raise PackageTransactionError("事务目标不能是符号链接")
         parent = self.target.parent
         parent.mkdir(parents=True, exist_ok=True)
         candidate = Path(tempfile.mkdtemp(prefix=f".{self.target.name}.candidate-", dir=parent))
@@ -54,6 +60,7 @@ class PackageTransaction:
             if self.target.exists():
                 if not self.target.is_dir():
                     raise PackageTransactionError(f"目标包不是目录：{self.target}")
+                _reject_symlinks(self.target)
                 shutil.copytree(self.target, candidate, dirs_exist_ok=True, symlinks=False)
             self._candidate = candidate
             return candidate
@@ -114,6 +121,15 @@ class PackageTransaction:
         if self._backup is not None and self._backup.exists():
             shutil.rmtree(self._backup, ignore_errors=True)
         self._backup = None
+
+
+def _reject_symlinks(root: Path) -> None:
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in (*directories, *filenames):
+            candidate = current_path / name
+            if candidate.is_symlink():
+                raise PackageTransactionError(f"目标包不能包含符号链接：{candidate}")
 
 
 __all__ = ["PackageTransaction", "PackageTransactionError"]

@@ -13,7 +13,7 @@ import shutil
 import tempfile
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from .exchange_source import ExchangeSource
+from .exchange_source import ExchangeLimits, ExchangeSource
 from .package_transaction import PackageTransaction, PackageTransactionError
 from .package_validator import PackageValidator
 
@@ -62,6 +62,13 @@ def import_pet_package(
         source_config = validation.config
         identifier = _validate_pet_id(source_config.get("id"))
         destination = root_of_pets / identifier
+        if destination.is_symlink():
+            raise PetPackageImportError("宠物目标不能是符号链接")
+        try:
+            if not destination.resolve(strict=False).is_relative_to(root_of_pets):
+                raise PetPackageImportError("宠物目标必须位于宠物目录内")
+        except OSError as error:
+            raise PetPackageImportError(f"宠物目标路径无法解析：{error}") from error
         replacing = destination.exists()
         existing_config = _read_config(destination / "pet.json") if replacing and options.preserve_local_actions else None
         backup_path: Path | None = None
@@ -110,18 +117,23 @@ def _preserve_local_actions(
         raise PetPackageImportError("无法保留本地动作：animations 结构不合法")
     local_names = [name for name in old_animations if isinstance(name, str) and name not in source_animations]
     for name in local_names:
+        safe_name = _safe_action_name(name)
         old_definition = old_animations[name]
         if not isinstance(old_definition, Mapping):
             raise PetPackageImportError(f"无法保留本地动作 {name}：定义不合法")
         old_path = _safe_resource_directory(existing_root, old_definition.get("path"), name)
-        destination = candidate / "animations" / name
+        animations_root = (candidate / "animations").resolve()
+        destination = animations_root / safe_name
+        if not destination.resolve(strict=False).is_relative_to(animations_root):
+            raise PetPackageImportError(f"无法保留本地动作 {name}：目标路径不安全")
         if destination.exists():
             shutil.rmtree(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        _reject_symlinks(old_path, name)
         shutil.copytree(old_path, destination, symlinks=False)
         definition = json.loads(json.dumps(dict(old_definition), ensure_ascii=False))
-        definition["path"] = f"animations/{name}"
-        new_animations[name] = definition
+        definition["path"] = f"animations/{safe_name}"
+        new_animations[safe_name] = definition
     _preserve_local_bindings(existing_config, candidate_config, set(local_names), set(new_animations))
 
 
@@ -167,8 +179,31 @@ def _create_backup(package_root: Path, pets_root: Path, identifier: str) -> Path
     temporary = Path(temporary_name)
     destination = backup_root / f"{timestamp}.zip"
     try:
+        files: list[Path] = []
+        total_bytes = 0
+        limits = ExchangeLimits()
+        for current, directories, filenames in os.walk(package_root, followlinks=False):
+            current_path = Path(current)
+            for name in directories:
+                directory = current_path / name
+                if directory.is_symlink():
+                    raise OSError(f"备份不能包含符号链接：{directory}")
+            for name in filenames:
+                file_path = current_path / name
+                if file_path.is_symlink():
+                    raise OSError(f"备份不能包含符号链接：{file_path}")
+                if file_path.suffix.casefold() in limits.blocked_suffixes:
+                    raise OSError(f"备份不能包含可执行文件：{file_path.name}")
+                if not file_path.is_file():
+                    raise OSError(f"备份包含不可归档文件：{file_path}")
+                total_bytes += file_path.stat().st_size
+                files.append(file_path)
+        if len(files) > limits.max_files:
+            raise OSError("备份文件数量超出限制")
+        if total_bytes > limits.max_uncompressed_bytes:
+            raise OSError("备份体积超出限制")
         with ZipFile(temporary, "w", compression=ZIP_DEFLATED) as archive:
-            for file_path in sorted((item for item in package_root.rglob("*") if item.is_file()), key=lambda item: item.relative_to(package_root).as_posix()):
+            for file_path in sorted(files, key=lambda item: item.relative_to(package_root).as_posix()):
                 archive.write(file_path, file_path.relative_to(package_root).as_posix())
         os.replace(temporary, destination)
     except Exception:
@@ -198,6 +233,39 @@ def _safe_resource_directory(root: Path, configured: object, name: str) -> Path:
     if not resolved.is_relative_to(root.resolve()) or not resolved.is_dir():
         raise PetPackageImportError(f"动作 {name} 的资源目录不存在或逃逸")
     return resolved
+
+
+_SAFE_ACTION_NAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]+$")
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
+def _safe_action_name(name: str) -> str:
+    stem = name.split(".", 1)[0].casefold()
+    if (
+        not _SAFE_ACTION_NAME.fullmatch(name)
+        or name in {".", ".."}
+        or name != name.rstrip(" .")
+        or stem in _WINDOWS_RESERVED_NAMES
+        or PureWindowsPath(name).drive
+    ):
+        raise PetPackageImportError(f"动作名称不安全：{name}")
+    return name
+
+
+def _reject_symlinks(root: Path, action_name: str) -> None:
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        for name in (*directories, *filenames):
+            candidate = current_path / name
+            if candidate.is_symlink():
+                raise PetPackageImportError(f"无法保留本地动作 {action_name}：资源不能包含符号链接")
 
 
 def _validate_pet_id(value: object) -> str:

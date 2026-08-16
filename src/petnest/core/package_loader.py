@@ -30,7 +30,10 @@ class PackageLoader:
         if not root.is_dir():
             return []
         packages: list[PetPackage] = []
-        for candidate in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name.casefold()):
+        for candidate in sorted(
+            (item for item in root.iterdir() if item.is_dir() and not item.is_symlink()),
+            key=lambda item: item.name.casefold(),
+        ):
             try:
                 packages.append(self.load(candidate))
             except PackageValidationError:

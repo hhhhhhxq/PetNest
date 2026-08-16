@@ -132,3 +132,23 @@ def test_legacy_work_finish_pack_adapts_to_transfer_actions(tmp_path: Path) -> N
     assert pack.actions["work_finish_lie_down"].definition["scope"] == "fullscreen"
     assert pack.actions["work_finish_lie_down"].definition["frame_durations_ms"] == [100, 200]
     pack.close()
+
+
+def test_extract_actions_rejects_non_png_action_assets(tmp_path: Path) -> None:
+    root = tmp_path / "pet"
+    write_pet(root)
+    (root / "animations" / "walk" / "notes.txt").write_text("not a frame", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="PNG"):
+        extract_pet_actions(root)
+
+
+def test_extract_actions_rejects_nested_frames(tmp_path: Path) -> None:
+    root = tmp_path / "pet"
+    write_pet(root)
+    nested = root / "animations" / "walk" / "nested" / "001.png"
+    nested.parent.mkdir()
+    (root / "animations" / "walk" / "001.png").replace(nested)
+
+    with pytest.raises(ValueError, match="直接"):
+        extract_pet_actions(root)

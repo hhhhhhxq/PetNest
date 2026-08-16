@@ -19,6 +19,14 @@ ACTION_PACK_MANIFEST = "petnest-action-pack.json"
 ACTION_PACK_TYPE = "petnest-action-pack"
 ACTION_PACK_SCHEMA_VERSION = 1
 _SAFE_ACTION_NAME = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]+$")
+_WINDOWS_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
 
 
 class ActionPackError(ValueError):
@@ -216,9 +224,17 @@ def _load_actions(root: Path, value: object) -> dict[str, TransferAction]:
         if not isinstance(raw_definition, Mapping):
             raise ActionPackError(f"动作 {name} 的定义必须是对象")
         animation_root = _safe_directory(root, raw_definition.get("path"), name)
-        assets = tuple(sorted((item for item in animation_root.rglob("*") if item.is_file()), key=lambda item: item.as_posix().casefold()))
+        children = tuple(animation_root.iterdir())
+        if any(item.is_symlink() for item in children):
+            raise ActionPackError(f"动作 {name} 不能包含符号链接")
+        if any(item.is_dir() for item in children):
+            raise ActionPackError(f"动作 {name} 的 PNG 帧必须直接位于动作目录中")
+        assets = tuple(sorted((item for item in children if item.is_file()), key=lambda item: item.as_posix().casefold()))
         if not assets:
             raise ActionPackError(f"动作 {name} 没有资源")
+        if any(item.suffix.casefold() != ".png" for item in assets):
+            raise ActionPackError(f"动作 {name} 只能包含 PNG 帧")
+        _validate_action_definition(name, raw_definition, len(assets))
         definition = json.loads(json.dumps(dict(raw_definition), ensure_ascii=False))
         actions[name] = TransferAction(
             name=name,
@@ -250,9 +266,43 @@ def _safe_directory(root: Path, configured: object, name: str) -> Path:
 
 
 def _safe_action_name(name: str) -> str:
-    if not _SAFE_ACTION_NAME.fullmatch(name) or name in {".", ".."} or PureWindowsPath(name).drive:
+    stem = name.split(".", 1)[0].casefold()
+    if (
+        not _SAFE_ACTION_NAME.fullmatch(name)
+        or name in {".", ".."}
+        or name != name.rstrip(" .")
+        or stem in _WINDOWS_RESERVED_NAMES
+        or PureWindowsPath(name).drive
+    ):
         raise ActionPackError(f"动作名称不安全：{name}")
     return name
+
+
+def _validate_action_definition(name: str, definition: Mapping[str, object], frame_count: int) -> None:
+    fps = definition.get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+        raise ActionPackError(f"动作 {name} 的 FPS 必须大于 0")
+    if not isinstance(definition.get("loop"), bool):
+        raise ActionPackError(f"动作 {name} 的 loop 必须是布尔值")
+    scope = definition.get("scope", "pet")
+    if scope not in {"pet", "fullscreen"}:
+        raise ActionPackError(f"动作 {name} 的 scope 必须是 pet 或 fullscreen")
+    if scope == "fullscreen":
+        canvas = definition.get("canvas")
+        if not isinstance(canvas, Mapping):
+            raise ActionPackError(f"动作 {name} 的全屏 canvas 必须是对象")
+        width, height = canvas.get("width"), canvas.get("height")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (width, height)):
+            raise ActionPackError(f"动作 {name} 的全屏 canvas 尺寸必须是正整数")
+    durations = definition.get("frame_durations_ms")
+    if durations is not None:
+        if not isinstance(durations, list) or len(durations) != frame_count:
+            raise ActionPackError(f"动作 {name} 的逐帧时长必须与 PNG 帧一一对应")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations):
+            raise ActionPackError(f"动作 {name} 的逐帧时长必须全部为正整数")
+    multiplier = definition.get("speed_multiplier", 1.0)
+    if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier <= 0:
+        raise ActionPackError(f"动作 {name} 的 speed_multiplier 必须大于 0")
 
 
 def _source_pet_info(value: object) -> SourcePetInfo:

@@ -42,6 +42,8 @@ class ExchangeSource:
 
         configured = Path(path).expanduser()
         limits = limits or ExchangeLimits()
+        if configured.is_symlink():
+            raise UnsafeExchangeSourceError("交换来源不能是符号链接")
         if configured.is_dir():
             root = configured.resolve()
             _validate_tree(root, limits)

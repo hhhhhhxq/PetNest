@@ -81,16 +81,21 @@ def extract_pet_actions(pet_root: Path) -> dict[str, TransferAction]:
             raise ActionTransferError(f"动画 {name} 的定义必须是对象")
         configured_path = raw_definition.get("path")
         animation_root = _safe_directory(root, configured_path, name)
+        children = tuple(animation_root.iterdir())
+        if any(item.is_symlink() for item in children):
+            raise ActionTransferError(f"动画 {name} 不能包含符号链接")
+        if any(item.is_dir() for item in children):
+            raise ActionTransferError(f"动画 {name} 的 PNG 帧必须直接位于动作目录中")
         asset_paths = tuple(
             sorted(
-                (item for item in animation_root.rglob("*") if item.is_file()),
+                (item for item in children if item.is_file()),
                 key=lambda item: item.relative_to(root).as_posix().casefold(),
             )
         )
         if not asset_paths:
             raise ActionTransferError(f"动画 {name} 没有可分享的资源")
-        if any(item.is_symlink() for item in asset_paths):
-            raise ActionTransferError(f"动画 {name} 不能包含符号链接")
+        if any(item.suffix.casefold() != ".png" for item in asset_paths):
+            raise ActionTransferError(f"动画 {name} 只能包含 PNG 帧")
         definition = json.loads(json.dumps(dict(raw_definition), ensure_ascii=False))
         actions[name] = TransferAction(
             name=name,

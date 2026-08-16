@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 from petnest.core.action_installer import (
+    ActionInstallError,
     ConflictDecision,
     install_actions,
 )
@@ -99,3 +100,49 @@ def test_install_failure_restores_target(tmp_path: Path) -> None:
 
     after = {path.relative_to(target).as_posix(): path.read_bytes() for path in target.rglob("*") if path.is_file()}
     assert after == before
+
+
+def test_skipped_action_does_not_overwrite_bindings_or_fallbacks(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target)
+    config_path = target / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["bindings"]["agent.working"] = "walk"
+    config["fallbacks"] = {"walk": ["idle"]}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    pack = build_pack(tmp_path, "idle")
+    pack.bindings["agent.working"] = "idle"
+    pack.fallbacks["idle"] = ["walk"]
+
+    install_actions(
+        target,
+        pack,
+        decisions={"idle": ConflictDecision.skip()},
+        import_bindings=True,
+    )
+
+    updated = json.loads(config_path.read_text(encoding="utf-8"))
+    assert updated["bindings"]["agent.working"] == "walk"
+    assert updated["fallbacks"] == {"walk": ["idle"]}
+
+
+def test_case_insensitive_action_collision_replaces_existing_name(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target)
+    pack = build_pack(tmp_path, "IDLE")
+
+    result = install_actions(target, pack)
+
+    assert result.installed == ("idle",)
+    config = json.loads((target / "pet.json").read_text(encoding="utf-8"))
+    assert set(config["animations"]) == {"idle", "walk"}
+    assert (target / "animations" / "idle" / "001.png").is_file()
+
+
+def test_rejects_windows_ambiguous_renamed_action(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target)
+    pack = build_pack(tmp_path, "dance")
+
+    with pytest.raises(ActionInstallError, match="动作名称不安全"):
+        install_actions(target, pack, decisions={"dance": ConflictDecision.rename("foo.")})

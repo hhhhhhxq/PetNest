@@ -117,3 +117,35 @@ def test_backup_failure_does_not_start_update(tmp_path: Path, monkeypatch: pytes
     with pytest.raises(PetPackageImportError, match="备份"):
         import_pet_package(source, pets_root)
     assert (existing / "pet.json").is_file()
+
+
+def test_rejects_symlink_pet_destination(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    write_pet(source)
+    pets_root = tmp_path / "pets"
+    pets_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (pets_root / "pingan").symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"当前平台不允许创建目录符号链接：{error}")
+
+    with pytest.raises(PetPackageImportError, match="符号链接"):
+        import_pet_package(source, pets_root)
+    assert not (outside / "pet.json").exists()
+
+
+def test_rejects_unsafe_local_action_name_when_preserving(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    write_pet(source)
+    pets_root = tmp_path / "pets"
+    existing = pets_root / "pingan"
+    write_pet(existing)
+    config_path = existing / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["../escape"] = {"path": "animations/idle", "fps": 8, "loop": True}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(PetPackageImportError, match="动作名称"):
+        import_pet_package(source, pets_root, PetImportOptions(preserve_local_actions=True))

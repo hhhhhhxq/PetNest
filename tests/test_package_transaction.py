@@ -54,3 +54,16 @@ def test_exception_before_commit_restores_original(tmp_path: Path) -> None:
             raise RuntimeError("abort")
 
     assert target.joinpath("pet.json").read_bytes() == b"before"
+
+
+def test_rejects_symlink_target_before_resolving(tmp_path: Path) -> None:
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    link = tmp_path / "pet"
+    try:
+        link.symlink_to(actual, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"当前平台不允许创建目录符号链接：{error}")
+
+    with pytest.raises(PackageTransactionError, match="符号链接"):
+        PackageTransaction(link)

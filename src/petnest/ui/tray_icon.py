@@ -57,6 +57,7 @@ class PetTrayIcon(QSystemTrayIcon):
         current_pet_name: str | None = None,
         on_switch: Callable[[str], object] | None = None,
         on_reload: Callable[[], object] | None = None,
+        on_exchange: Callable[[], object] | None = None,
         on_import: Callable[[], object] | None = None,
         on_import_work_finish: Callable[[], object] | None = None,
         on_open_pets_folder: Callable[[], object] | None = None,
@@ -79,6 +80,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self._on_quit = on_quit
         self._on_switch = on_switch
         self._on_reload = on_reload
+        self._on_exchange = on_exchange
         self._on_import = on_import
         self._on_import_work_finish = on_import_work_finish
         self._on_open_pets_folder = on_open_pets_folder
@@ -116,6 +118,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_mouse_follow_action.setCheckable(True)
         self.quit_action = QAction("退出 PetNest", self.menu)
         self.reload_action = QAction("重新加载当前宠物", self.menu)
+        self.exchange_action = QAction("宠物与动作…", self.menu)
         self.import_action = QAction("导入精灵图…", self.menu)
         self.import_work_finish_action = QAction("导入下班动画…", self.menu)
         self.open_pets_folder_action = QAction("打开宠物文件夹", self.menu)
@@ -135,6 +138,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_always_on_top_action.triggered.connect(self._toggle_always_on_top)
         self.quit_action.triggered.connect(self._quit)
         self.reload_action.triggered.connect(self._reload)
+        self.exchange_action.triggered.connect(self._exchange)
         self.import_action.triggered.connect(self._import)
         self.import_work_finish_action.triggered.connect(self._import_work_finish)
         self.open_pets_folder_action.triggered.connect(self._open_pets_folder)
@@ -157,6 +161,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.menu.addSeparator()
         self.pet_library_menu = self.menu.addMenu("宠物库")
         _apply_menu_skin(self.pet_library_menu, "traySubmenu")
+        self.pet_library_menu.addAction(self.exchange_action)
         self.pet_library_menu.addAction(self.import_action)
         self.pet_library_menu.addAction(self.import_work_finish_action)
         self.pet_library_menu.addAction(self.open_pets_folder_action)
@@ -263,6 +268,10 @@ class PetTrayIcon(QSystemTrayIcon):
     def _reload(self) -> None:
         if self._on_reload is not None:
             self._on_reload()
+
+    def _exchange(self) -> None:
+        if self._on_exchange is not None:
+            self._on_exchange()
 
     def _import(self) -> None:
         if self._on_import is not None:

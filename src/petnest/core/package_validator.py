@@ -48,8 +48,12 @@ class PackageValidator:
 
     def validate(self, package_root: Path) -> ValidationResult:
         """返回全部可报告的问题，而不是在第一个问题处中断。"""
-        root = package_root.expanduser().resolve()
+        configured_root = package_root.expanduser()
+        root = configured_root.resolve()
         result = ValidationResult(root=root)
+        if configured_root.is_symlink():
+            result.errors.append("宠物包根目录不能是符号链接")
+            return result
         if not root.is_dir():
             result.errors.append(f"宠物包目录不存在：{package_root}")
             return result
