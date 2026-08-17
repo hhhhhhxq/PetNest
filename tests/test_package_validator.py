@@ -8,6 +8,8 @@ import sys
 import zlib
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from petnest.core.package_validator import PackageValidator
@@ -179,6 +181,53 @@ def test_fullscreen_animation_can_use_its_own_canvas(tmp_path: Path) -> None:
 
     assert result.is_valid
     assert result.errors == []
+
+
+def test_fullscreen_animation_accepts_entrance_direction(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "direction")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["work_finish_walk"] = {
+        "path": "animations/work_finish_walk",
+        "scope": "fullscreen",
+        "canvas": {"width": 24, "height": 18},
+        "fps": 10,
+        "loop": True,
+        "entrance_direction": "left",
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _write_png(root / "animations/work_finish_walk/001.png", 24, 18)
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+
+
+@pytest.mark.parametrize("direction", ["up", "", 1, None])
+def test_animation_rejects_invalid_entrance_direction(tmp_path: Path, direction: object) -> None:
+    root = _write_package(tmp_path / "invalid-direction")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["idle"]["entrance_direction"] = direction
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("entrance_direction" in error for error in result.errors)
+
+
+def test_pet_scope_cannot_declare_entrance_direction(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "pet-scope-direction")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["idle"]["entrance_direction"] = "left"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("全屏" in error and "entrance_direction" in error for error in result.errors)
 
 
 def test_pet_scope_animation_cannot_override_package_canvas(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from PIL import Image, UnidentifiedImageError
 
 _NUMBER_PARTS = re.compile(r"(\d+)")
 _REQUIRED_ANIMATION = "idle"
+_ENTRANCE_DIRECTIONS = {"left", "right", "none"}
 
 
 class PackageValidationError(ValueError):
@@ -131,6 +132,7 @@ class PackageValidator:
         if not isinstance(definition, Mapping):
             result.errors.append(f"动画 {name} 的定义必须是对象")
             return
+        self._validate_entrance_direction(name, definition, result)
         fps = definition.get("fps")
         if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
             result.errors.append(f"动画 {name} 的 FPS 必须大于 0")
@@ -162,6 +164,20 @@ class PackageValidator:
         self._validate_timeline(name, definition, len(frames), result)
         for frame in frames:
             self._validate_frame(name, frame, animation_canvas, result)
+
+    @staticmethod
+    def _validate_entrance_direction(
+        name: str,
+        definition: Mapping[str, object],
+        result: ValidationResult,
+    ) -> None:
+        if "entrance_direction" not in definition:
+            return
+        direction = definition["entrance_direction"]
+        if definition.get("scope", "pet") != "fullscreen":
+            result.errors.append(f"动画 {name}：只有全屏动画可以声明 entrance_direction")
+        elif not isinstance(direction, str) or direction not in _ENTRANCE_DIRECTIONS:
+            result.errors.append(f"动画 {name} 的 entrance_direction 必须是 left、right 或 none")
 
     @staticmethod
     def _animation_canvas(

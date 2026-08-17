@@ -104,3 +104,52 @@ def test_export_is_atomic_when_selection_is_invalid(tmp_path: Path) -> None:
         export_action_pack(pet_root, ["missing"], output)
 
     assert output.read_bytes() == b"old"
+
+
+def test_fullscreen_entrance_direction_round_trips_in_action_pack(tmp_path: Path) -> None:
+    pet_root = build_pet(tmp_path)
+    config_path = pet_root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["walk"].update(
+        {
+            "scope": "fullscreen",
+            "canvas": {"width": 8, "height": 8},
+            "entrance_direction": "left",
+        }
+    )
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    output = tmp_path / "direction.zip"
+
+    export_action_pack(pet_root, ["walk"], output)
+
+    with load_action_pack(output) as pack:
+        assert pack.actions["walk"].definition["entrance_direction"] == "left"
+
+
+def test_action_pack_rejects_invalid_fullscreen_entrance_direction(tmp_path: Path) -> None:
+    root = tmp_path / "invalid-pack"
+    write_png(root / "animations/walk/001.png")
+    (root / "petnest-action-pack.json").write_text(
+        json.dumps(
+            {
+                "type": "petnest-action-pack",
+                "schema_version": 1,
+                "name": "invalid",
+                "source_pet": {"id": "source", "name": "Source", "version": "1.0.0"},
+                "animations": {
+                    "walk": {
+                        "path": "animations/walk",
+                        "scope": "fullscreen",
+                        "canvas": {"width": 8, "height": 8},
+                        "fps": 8,
+                        "loop": True,
+                        "entrance_direction": "up",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ActionPackError, match="entrance_direction"):
+        load_action_pack(root)

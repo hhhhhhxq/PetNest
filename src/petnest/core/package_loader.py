@@ -62,6 +62,7 @@ class PackageLoader:
                 frames=frames[name],
                 scope=str(definition.get("scope", "pet")),
                 canvas=_animation_canvas(definition),
+                entrance_direction=str(definition.get("entrance_direction", "right")),
             )
         display = _display_settings(config.get("display"))
         return PetPackage(

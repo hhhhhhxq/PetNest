@@ -31,6 +31,7 @@ class WorkFinishAnimationWindow(QWidget):
         self._lie_frames: tuple[QPixmap, ...] = ()
         self._walk_durations: tuple[int, ...] = ()
         self._lie_durations: tuple[int, ...] = ()
+        self._entrance_direction = "right"
         self.current_phase = "hidden"
         self.current_frame_index = 0
         self.target_frame_width = 0
@@ -53,6 +54,9 @@ class WorkFinishAnimationWindow(QWidget):
         self._lie_frames = _pixmaps(animation.lie_down)
         self._walk_durations = _durations(animation.walk, len(self._walk_frames))
         self._lie_durations = _durations(animation.lie_down, len(self._lie_frames))
+        self._entrance_direction = getattr(animation.walk, "entrance_direction", "right")
+        if self._entrance_direction not in {"left", "right", "none"}:
+            self._entrance_direction = "right"
         self.setGeometry(geometry)
         self.target_frame_width = round(geometry.width() * self.WIDTH_RATIO)
         self._started_at = self._clock()
@@ -108,10 +112,17 @@ class WorkFinishAnimationWindow(QWidget):
         if self.current_phase == "walking":
             elapsed = max(0.0, self._clock() - self._started_at)
             progress = min(1.0, elapsed / self.WALK_SECONDS)
-            x = round(self.width() + (centered_x - self.width()) * progress)
+            x = self._walking_x(progress)
         else:
             x = centered_x
         return QRect(x, (self.height() - height) // 2, self.target_frame_width, height)
+
+    def _walking_x(self, progress: float) -> int:
+        centered_x = (self.width() - self.target_frame_width) // 2
+        if self._entrance_direction == "none":
+            return centered_x
+        start_x = -self.target_frame_width if self._entrance_direction == "left" else self.width()
+        return round(start_x + (centered_x - start_x) * progress)
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: ARG002 - Qt signature
         pixmap = self._current_pixmap()

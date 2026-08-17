@@ -287,6 +287,12 @@ def _validate_action_definition(name: str, definition: Mapping[str, object], fra
     scope = definition.get("scope", "pet")
     if scope not in {"pet", "fullscreen"}:
         raise ActionPackError(f"动作 {name} 的 scope 必须是 pet 或 fullscreen")
+    direction = definition.get("entrance_direction")
+    if direction is not None:
+        if scope != "fullscreen":
+            raise ActionPackError(f"动作 {name}：只有全屏动作可以声明 entrance_direction")
+        if not isinstance(direction, str) or direction not in {"left", "right", "none"}:
+            raise ActionPackError(f"动作 {name} 的 entrance_direction 必须是 left、right 或 none")
     if scope == "fullscreen":
         canvas = definition.get("canvas")
         if not isinstance(canvas, Mapping):

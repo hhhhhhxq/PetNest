@@ -236,8 +236,10 @@ def test_dialog_shows_transient_success_and_restores_default_prompt(qtbot) -> No
     assert sent
     assert dialog.status_label.text() == "已发送 ✓"
     assert dialog.send_button.isEnabled()
-    qtbot.wait(40)
-    assert dialog.status_label.text() == "选择一个互动方式后发送"
+    qtbot.waitUntil(
+        lambda: dialog.status_label.text() == "选择一个互动方式后发送",
+        timeout=500,
+    )
 
 
 def test_dialog_keeps_remote_send_pending_until_result(qtbot) -> None:

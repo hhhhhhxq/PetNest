@@ -42,6 +42,7 @@ def write_pet(root: Path) -> None:
                         "scope": "fullscreen",
                         "canvas": {"width": 8, "height": 8},
                         "frame_durations_ms": [80, 120],
+                        "entrance_direction": "left",
                     },
                 },
             }
@@ -91,6 +92,7 @@ def test_extract_actions_preserves_supported_animation_fields(tmp_path: Path) ->
 
     assert actions["walk"].definition["next"] == "idle"
     assert actions["walk"].definition["frame_durations_ms"] == [80, 120]
+    assert actions["walk"].definition["entrance_direction"] == "left"
     assert actions["walk"].scope == "fullscreen"
     assert actions["walk"].source_root == root.resolve()
     assert all(path.is_relative_to(root.resolve()) for path in actions["walk"].asset_paths)

@@ -41,6 +41,7 @@ class AnimationDefinition:
     frames: tuple[Path, ...] = field(default_factory=tuple)
     scope: str = "pet"
     canvas: Canvas | None = None
+    entrance_direction: str = "right"
 
 
 @dataclass(frozen=True, slots=True)

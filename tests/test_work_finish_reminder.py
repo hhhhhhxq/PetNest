@@ -8,8 +8,29 @@ from pathlib import Path
 
 from PySide6.QtCore import QRect, Qt
 
+from petnest.models.pet_package import Canvas
 from petnest.ui.work_finish_reminder import WorkFinishReminder
 from tests.test_pet_window import _package
+
+
+def _with_fullscreen_pair(package, direction: str):
+    walk = replace(
+        package.animations["idle"],
+        name="work_finish_walk",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+        entrance_direction=direction,
+    )
+    lie_down = replace(
+        package.animations["idle"],
+        name="work_finish_lie_down",
+        scope="fullscreen",
+        canvas=Canvas(24, 18),
+    )
+    return replace(
+        package,
+        animations={**package.animations, "work_finish_walk": walk, "work_finish_lie_down": lie_down},
+    )
 
 
 def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp_path: Path) -> None:
@@ -56,6 +77,42 @@ def test_animation_moves_from_offscreen_right_to_center_and_holds_last_lie_frame
     reminder.animation_window._refresh_frame()
     assert reminder.animation_window.current_phase == "holding"
     assert reminder.animation_window.current_frame_index == 1
+    reminder.hide()
+
+
+def test_animation_moves_from_offscreen_left_to_center(qtbot, tmp_path: Path) -> None:
+    now = [0.0]
+    reminder = WorkFinishReminder(clock=lambda: now[0])
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    reminder.show_for(
+        _with_fullscreen_pair(_package(tmp_path), "left"),
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+    )
+
+    assert reminder.animation_window.current_frame_rect().right() < 0
+
+    now[0] = 4.0
+    reminder.animation_window._refresh_frame()
+    centered = reminder.animation_window.current_frame_rect()
+    assert abs(centered.center().x() - 500) <= 1
+    reminder.hide()
+
+
+def test_animation_with_none_direction_starts_centered(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    reminder.show_for(
+        _with_fullscreen_pair(_package(tmp_path), "none"),
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+    )
+
+    rect = reminder.animation_window.current_frame_rect()
+
+    assert abs(rect.center().x() - 500) <= 1
     reminder.hide()
 
 

@@ -74,3 +74,24 @@ def test_loader_preserves_fullscreen_scope_and_action_canvas(tmp_path: Path) -> 
     assert definition.scope == "fullscreen"
     assert definition.canvas is not None
     assert (definition.canvas.width, definition.canvas.height) == (24, 18)
+
+
+def test_loader_preserves_fullscreen_entrance_direction(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "loaded-direction")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["work_finish_walk"] = {
+        "path": "animations/work_finish_walk",
+        "scope": "fullscreen",
+        "canvas": {"width": 24, "height": 18},
+        "fps": 10,
+        "loop": True,
+        "entrance_direction": "none",
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _write_png(root / "animations/work_finish_walk/001.png", 24, 18)
+
+    package = PackageLoader().load(root)
+
+    assert package.animations["work_finish_walk"].entrance_direction == "none"
+    assert package.animations["idle"].entrance_direction == "right"
