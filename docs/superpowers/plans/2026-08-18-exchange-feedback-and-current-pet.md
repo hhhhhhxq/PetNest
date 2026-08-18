@@ -69,7 +69,7 @@ assert dialog.action_export_page.pet_combo.currentData() == "second"
 
 - [ ] **步骤 3：实现磁盘错误和应用中状态**
 
-捕获 `ActionInstallError`/`ActionPackError` 后同时更新 footer 与显示 warning。磁盘提交成功后只显示 `正在应用 N 个动作…` 并发出信号，不在页面内提前显示最终成功。
+调用安装器前设置处理中守卫，footer 显示 `正在安装 N 个动作…`，主按钮显示“处理中…”并禁用；调用一次 `QApplication.processEvents()` 让提示先绘制。捕获 `ActionInstallError`/`ActionPackError` 后恢复按钮，同时更新 footer 与显示 warning。磁盘提交成功后只显示 `动作已写入，正在重新加载目标宠物…` 并发出信号，不在页面内提前显示最终成功。
 
 - [ ] **步骤 4：编写应用成功回调测试**
 
@@ -77,7 +77,7 @@ assert dialog.action_export_page.pet_combo.currentData() == "second"
 
 - [ ] **步骤 5：实现应用层最终通知**
 
-添加应用私有方法生成成功消息、调用窗口完成方法并显示 information。只从当前宠物重载成功分支和非当前宠物完成分支调用。
+添加应用私有方法生成成功消息、调用窗口完成方法并显示 information。只从当前宠物重载成功分支和非当前宠物完成分支调用。回滚成功、回滚失败及恢复后仍无法重载的分支调用失败完成方法，恢复按钮但保留表单数据。
 
 ### 任务 3：成功后清空导入表单
 
