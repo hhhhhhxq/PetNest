@@ -20,12 +20,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from petnest.core.pet_store_cache import PetStoreCache
+from petnest.core.pet_store_service import PetStoreService
+from petnest.core.pet_store_state import PetStoreStateStore
 from petnest.models.pet_package import PetPackage
 from petnest.ui.action_export_page import ActionExportPage
 from petnest.ui.action_import_page import ActionImportPage
 from petnest.ui.animation_editor_page import AnimationEditorPage, AnimationSaveResult
 from petnest.ui.exchange_page import ExchangePage
 from petnest.ui.pet_import_page import PetImportPage
+from petnest.ui.pet_store_page import PetStorePage
 from petnest.ui.theme import dialog_stylesheet
 
 
@@ -33,11 +37,13 @@ class PetActionExchangeDialog(QDialog):
     """把宠物导入、动作导入、时长编辑和动作导出放在一个窗口。"""
 
     pet_installed = Signal(str, object)
+    store_pet_installed = Signal(str, object)
     actions_installed = Signal(str, object)
 
-    _PAGE_LABELS = ("导入宠物", "导入动作", "编辑动作", "导出动作")
+    _PAGE_LABELS = ("导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作")
     _PAGE_SUBTITLES = {
         "导入宠物": "自动识别 PNG、ZIP 或文件夹，并在确认前预览导入内容",
+        "宠物商店": "浏览官方精选宠物，领养新伙伴或更新已安装内容",
         "导入动作": "选择动作来源、处理冲突并安装到当前宠物",
         "编辑动作": "调整动作节奏，保存后立即应用到当前宠物",
         "导出动作": "预览并选择动作，生成可分享的 ZIP 包",
@@ -53,6 +59,7 @@ class PetActionExchangeDialog(QDialog):
             [PetPackage, dict[str, tuple[int, ...]]], AnimationSaveResult
         ] | None = None,
         is_pet_locked: Callable[[str], bool] | None = None,
+        pet_store_service: PetStoreService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -64,6 +71,15 @@ class PetActionExchangeDialog(QDialog):
         self._packages = _normalise_packages(packages)
         self._pets_root = Path(pets_root)
         self._is_pet_locked = is_pet_locked or (lambda _identifier: False)
+        if pet_store_service is None:
+            store_root = self._pets_root.parent / "pet-store"
+            store_cache = PetStoreCache(store_root, "https://invalid.local")
+            pet_store_service = PetStoreService(
+                store_cache,
+                PetStoreStateStore(store_root / "state.json"),
+                self._pets_root,
+                is_pet_locked=self._is_pet_locked,
+            )
         self._active_index = 0
         self._closing = False
         desired_id = current_pet_id or (self._packages[0].identifier if self._packages else "")
@@ -101,6 +117,7 @@ class PetActionExchangeDialog(QDialog):
             is_pet_locked=self._is_pet_locked,
             parent=self.stack,
         )
+        self.pet_store_page = PetStorePage(pet_store_service, self.stack)
         self.action_import_page = ActionImportPage(
             self._packages,
             self._pets_root,
@@ -122,6 +139,7 @@ class PetActionExchangeDialog(QDialog):
         )
         self._pages: tuple[ExchangePage, ...] = (
             self.pet_import_page,
+            self.pet_store_page,
             self.action_import_page,
             self.animation_editor_page,
             self.action_export_page,
@@ -154,6 +172,7 @@ class PetActionExchangeDialog(QDialog):
         self._sync_page_header()
         self._sync_footer()
         self.pet_import_page.pet_installed.connect(self.pet_installed.emit)
+        self.pet_store_page.pet_install_ready.connect(self.store_pet_installed.emit)
         self.action_import_page.actions_installed.connect(self.actions_installed.emit)
 
     def page_names(self) -> list[str]:
@@ -198,6 +217,7 @@ class PetActionExchangeDialog(QDialog):
             # this source of truth keeps its existing ID/update checks correct
             # while it preserves whatever source draft is currently visible.
             self.pet_import_page._packages = next_packages
+        self.pet_store_page.refresh_packages(next_packages, current_pet_id)
         self.action_import_page.refresh_packages(next_packages, current_pet_id)
         self.animation_editor_page.refresh_packages(next_packages, current_pet_id)
         self.action_export_page.refresh_packages(next_packages, current_pet_id)
@@ -207,6 +227,16 @@ class PetActionExchangeDialog(QDialog):
         """确认动作已被运行时采用，并清空本次导入来源。"""
 
         self.action_import_page.complete_install(message)
+
+    def complete_store_install(self, message: str) -> None:
+        """Confirm the runtime accepted a store install and persist its receipt."""
+
+        self.pet_store_page.complete_install(message)
+
+    def complete_store_install_failure(self, message: str) -> None:
+        """Return the store page to an actionable state after rollback."""
+
+        self.pet_store_page.complete_install_failure(message)
 
     def complete_action_install_failure(self, message: str) -> None:
         """结束处理状态但保留来源，让用户可以直接重试。"""
@@ -225,6 +255,9 @@ class PetActionExchangeDialog(QDialog):
         old_page.deactivate()
         self._active_index = index
         self.stack.setCurrentIndex(index)
+        activate = getattr(self.current_page(), "activate", None)
+        if callable(activate):
+            activate()
         self._sync_page_header()
         self._sync_footer()
 
@@ -252,8 +285,9 @@ class PetActionExchangeDialog(QDialog):
     def _can_close(self) -> bool:
         if self._closing:
             return True
-        if not self.current_page().request_leave():
-            return False
+        for page in self._pages:
+            if not page.request_close():
+                return False
         self._closing = True
         for page in self._pages:
             page.deactivate()

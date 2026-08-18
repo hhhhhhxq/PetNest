@@ -9,6 +9,8 @@ This Worker keeps `petnest-resources` private while exposing only the files need
 3. Deploy the Worker.
 4. Test `/v1/manifest.json` and a resource URL with its manifest SHA, for example
    `/v1/files/resources/countdown/cream.png?sha256=<64-char-sha256>`.
+5. Test `/v1/store/catalog.json` and a store file URL, for example
+   `/v1/store/files/store/pets/sample_pet/cover.png?sha256=<64-char-sha256>`.
 
 The Worker intentionally exposes only `manifest.json` and paths below
 `resources/`. It does not proxy GitHub's branch zipball because that would
@@ -20,5 +22,11 @@ immutable URLs are edge-cached; the manifest is always uncached for immediate
 manual checks. The Worker keeps the allowlist in an isolate for at most 10
 seconds, so a newly published file may take a few seconds before its first
 request is accepted.
+
+The pet store uses a separate allowlist read from `store/catalog.json`.
+Only each listing's `cover`, `idle_preview`, and `package` records are exposed;
+`listing.json`, publishing tools, and other private repository files remain
+unavailable. The store catalog is uncached, while SHA-keyed store files use the
+same immutable edge caching policy as runtime resources.
 
 The token must never be committed to this repository or embedded in PetNest. The current classic token is a temporary read gateway; replace it with a fine-grained read-only token when GitHub's token creation flow works again.

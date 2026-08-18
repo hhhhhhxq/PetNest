@@ -23,5 +23,6 @@ def test_petnest_theme_stylesheets_cover_common_controls() -> None:
 
     for selector in ("QPushButton", "QLineEdit", "QComboBox", "QCheckBox", "QGroupBox"):
         assert selector in stylesheet
+    assert "QPushButton#primaryButton:disabled" in stylesheet
     assert "QFrame#settingsCard" in card_stylesheet()
     assert "QMenu#trayMenu" in menu_stylesheet("trayMenu")

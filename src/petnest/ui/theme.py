@@ -55,6 +55,62 @@ def dialog_stylesheet() -> str:
             border: 1px solid rgba(255, 255, 255, 185);
             border-radius: 16px;
         }}
+        QFrame#petStoreHero {{
+            background: #FFF0E8;
+            border: 1px solid #F1D5C7;
+            border-radius: 18px;
+        }}
+        QFrame#petStoreCard {{
+            background: {c['surface']};
+            border: 1px solid {c['border']};
+            border-radius: 14px;
+        }}
+        QFrame#petStoreCard:hover {{
+            background: #FFF9F5;
+            border-color: {c['accent']};
+        }}
+        QFrame#petStoreCover, QFrame#petStorePreview {{
+            background: #F3ECE6;
+            border: 1px solid #E9DED5;
+            border-radius: 13px;
+        }}
+        QLabel#petStoreCoverLabel {{
+            color: #B9AAA0;
+            font-size: 28px;
+        }}
+        QLabel#petStoreName {{
+            color: {c['text']};
+            font-size: 15px;
+            font-weight: 700;
+        }}
+        QLabel#petStoreBadge {{
+            background: #7A706A;
+            color: #FFFFFF;
+            border-radius: 9px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 700;
+        }}
+        QLabel#petStoreBadge[storeStatus="adopted"] {{
+            background: #3F5147;
+        }}
+        QLabel#petStoreBadge[storeStatus="update_available"] {{
+            background: {c['accent']};
+        }}
+        QLabel#petStoreBadge[storeStatus="local_existing"] {{
+            background: #7A706A;
+        }}
+        QPushButton#petStoreChip {{
+            background: {c['surface']};
+            border: 1px solid {c['border']};
+            border-radius: 13px;
+            padding: 5px 10px;
+        }}
+        QPushButton#petStoreChip:checked {{
+            background: {c['text']};
+            color: #FFFFFF;
+            border-color: {c['text']};
+        }}
         QFrame#stepBar {{
             background: rgba(255, 248, 243, 190);
             border: 1px solid rgba(255, 255, 255, 170);
@@ -319,8 +375,19 @@ def dialog_stylesheet() -> str:
             border-color: {c['accent']};
             font-weight: 700;
         }}
+        QPushButton#petStoreHeroButton {{
+            background: {c['accent']};
+            color: #FFFFFF;
+            border-color: {c['accent']};
+            font-weight: 700;
+        }}
         QPushButton#primaryButton:hover {{
             background: #C87555;
+        }}
+        QPushButton#primaryButton:disabled {{
+            background: #D8CEC6;
+            color: {c['muted_text']};
+            border-color: #D8CEC6;
         }}
         QSlider::groove:horizontal {{
             height: 5px;
@@ -337,6 +404,9 @@ def dialog_stylesheet() -> str:
         QScrollArea {{
             background: transparent;
             border: none;
+        }}
+        QWidget#petStoreScrollContent {{
+            background: transparent;
         }}
         QAbstractScrollArea#settingsScroll, QScrollArea#settingsScroll > QWidget, QScrollArea#settingsScroll > QWidget > QWidget {{
             background: transparent;

@@ -48,6 +48,9 @@ from petnest.core.package_loader import PackageLoader
 from petnest.core.pet_visibility_lease import PetVisibilityLease
 from petnest.core.pet_library import default_user_pets_directory, prepare_pet_library
 from petnest.core.pet_package_importer import PetImportOptions, PetPackageImportError, PetImportResult, import_pet_package
+from petnest.core.pet_store_cache import PetStoreCache
+from petnest.core.pet_store_service import PetStoreInstallResult, PetStoreService
+from petnest.core.pet_store_state import PetStoreStateStore
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import (
     RemoteResourceApplyResult,
@@ -179,6 +182,7 @@ class PetNest:
         settings_manager: SettingsManager | None = None,
         platform_adapter: PlatformEventAdapter | None = None,
         cursor_controller: CursorController | None = None,
+        store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
     ) -> None:
         if QApplication.instance() is None:
@@ -239,6 +243,19 @@ class PetNest:
             self.pets_root = prepare_pet_library(requested_root, bundled_pets_directory())
         else:
             self.pets_root = bundled_pets_directory()
+        self.pet_store_cache = PetStoreCache(
+            self.settings_manager.path.parent / "pet-store",
+            store_base_url,
+        )
+        self.pet_store_state = PetStoreStateStore(
+            self.pet_store_cache.root / "state.json"
+        )
+        self.pet_store_service = PetStoreService(
+            self.pet_store_cache,
+            self.pet_store_state,
+            self.pets_root,
+            is_pet_locked=self._is_pet_locked_for_exchange,
+        )
         self.loader = PackageLoader()
         self.action_synchronizer = AnimationActionSynchronizer()
         discovered_packages = self.loader.discover(self.pets_root)
@@ -480,6 +497,11 @@ class PetNest:
         position = self.window.pos()
         previous_action = self.window.current_action
         previous_paused = self.window.player.is_paused
+        scale_to_restore = (
+            self.settings.scale
+            if self.settings.mouse_follow_enabled
+            else self.window.scale
+        )
         window_load_attempted = False
         sync_result = None
         original_config: bytes | None = None
@@ -490,6 +512,7 @@ class PetNest:
             reloaded = self.loader.load(previous.root)
             window_load_attempted = True
             self.window.load_package(reloaded)
+            self.window.set_scale(scale_to_restore)
             self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
             if sync_result is not None and sync_result.changed and original_config is not None:
@@ -500,6 +523,7 @@ class PetNest:
             if window_load_attempted:
                 try:
                     self.window.load_package(previous)
+                    self.window.set_scale(scale_to_restore)
                     self.window.restore_runtime_state(previous_action, paused=previous_paused)
                     self.window.move(self.window.clamp_position(position))
                 except (OSError, ValueError, RuntimeError):
@@ -893,9 +917,11 @@ class PetNest:
                 current_pet_id=self.package.identifier,
                 save_animation_timelines=self._save_animation_timelines,
                 is_pet_locked=self._is_pet_locked_for_exchange,
+                pet_store_service=self.pet_store_service,
                 parent=self.window,
             )
             dialog.pet_installed.connect(self._handle_pet_exchange_installed)
+            dialog.store_pet_installed.connect(self._handle_store_pet_installed)
             dialog.actions_installed.connect(self._handle_actions_exchange_installed)
             dialog.finished.connect(lambda _result: self._clear_exchange_dialog(dialog))
             self._pet_action_exchange_dialog = dialog
@@ -928,6 +954,54 @@ class PetNest:
                 QMessageBox.warning(self.window, "无法载入宠物", f"宠物 {identifier} 已导入，但当前运行时未能载入。")
         if self._pet_action_exchange_dialog is not None:
             self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
+
+    def _handle_store_pet_installed(self, identifier: str, result: object) -> None:
+        """Adopt or update a store pet without switching to a newly adopted pet."""
+
+        if not isinstance(result, PetStoreInstallResult):
+            LOGGER.error("宠物商店返回了未知安装结果：%r", result)
+            return
+        self._synchronize_pet_library()
+        discovered = self.loader.discover(self.pets_root)
+        installed = next((item for item in discovered if item.identifier == identifier), None)
+        is_current = identifier == self.package.identifier
+        success = installed is not None
+        if success:
+            self.packages = discovered
+            if is_current:
+                success = self.reload_current_pet(synchronize=False)
+        if not success:
+            try:
+                self.pet_store_service.rollback_install(result)
+            except Exception as error:  # noqa: BLE001 - report a failed disk rollback explicitly.
+                LOGGER.exception("宠物商店安装和回滚均失败：%s", identifier)
+                message = f"宠物安装未能载入，且自动恢复失败：{error}"
+                if self._pet_action_exchange_dialog is not None:
+                    self._pet_action_exchange_dialog.complete_store_install_failure(message)
+                QMessageBox.critical(self.window, "无法恢复宠物", message)
+                return
+            self.packages = self.loader.discover(self.pets_root)
+            if is_current:
+                self.reload_current_pet(synchronize=False)
+            message = "宠物安装未能载入，已恢复安装前内容。"
+            if self._pet_action_exchange_dialog is not None:
+                self._pet_action_exchange_dialog.complete_store_install_failure(message)
+                self._pet_action_exchange_dialog.refresh_packages(
+                    self.packages, self.package.identifier
+                )
+            QMessageBox.warning(self.window, "宠物安装未生效", message)
+            return
+
+        if self.tray is not None:
+            self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
+        message = "宠物更新完成" if result.pet_import.replaced_existing else "宠物领养完成"
+        if self._pet_action_exchange_dialog is not None:
+            self._pet_action_exchange_dialog.complete_store_install(message)
+            self._pet_action_exchange_dialog.refresh_packages(
+                self.packages, self.package.identifier
+            )
+        else:
+            self.pet_store_service.confirm_install(result)
 
     def _handle_actions_exchange_installed(self, identifier: str, result: object) -> None:
         self.packages = self.loader.discover(self.pets_root)

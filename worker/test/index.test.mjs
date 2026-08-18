@@ -115,3 +115,132 @@ test("does not cache the manifest", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("proxies the store catalog without caching", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /\/contents\/store\/catalog\.json\?ref=main$/);
+    return new Response(
+      JSON.stringify({
+        schema_version: 1,
+        pets: [
+          {
+            cover: { path: "store/pets/sample_pet/cover.png", sha256: "c".repeat(64) },
+            idle_preview: {
+              path: "store/pets/sample_pet/idle-preview.png",
+              sha256: "d".repeat(64),
+            },
+            package: {
+              path: "store/pets/sample_pet/package.zip",
+              sha256: "e".repeat(64),
+            },
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  };
+  try {
+    const response = await worker.fetch(new Request(`${workerUrl}/v1/store/catalog.json`), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("allows only SHA-matched files listed in the store catalog", async () => {
+  const coverSha = "c".repeat(64);
+  const requestedUrls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const textUrl = String(url);
+    requestedUrls.push(textUrl);
+    if (textUrl.endsWith("/store/catalog.json?ref=main")) {
+      return new Response(
+        JSON.stringify({
+          schema_version: 1,
+          pets: [
+            {
+              cover: { path: "store/pets/sample_pet/cover.png", sha256: coverSha },
+              idle_preview: {
+                path: "store/pets/sample_pet/idle-preview.png",
+                sha256: "d".repeat(64),
+              },
+              package: {
+                path: "store/pets/sample_pet/package.zip",
+                sha256: "e".repeat(64),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("cover", { status: 200 });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request(
+        `${workerUrl}/v1/store/files/store/pets/sample_pet/cover.png?sha256=${coverSha}`,
+      ),
+      env,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), "cover");
+    assert.equal(response.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.equal(
+      requestedUrls.at(-1),
+      "https://api.github.com/repos/hhhhhhxq/petnest-resources/contents/store/pets/sample_pet/cover.png?ref=main",
+    );
+    assert.ok(requestedUrls.length === 1 || requestedUrls.length === 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects private store metadata, wrong SHA, and cross-catalog paths", async () => {
+  let targetCalls = 0;
+  const coverSha = "f".repeat(64);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const textUrl = String(url);
+    if (textUrl.endsWith("/store/catalog.json?ref=main")) {
+      return new Response(
+        JSON.stringify({
+          schema_version: 1,
+          pets: [
+            {
+              cover: { path: "store/pets/sample_pet/cover.png", sha256: coverSha },
+              idle_preview: { path: "store/pets/sample_pet/idle-preview.png", sha256: "a".repeat(64) },
+              package: { path: "store/pets/sample_pet/package.zip", sha256: "b".repeat(64) },
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    targetCalls += 1;
+    return new Response("unexpected", { status: 200 });
+  };
+  try {
+    const listing = await worker.fetch(
+      new Request(`${workerUrl}/v1/store/files/store/pets/sample_pet/listing.json?sha256=${coverSha}`),
+      env,
+    );
+    const wrongSha = await worker.fetch(
+      new Request(`${workerUrl}/v1/store/files/store/pets/sample_pet/cover.png?sha256=${"0".repeat(64)}`),
+      env,
+    );
+    const runtimePath = await worker.fetch(
+      new Request(`${workerUrl}/v1/store/files/resources/cursors/demo/arrow.cur?sha256=${coverSha}`),
+      env,
+    );
+    assert.equal(listing.status, 404);
+    assert.equal(wrongSha.status, 404);
+    assert.equal(runtimePath.status, 404);
+    assert.equal(targetCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

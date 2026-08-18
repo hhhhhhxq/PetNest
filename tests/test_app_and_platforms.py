@@ -1628,7 +1628,9 @@ def test_reload_current_pet_rolls_back_window_when_position_move_fails(
 
     assert application.reload_current_pet() is False
 
-    assert calls == 4
+    # Reload and rollback both restore the visible scale, and set_scale()
+    # reclamps the window before the explicit saved-position restore.
+    assert calls == 5
     assert application.package is previous_package
     assert application.window.package is previous_package
     assert application.window.pos() == previous_position

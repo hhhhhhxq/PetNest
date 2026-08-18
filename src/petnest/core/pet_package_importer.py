@@ -96,6 +96,35 @@ def import_pet_package(
         materialized.__exit__(None, None, None)
 
 
+def rollback_pet_import(result: PetImportResult, pets_root: Path) -> None:
+    """Undo one completed import after the runtime rejects the installed package."""
+
+    root = Path(pets_root).expanduser().resolve()
+    expected = (root / result.pet_id).resolve(strict=False)
+    target = Path(result.pet_root).expanduser().resolve(strict=False)
+    if target != expected or not target.is_relative_to(root):
+        raise PetPackageImportError("回滚目标不在宠物目录内")
+    if result.replaced_existing:
+        backup = result.backup_path
+        if backup is None or not backup.is_file() or backup.is_symlink():
+            raise PetPackageImportError("更新宠物没有可用备份")
+        backup_root = (root / ".backups" / result.pet_id).resolve(strict=False)
+        if not backup.resolve().is_relative_to(backup_root):
+            raise PetPackageImportError("宠物备份路径不安全")
+        import_pet_package(
+            backup,
+            root,
+            PetImportOptions(create_backup=False),
+        )
+        return
+    if target.is_symlink():
+        raise PetPackageImportError("回滚目标不能是符号链接")
+    if target.exists():
+        if not target.is_dir():
+            raise PetPackageImportError("回滚目标不是宠物目录")
+        shutil.rmtree(target)
+
+
 def _replace_candidate_with_source(candidate: Path, source_root: Path) -> None:
     if candidate.exists():
         shutil.rmtree(candidate)
@@ -279,4 +308,5 @@ __all__ = [
     "PetImportResult",
     "PetPackageImportError",
     "import_pet_package",
+    "rollback_pet_import",
 ]

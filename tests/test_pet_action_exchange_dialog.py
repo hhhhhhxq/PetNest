@@ -11,12 +11,14 @@ from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 from tests.test_package_validator import _write_package
 
 
-def test_exchange_dialog_has_four_pages_and_single_shell_footer(qtbot: object, tmp_path: Path) -> None:
+def test_exchange_dialog_has_store_page_and_single_shell_footer(qtbot: object, tmp_path: Path) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")
     qtbot.addWidget(dialog)
 
-    assert dialog.page_names() == ["导入宠物", "导入动作", "编辑动作", "导出动作"]
+    assert dialog.page_names() == ["导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作"]
+    dialog.select_page("宠物商店")
+    assert dialog.current_page() is dialog.pet_store_page
     assert dialog.primary_button.parentWidget() is dialog.window_shell
     assert dialog.secondary_button.parentWidget() is dialog.window_shell
     assert len(dialog.window_shell.findChildren(type(dialog.primary_button), "primaryButton")) == 1
@@ -116,6 +118,17 @@ def test_exchange_dialog_navigation_and_close_respect_leave_guard(
     assert dialog.current_page_name() == "编辑动作"
     dialog.reject()
     assert dialog.isVisible()
+
+
+def test_exchange_dialog_checks_background_store_page_before_close(
+    qtbot: object, tmp_path: Path, monkeypatch: object
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    monkeypatch.setattr(dialog.pet_store_page, "request_close", lambda: False)
+
+    assert dialog._can_close() is False
 
 
 def test_exchange_dialog_refreshes_all_package_selectors_and_deactivates_pages(

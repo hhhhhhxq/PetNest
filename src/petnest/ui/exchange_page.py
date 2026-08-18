@@ -50,6 +50,9 @@ class ExchangePage(QWidget):
     def request_leave(self) -> bool:
         return True
 
+    def request_close(self) -> bool:
+        return self.request_leave()
+
     def deactivate(self) -> None:
         return
 

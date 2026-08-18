@@ -13,6 +13,7 @@ from petnest.core.pet_package_importer import (
     PetImportOptions,
     PetPackageImportError,
     import_pet_package,
+    rollback_pet_import,
 )
 
 
@@ -149,3 +150,35 @@ def test_rejects_unsafe_local_action_name_when_preserving(tmp_path: Path) -> Non
 
     with pytest.raises(PetPackageImportError, match="动作名称"):
         import_pet_package(source, pets_root, PetImportOptions(preserve_local_actions=True))
+
+
+def test_rollback_pet_import_removes_new_pet(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    write_pet(source, identifier="new_pet")
+    pets_root = tmp_path / "pets"
+    result = import_pet_package(source, pets_root)
+
+    rollback_pet_import(result, pets_root)
+
+    assert not result.pet_root.exists()
+
+
+def test_rollback_pet_import_restores_replaced_pet_from_backup(tmp_path: Path) -> None:
+    pets_root = tmp_path / "pets"
+    existing = pets_root / "pingan"
+    write_pet(existing)
+    old = json.loads((existing / "pet.json").read_text(encoding="utf-8"))
+    old["name"] = "Old"
+    (existing / "pet.json").write_text(json.dumps(old), encoding="utf-8")
+    source = tmp_path / "source"
+    write_pet(source)
+    new = json.loads((source / "pet.json").read_text(encoding="utf-8"))
+    new["name"] = "New"
+    (source / "pet.json").write_text(json.dumps(new), encoding="utf-8")
+    result = import_pet_package(source, pets_root)
+    assert json.loads((existing / "pet.json").read_text(encoding="utf-8"))["name"] == "New"
+
+    rollback_pet_import(result, pets_root)
+
+    restored = json.loads((existing / "pet.json").read_text(encoding="utf-8"))
+    assert restored["name"] == "Old"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,6 +52,33 @@ def test_app_saves_editor_page_timeline_and_reloads_current_pet(qtbot: object, t
     assert result.success
     assert result.package is application.package
     assert saved["animations"]["idle"]["frame_durations_ms"] == [180, 90, 120, 160]
+    application.shutdown()
+
+
+def test_reload_current_pet_preserves_configured_scale(
+    qtbot: object, tmp_path: Path
+) -> None:
+    application = _application(tmp_path, qtbot)
+    application.apply_settings(replace(application.settings, scale=1.2))
+    assert application.window.scale == pytest.approx(1.2)
+
+    assert application.reload_current_pet(synchronize=False) is True
+
+    assert application.window.scale == pytest.approx(1.2)
+    assert application.settings.scale == pytest.approx(1.2)
+    application.shutdown()
+
+
+def test_reload_current_pet_preserves_visible_runtime_scale_when_settings_lag(
+    qtbot: object, tmp_path: Path
+) -> None:
+    application = _application(tmp_path, qtbot)
+    application.window.set_scale(1.1)
+    assert application.settings.scale != pytest.approx(1.1)
+
+    assert application.reload_current_pet(synchronize=False) is True
+
+    assert application.window.scale == pytest.approx(1.1)
     application.shutdown()
 
 
