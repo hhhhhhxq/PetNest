@@ -24,6 +24,16 @@ class ChatMessageKind(StrEnum):
     IMAGE = "image"
 
 
+class ChatScope(StrEnum):
+    DIRECT = "direct"
+    LAN_ROOM = "lan_room"
+    ALERT_GROUP = "alert_group"
+
+
+LAN_ROOM_DEVICE_ID = "*"
+ALERT_GROUP_DEVICE_ID = "@lan-alert-group"
+
+
 MAX_CHAT_TEXT_LENGTH = 2_000
 MAX_CHAT_IMAGE_BYTES = 1_500_000
 
@@ -57,6 +67,29 @@ class LanPeer:
 
 
 @dataclass(frozen=True, slots=True)
+class DangerAlert:
+    alert_id: str
+    sender_device_id: str
+    sender_name: str
+    target_device_id: str
+    created_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class DangerAlertAck:
+    alert_id: str
+    sender_device_id: str
+    target_device_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DangerAlertDeliveryResult:
+    alert_id: str
+    target_device_ids: tuple[str, ...]
+    acknowledged_device_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ChatDraft:
     """A validated direct or current-LAN-room chat payload."""
 
@@ -66,6 +99,7 @@ class ChatDraft:
     image_data: bytes | None = None
     image_name: str | None = None
     is_group: bool = False
+    scope: ChatScope | None = None
 
     def __post_init__(self) -> None:
         target = str(self.target_device_id).strip()
@@ -73,9 +107,18 @@ class ChatDraft:
             raise ValueError("聊天目标设备无效")
         if not isinstance(self.is_group, bool):
             raise ValueError("聊天会话类型无效")
-        if not self.is_group and target == "*":
+        try:
+            scope = (
+                ChatScope.LAN_ROOM if self.is_group else ChatScope.DIRECT
+            ) if self.scope is None else ChatScope(self.scope)
+        except (TypeError, ValueError) as error:
+            raise ValueError("聊天会话类型无效") from error
+        is_group = scope is not ChatScope.DIRECT
+        if not is_group and target in {LAN_ROOM_DEVICE_ID, ALERT_GROUP_DEVICE_ID}:
             raise ValueError("群聊目标必须使用群聊消息")
         object.__setattr__(self, "target_device_id", target)
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "is_group", is_group)
         try:
             kind = self.kind if isinstance(self.kind, ChatMessageKind) else ChatMessageKind(self.kind)
         except (TypeError, ValueError) as error:
@@ -117,15 +160,53 @@ class ChatDraft:
 
     @classmethod
     def group_text_message(cls, text: str) -> "ChatDraft":
-        return cls("*", ChatMessageKind.TEXT, text=text, is_group=True)
+        return cls(LAN_ROOM_DEVICE_ID, ChatMessageKind.TEXT, text=text, is_group=True, scope=ChatScope.LAN_ROOM)
 
     @classmethod
     def group_emoji(cls, emoji: str) -> "ChatDraft":
-        return cls("*", ChatMessageKind.EMOJI, text=emoji, is_group=True)
+        return cls(LAN_ROOM_DEVICE_ID, ChatMessageKind.EMOJI, text=emoji, is_group=True, scope=ChatScope.LAN_ROOM)
 
     @classmethod
     def group_image(cls, data: bytes, name: str) -> "ChatDraft":
-        return cls("*", ChatMessageKind.IMAGE, image_data=data, image_name=name, is_group=True)
+        return cls(
+            LAN_ROOM_DEVICE_ID,
+            ChatMessageKind.IMAGE,
+            image_data=data,
+            image_name=name,
+            is_group=True,
+            scope=ChatScope.LAN_ROOM,
+        )
+
+    @classmethod
+    def alert_group_text_message(cls, text: str) -> "ChatDraft":
+        return cls(
+            ALERT_GROUP_DEVICE_ID,
+            ChatMessageKind.TEXT,
+            text=text,
+            is_group=True,
+            scope=ChatScope.ALERT_GROUP,
+        )
+
+    @classmethod
+    def alert_group_emoji(cls, emoji: str) -> "ChatDraft":
+        return cls(
+            ALERT_GROUP_DEVICE_ID,
+            ChatMessageKind.EMOJI,
+            text=emoji,
+            is_group=True,
+            scope=ChatScope.ALERT_GROUP,
+        )
+
+    @classmethod
+    def alert_group_image(cls, data: bytes, name: str) -> "ChatDraft":
+        return cls(
+            ALERT_GROUP_DEVICE_ID,
+            ChatMessageKind.IMAGE,
+            image_data=data,
+            image_name=name,
+            is_group=True,
+            scope=ChatScope.ALERT_GROUP,
+        )
 
     def to_message(self, *, sender_device_id: str, sender_name: str) -> "LanChatMessage":
         return LanChatMessage(
@@ -139,6 +220,7 @@ class ChatDraft:
             image_data=self.image_data,
             image_name=self.image_name,
             is_group=self.is_group,
+            scope=self.scope,
         )
 
 
@@ -154,10 +236,23 @@ class LanChatMessage:
     image_data: bytes | None = None
     image_name: str | None = None
     is_group: bool = False
+    scope: ChatScope | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            scope = (
+                ChatScope.LAN_ROOM if self.is_group else ChatScope.DIRECT
+            ) if self.scope is None else ChatScope(self.scope)
+        except (TypeError, ValueError) as error:
+            raise ValueError("聊天会话类型无效") from error
+        object.__setattr__(self, "scope", scope)
+        object.__setattr__(self, "is_group", scope is not ChatScope.DIRECT)
 
     def peer_device_id(self, local_device_id: str) -> str:
-        if self.is_group:
-            return "*"
+        if self.scope is ChatScope.LAN_ROOM:
+            return LAN_ROOM_DEVICE_ID
+        if self.scope is ChatScope.ALERT_GROUP:
+            return ALERT_GROUP_DEVICE_ID
         return self.target_device_id if self.sender_device_id == local_device_id else self.sender_device_id
 
 

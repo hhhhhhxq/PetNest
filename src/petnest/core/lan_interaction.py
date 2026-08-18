@@ -16,6 +16,9 @@ from petnest.core.lan_chat import LanChatImageError, validate_chat_image_data
 from petnest.models.lan_interaction import (
     ChatDraft,
     ChatMessageKind,
+    ChatScope,
+    DangerAlert,
+    DangerAlertAck,
     InteractionDraft,
     InteractionKind,
     LanChatMessage,
@@ -59,8 +62,16 @@ class LanPacketCodec:
     capabilities = ("greeting", "heart", "text", "effect")
 
     @classmethod
-    def hello(cls, *, device_id: str, display_name: str, pet_name: str, port: int) -> dict[str, Any]:
-        return {
+    def hello(
+        cls,
+        *,
+        device_id: str,
+        display_name: str,
+        pet_name: str,
+        port: int,
+        alert_group_joined: bool | None = None,
+    ) -> dict[str, Any]:
+        packet: dict[str, Any] = {
             "version": LAN_PROTOCOL_VERSION,
             "kind": "hello",
             "device_id": _identity(device_id, "设备 ID"),
@@ -69,10 +80,29 @@ class LanPacketCodec:
             "port": _port(port),
             "capabilities": list(cls.capabilities),
         }
+        if alert_group_joined is not None:
+            if not isinstance(alert_group_joined, bool):
+                raise LanProtocolError("预警组加入状态无效")
+            packet["alert_group_joined"] = alert_group_joined
+        return packet
 
     @classmethod
-    def hello_ack(cls, *, device_id: str, display_name: str, pet_name: str, port: int) -> dict[str, Any]:
-        packet = cls.hello(device_id=device_id, display_name=display_name, pet_name=pet_name, port=port)
+    def hello_ack(
+        cls,
+        *,
+        device_id: str,
+        display_name: str,
+        pet_name: str,
+        port: int,
+        alert_group_joined: bool | None = None,
+    ) -> dict[str, Any]:
+        packet = cls.hello(
+            device_id=device_id,
+            display_name=display_name,
+            pet_name=pet_name,
+            port=port,
+            alert_group_joined=alert_group_joined,
+        )
         packet["kind"] = "hello_ack"
         return packet
 
@@ -80,6 +110,28 @@ class LanPacketCodec:
     def interaction(cls, draft: InteractionDraft, sender_id: str, sender_name: str) -> dict[str, Any]:
         packet = draft.to_payload(sender_id=sender_id, sender_name=sender_name)
         return {"version": LAN_PROTOCOL_VERSION, "kind": "interaction", **packet}
+
+    @classmethod
+    def danger_alert(cls, alert: DangerAlert) -> dict[str, Any]:
+        return {
+            "version": LAN_PROTOCOL_VERSION,
+            "kind": "danger_alert",
+            "alert_id": _identity(alert.alert_id, "预警 ID"),
+            "sender_device_id": _identity(alert.sender_device_id, "发送方设备 ID"),
+            "sender_name": _bounded_text(alert.sender_name, "发送方名称", MAX_DISPLAY_NAME_LENGTH),
+            "target_device_id": _identity(alert.target_device_id, "目标设备 ID"),
+            "created_at": _alert_epoch(alert.created_at),
+        }
+
+    @classmethod
+    def danger_alert_ack(cls, ack: DangerAlertAck) -> dict[str, Any]:
+        return {
+            "version": LAN_PROTOCOL_VERSION,
+            "kind": "danger_alert_ack",
+            "alert_id": _identity(ack.alert_id, "预警 ID"),
+            "sender_device_id": _identity(ack.sender_device_id, "确认方设备 ID"),
+            "target_device_id": _identity(ack.target_device_id, "目标设备 ID"),
+        }
 
     @classmethod
     def codex_usage_sync(
@@ -162,7 +214,13 @@ class LanPacketCodec:
             image_data=message.image_data,
             image_name=message.image_name,
             is_group=message.is_group,
+            scope=message.scope,
         )
+        scope = {
+            ChatScope.DIRECT: "direct",
+            ChatScope.LAN_ROOM: "group",
+            ChatScope.ALERT_GROUP: "alert_group",
+        }[draft.scope]
         packet: dict[str, Any] = {
             "version": LAN_PROTOCOL_VERSION,
             "kind": "chat",
@@ -171,7 +229,7 @@ class LanPacketCodec:
             "sender_name": sender_name,
             "target_device_id": target,
             "type": draft.kind.value,
-            "scope": "group" if draft.is_group else "direct",
+            "scope": scope,
             "created_at": _sync_epoch(message.created_at),
         }
         if draft.kind is ChatMessageKind.IMAGE:
@@ -212,6 +270,10 @@ class LanPacketCodec:
         capabilities = raw.get("capabilities")
         if not isinstance(capabilities, list) or any(item not in LanPacketCodec.capabilities for item in capabilities):
             raise LanProtocolError("设备能力列表无效")
+        alert_group_supported = "alert_group_joined" in raw
+        alert_group_joined = raw.get("alert_group_joined", False)
+        if not isinstance(alert_group_joined, bool):
+            raise LanProtocolError("预警组加入状态无效")
         return {
             "kind": raw["kind"],
             "device_id": device_id,
@@ -219,6 +281,8 @@ class LanPacketCodec:
             "pet_name": pet_name,
             "port": port,
             "capabilities": tuple(capabilities),
+            "alert_group_supported": alert_group_supported,
+            "alert_group_joined": alert_group_joined,
         }
 
     @classmethod
@@ -246,6 +310,52 @@ class LanPacketCodec:
         except ValueError as error:
             raise LanProtocolError(str(error)) from error
         return ReceivedInteraction(sender_device_id=sender_id, sender_name=sender_name, draft=draft)
+
+    @classmethod
+    def decode_danger_alert(
+        cls,
+        data: bytes,
+        *,
+        local_device_id: str,
+        now: int,
+    ) -> DangerAlert:
+        raw = cls._decode_envelope(data, expected_kind={"danger_alert"})
+        sender_id = _identity(raw.get("sender_device_id"), "发送方设备 ID")
+        if sender_id == local_device_id:
+            raise LanProtocolError("忽略本机发出的预警")
+        target = _identity(raw.get("target_device_id"), "目标设备 ID")
+        if target != local_device_id:
+            raise LanProtocolError("预警消息的目标设备不是本机")
+        created_at = _alert_epoch(raw.get("created_at"))
+        if created_at < now - 10 or created_at > now + 5:
+            raise LanProtocolError("预警消息已过期")
+        return DangerAlert(
+            alert_id=_identity(raw.get("alert_id"), "预警 ID"),
+            sender_device_id=sender_id,
+            sender_name=_bounded_text(raw.get("sender_name"), "发送方名称", MAX_DISPLAY_NAME_LENGTH),
+            target_device_id=target,
+            created_at=created_at,
+        )
+
+    @classmethod
+    def decode_danger_alert_ack(
+        cls,
+        data: bytes,
+        *,
+        local_device_id: str,
+    ) -> DangerAlertAck:
+        raw = cls._decode_envelope(data, expected_kind={"danger_alert_ack"})
+        sender_id = _identity(raw.get("sender_device_id"), "确认方设备 ID")
+        if sender_id == local_device_id:
+            raise LanProtocolError("忽略本机发出的预警确认")
+        target = _identity(raw.get("target_device_id"), "目标设备 ID")
+        if target != local_device_id:
+            raise LanProtocolError("预警确认的目标设备不是本机")
+        return DangerAlertAck(
+            alert_id=_identity(raw.get("alert_id"), "预警 ID"),
+            sender_device_id=sender_id,
+            target_device_id=target,
+        )
 
     @classmethod
     def decode_codex_usage_sync(
@@ -336,10 +446,17 @@ class LanPacketCodec:
             kind = ChatMessageKind(raw.get("type"))
         except (TypeError, ValueError) as error:
             raise LanProtocolError("聊天消息类型无效") from error
-        scope = raw.get("scope", "direct")
-        if scope not in {"direct", "group"}:
+        raw_scope = raw.get("scope", "direct")
+        scope_map = {
+            "direct": ChatScope.DIRECT,
+            "group": ChatScope.LAN_ROOM,
+            "lan_room": ChatScope.LAN_ROOM,
+            "alert_group": ChatScope.ALERT_GROUP,
+        }
+        if raw_scope not in scope_map:
             raise LanProtocolError("聊天会话类型无效")
-        is_group = scope == "group"
+        scope = scope_map[str(raw_scope)]
+        is_group = scope is not ChatScope.DIRECT
         if kind is ChatMessageKind.IMAGE:
             encoded = raw.get("image_data")
             if not isinstance(encoded, str) or len(encoded) > 2_000_000:
@@ -360,11 +477,12 @@ class LanPacketCodec:
                 image_data=image_data,
                 image_name=str(raw.get("image_name") or ""),
                 is_group=is_group,
+                scope=scope,
             )
         elif kind is ChatMessageKind.EMOJI:
-            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group)
+            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group, scope=scope)
         else:
-            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group)
+            draft = ChatDraft(target, kind, text=str(raw.get("text") or ""), is_group=is_group, scope=scope)
         return LanChatMessage(
             message_id=message_id,
             sender_device_id=sender_id,
@@ -376,6 +494,7 @@ class LanPacketCodec:
             image_data=draft.image_data,
             image_name=draft.image_name,
             is_group=draft.is_group,
+            scope=draft.scope,
         )
 
     @classmethod
@@ -445,6 +564,12 @@ def _valid_account_key(value: object) -> bool:
 def _sync_epoch(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1_500_000_000 <= value <= 4_102_444_800:
         raise LanProtocolError("Codex 用量时间无效")
+    return value
+
+
+def _alert_epoch(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1_500_000_000 <= value <= 4_102_444_800:
+        raise LanProtocolError("预警时间无效")
     return value
 
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
+from time import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -15,7 +17,175 @@ from petnest.core.lan_discovery import InterfaceIPv4
 from petnest.core.lan_interaction import LanPacketCodec
 from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
 from petnest.core.lan_service import LanInteractionService
-from petnest.models.lan_interaction import InteractionDraft, InteractionKind, LanPeer
+from petnest.models.lan_interaction import ChatDraft, ChatScope, InteractionDraft, InteractionKind, LanPeer
+from petnest.models.lan_interaction import DangerAlert, DangerAlertAck
+
+
+def test_discovery_and_manual_refresh_advertise_alert_group_membership(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local",
+        display_name="本机",
+        pet_name="平安",
+        port=0,
+        alert_group_joined=True,
+        interface_provider=lambda: (),
+    )
+    packets: list[dict[str, object]] = []
+    service._send_packet = lambda packet, _address, _port: packets.append(packet) or True
+    try:
+        assert service.start()
+        assert packets
+        assert all(packet.get("alert_group_joined") is True for packet in packets)
+
+        packets.clear()
+        service._manual_peer_targets["peer"] = ("192.168.20.12", 18487)
+        service._refresh_manual_peers()
+
+        assert len(packets) == 1
+        assert packets[0]["alert_group_joined"] is True
+    finally:
+        service.stop()
+
+
+def test_alert_group_chat_requires_both_local_and_sender_membership(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local",
+        display_name="本机",
+        pet_name="平安",
+        port=0,
+        alert_group_joined=False,
+    )
+    message = replace(
+        ChatDraft.alert_group_text_message("注意安全").to_message(
+            sender_device_id="sender",
+            sender_name="发送方",
+        ),
+        target_device_id="local",
+    )
+    assert message.scope is ChatScope.ALERT_GROUP
+    service._peers["sender"] = LanPeer(
+        "sender",
+        "发送方",
+        alert_group_supported=True,
+        alert_group_joined=True,
+    )
+
+    assert service._allow_chat(message) is False
+
+    service.update_alert_group_membership(True)
+    assert service._allow_chat(message) is True
+
+    service._peers["sender"] = replace(service._peers["sender"], alert_group_joined=False)
+    assert service._allow_chat(message) is False
+
+
+def test_presence_updates_peer_alert_group_state(qtbot) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安", port=0)
+    packet = LanPacketCodec.hello(
+        device_id="peer",
+        display_name="小林",
+        pet_name="橘猫",
+        port=19000,
+        alert_group_joined=True,
+    )
+
+    service._handle_datagram(LanPacketCodec.encode(packet), QHostAddress("192.168.1.20"), 19000)
+
+    peer = next(item for item in service.peers() if item.device_id == "peer")
+    assert peer.alert_group_supported is True
+    assert peer.alert_group_joined is True
+
+
+def test_danger_alert_retries_unacknowledged_peer_and_reports_real_acks(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="sender",
+        display_name="发送方",
+        pet_name="平安",
+        port=0,
+        alert_group_joined=True,
+        interface_provider=lambda: (),
+    )
+    service._danger_retry_ms = 20
+    service._danger_completion_ms = 60
+    sent: list[tuple[dict[str, object], str, int]] = []
+    completed = []
+    service.danger_alert_delivery_completed.connect(completed.append)
+    try:
+        assert service.start()
+        service._peers = {
+            "acked": LanPeer(
+                "acked", "甲", ip_address="127.0.0.1", port=19001,
+                alert_group_supported=True, alert_group_joined=True,
+            ),
+            "silent": LanPeer(
+                "silent", "乙", ip_address="127.0.0.1", port=19002,
+                alert_group_supported=True, alert_group_joined=True,
+            ),
+            "left": LanPeer(
+                "left", "丙", ip_address="127.0.0.1", port=19003,
+                alert_group_supported=True, alert_group_joined=False,
+            ),
+        }
+        service._send_packet = (
+            lambda packet, address, port: sent.append((packet, address.toString(), port)) or True
+        )
+
+        assert service.send_danger_alert()
+        alert_id = str(sent[0][0]["alert_id"])
+        ack = DangerAlertAck(alert_id, "acked", "sender")
+        service._handle_datagram(
+            LanPacketCodec.encode(LanPacketCodec.danger_alert_ack(ack)),
+            QHostAddress("127.0.0.1"),
+            19001,
+        )
+        qtbot.waitUntil(lambda: len(completed) == 1, timeout=500)
+
+        assert set(completed[0].target_device_ids) == {"acked", "silent"}
+        assert completed[0].acknowledged_device_ids == ("acked",)
+        targets = [
+            str(packet["target_device_id"])
+            for packet, _host, _port in sent
+            if packet.get("kind") == "danger_alert"
+        ]
+        assert targets.count("acked") == 1
+        assert targets.count("silent") == 2
+        assert "left" not in targets
+    finally:
+        service.stop()
+
+
+def test_received_danger_alert_is_trusted_deduplicated_and_rate_limited(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="receiver",
+        display_name="接收方",
+        pet_name="平安",
+        alert_group_joined=True,
+    )
+    service._peers["sender"] = LanPeer(
+        "sender", "小林", ip_address="192.168.1.20", port=19000,
+        alert_group_supported=True, alert_group_joined=True,
+    )
+    received = []
+    replies = []
+    service.danger_alert_received.connect(received.append)
+    service._send_packet = lambda packet, address, port: replies.append((packet, address.toString(), port)) or True
+    created_at = int(time())
+
+    first = DangerAlert("alert-1", "sender", "小林", "receiver", created_at)
+    encoded = LanPacketCodec.encode(LanPacketCodec.danger_alert(first))
+    service._handle_datagram(encoded, QHostAddress("192.168.1.20"), 19000)
+    service._handle_datagram(encoded, QHostAddress("192.168.1.20"), 19000)
+    for index in range(2, 5):
+        alert = DangerAlert(f"alert-{index}", "sender", "小林", "receiver", created_at)
+        service._handle_datagram(
+            LanPacketCodec.encode(LanPacketCodec.danger_alert(alert)),
+            QHostAddress("192.168.1.20"),
+            19000,
+        )
+
+    assert [item.alert_id for item in received] == ["alert-1", "alert-2", "alert-3"]
+    assert len(replies) == 4
+    assert all(item[0]["kind"] == "danger_alert_ack" for item in replies)
 
 
 def test_saved_peer_is_projected_as_offline_until_it_reconnects(tmp_path, qtbot) -> None:

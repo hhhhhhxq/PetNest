@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import logging
 from ipaddress import IPv4Address, ip_address as parse_ip_address
-from time import monotonic
+from time import monotonic, time
+import uuid
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket, QUdpSocket
@@ -22,11 +23,29 @@ from petnest.core.lan_interaction import (
     ReceivedInteraction,
 )
 from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
-from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, InteractionDraft, LanChatMessage, LanPeer
+from petnest.models.lan_interaction import (
+    ChatDraft,
+    ChatMessageKind,
+    ChatScope,
+    DangerAlert,
+    DangerAlertAck,
+    DangerAlertDeliveryResult,
+    InteractionDraft,
+    LanChatMessage,
+    LanPeer,
+)
 
 LOGGER = logging.getLogger(__name__)
 MANUAL_PROBE_TIMEOUT_MS = 4_000
 MANUAL_REFRESH_INTERVAL_MS = 8_000
+
+
+@dataclass(slots=True)
+class _PendingDangerAlert:
+    target_device_ids: tuple[str, ...]
+    endpoints: dict[str, tuple[str, int]]
+    packets: dict[str, dict[str, object]]
+    acknowledged: set[str]
 
 
 class LanInteractionService(QObject):
@@ -40,6 +59,8 @@ class LanInteractionService(QObject):
     codex_usage_sync_received = Signal(object)
     chat_message_added = Signal(object)
     chat_message_received = Signal(object)
+    danger_alert_received = Signal(object)
+    danger_alert_delivery_completed = Signal(object)
     error = Signal(str)
     running_changed = Signal(bool)
 
@@ -52,6 +73,7 @@ class LanInteractionService(QObject):
         port: int = LAN_INTERACTION_PORT,
         interface_provider: Callable[[], Iterable[InterfaceIPv4]] | None = None,
         peer_registry: KnownLanPeerRegistry | None = None,
+        alert_group_joined: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -61,6 +83,7 @@ class LanInteractionService(QObject):
         self.requested_port = port
         self._interface_provider = interface_provider or qt_interface_ipv4
         self._peer_registry = peer_registry
+        self.alert_group_joined = bool(alert_group_joined)
         self._port = port
         self._running = False
         self._peers: dict[str, LanPeer] = {}
@@ -70,6 +93,12 @@ class LanInteractionService(QObject):
         self._chat_times: dict[tuple[str, str], list[float]] = {}
         self._chat_messages: list[LanChatMessage] = []
         self._chat_message_ids: set[str] = set()
+        self._danger_alert_times: dict[str, list[float]] = {}
+        self._seen_danger_alert_ids: dict[str, float] = {}
+        self._pending_danger_alerts: dict[str, _PendingDangerAlert] = {}
+        self._last_danger_alert_sent_at = float("-inf")
+        self._danger_retry_ms = 300
+        self._danger_completion_ms = 1_500
         self._manual_peer_targets: dict[str, tuple[str, int]] = {}
         self._manual_probe_target: tuple[str, int] | None = None
         self._saved_probe_targets: dict[tuple[str, int], str] = {}
@@ -212,6 +241,9 @@ class LanInteractionService(QObject):
         self._interaction_times.clear()
         self._usage_sync_times.clear()
         self._chat_times.clear()
+        self._danger_alert_times.clear()
+        self._seen_danger_alert_ids.clear()
+        self._pending_danger_alerts.clear()
         self.running_changed.emit(False)
 
     def update_identity(self, *, display_name: str, pet_name: str) -> None:
@@ -219,6 +251,16 @@ class LanInteractionService(QObject):
         self.pet_name = pet_name
         if self._running:
             self.discover()
+
+    def update_alert_group_membership(self, joined: bool) -> None:
+        if not isinstance(joined, bool):
+            raise ValueError("预警组加入状态无效")
+        if self.alert_group_joined == joined:
+            return
+        self.alert_group_joined = joined
+        if self._running:
+            self.discover()
+            self._refresh_manual_peers()
 
     def discover(self) -> None:
         if not self._running:
@@ -228,6 +270,7 @@ class LanInteractionService(QObject):
             display_name=self.display_name,
             pet_name=self.pet_name,
             port=self._port,
+            alert_group_joined=self.alert_group_joined,
         )
         try:
             broadcasts = eligible_broadcast_addresses(self._interface_provider())
@@ -246,6 +289,7 @@ class LanInteractionService(QObject):
             display_name=self.display_name,
             pet_name=self.pet_name,
             port=self._port,
+            alert_group_joined=self.alert_group_joined,
         )
         for ip_address, port in tuple(self._manual_peer_targets.values()):
             self._send_packet(packet, QHostAddress(ip_address), port)
@@ -262,6 +306,7 @@ class LanInteractionService(QObject):
             display_name=self.display_name,
             pet_name=self.pet_name,
             port=self._port,
+            alert_group_joined=self.alert_group_joined,
         )
         for saved_peer in saved_peers:
             target = (saved_peer.ip_address, saved_peer.port)
@@ -297,6 +342,7 @@ class LanInteractionService(QObject):
             display_name=self.display_name,
             pet_name=self.pet_name,
             port=self._port,
+            alert_group_joined=self.alert_group_joined,
         )
         self._manual_probe_target = (normalized_ip, port)
         if not self._send_packet(packet, QHostAddress(normalized_ip), port):
@@ -316,6 +362,77 @@ class LanInteractionService(QObject):
         packet = LanPacketCodec.interaction(draft, self.device_id, self.display_name)
         return self._send_packet(packet, QHostAddress(peer.ip_address), peer.port)
 
+    def alert_group_peers(self) -> tuple[LanPeer, ...]:
+        return tuple(
+            sorted(
+                (
+                    peer
+                    for peer in self._peers.values()
+                    if peer.online
+                    and peer.ip_address
+                    and peer.port
+                    and peer.alert_group_supported
+                    and peer.alert_group_joined
+                ),
+                key=lambda item: item.display_name.casefold(),
+            )
+        )
+
+    def send_danger_alert(self) -> bool:
+        if not self._running:
+            self.error.emit("局域网互动服务尚未启动")
+            return False
+        if not self.alert_group_joined:
+            self.error.emit("请先加入局域网预警组")
+            return False
+        now = monotonic()
+        if now - self._last_danger_alert_sent_at < 5.0:
+            self.error.emit("预警发送过于频繁，请稍候")
+            return False
+        peers = self.alert_group_peers()
+        if not peers:
+            self.error.emit("预警组当前没有其他在线成员")
+            return False
+        alert_id = uuid.uuid4().hex
+        created_at = int(time())
+        endpoints = {peer.device_id: (str(peer.ip_address), int(peer.port or 0)) for peer in peers}
+        packets = {
+            peer.device_id: LanPacketCodec.danger_alert(
+                DangerAlert(alert_id, self.device_id, self.display_name, peer.device_id, created_at)
+            )
+            for peer in peers
+        }
+        pending = _PendingDangerAlert(tuple(endpoints), endpoints, packets, set())
+        self._pending_danger_alerts[alert_id] = pending
+        for device_id in pending.target_device_ids:
+            host, port = pending.endpoints[device_id]
+            self._send_packet(pending.packets[device_id], QHostAddress(host), port)
+        self._last_danger_alert_sent_at = now
+        QTimer.singleShot(self._danger_retry_ms, lambda: self._retry_danger_alert(alert_id))
+        QTimer.singleShot(self._danger_completion_ms, lambda: self._complete_danger_alert(alert_id))
+        return True
+
+    def _retry_danger_alert(self, alert_id: str) -> None:
+        pending = self._pending_danger_alerts.get(alert_id)
+        if pending is None or not self._running:
+            return
+        for device_id in pending.target_device_ids:
+            if device_id in pending.acknowledged:
+                continue
+            host, port = pending.endpoints[device_id]
+            self._send_packet(pending.packets[device_id], QHostAddress(host), port)
+
+    def _complete_danger_alert(self, alert_id: str) -> None:
+        pending = self._pending_danger_alerts.pop(alert_id, None)
+        if pending is None:
+            return
+        acknowledged = tuple(
+            device_id for device_id in pending.target_device_ids if device_id in pending.acknowledged
+        )
+        self.danger_alert_delivery_completed.emit(
+            DangerAlertDeliveryResult(alert_id, pending.target_device_ids, acknowledged)
+        )
+
     def send_chat(self, draft: ChatDraft) -> bool:
         """Send one direct message or fan a room message out to current peers."""
         if not self._running:
@@ -332,14 +449,22 @@ class LanInteractionService(QObject):
         except (LanProtocolError, TypeError, ValueError) as error:
             self.error.emit(str(error))
             return False
-        if draft.is_group:
+        if draft.scope in {ChatScope.LAN_ROOM, ChatScope.ALERT_GROUP}:
             peers = tuple(
                 peer
                 for peer in self._peers.values()
                 if peer.ip_address and peer.port and peer.online
+                and (
+                    draft.scope is ChatScope.LAN_ROOM
+                    or (peer.alert_group_supported and peer.alert_group_joined)
+                )
             )
             if not peers:
-                self.error.emit("局域网群聊暂无其他在线设备")
+                self.error.emit(
+                    "预警组暂无其他在线成员"
+                    if draft.scope is ChatScope.ALERT_GROUP
+                    else "局域网群聊暂无其他在线设备"
+                )
                 return False
             try:
                 deliveries = tuple(
@@ -462,6 +587,15 @@ class LanInteractionService(QObject):
         return address.toString() == peer.ip_address
 
     def _allow_chat(self, message: LanChatMessage) -> bool:
+        if message.scope is ChatScope.ALERT_GROUP:
+            sender = self._peers.get(message.sender_device_id)
+            if (
+                not self.alert_group_joined
+                or sender is None
+                or not sender.alert_group_supported
+                or not sender.alert_group_joined
+            ):
+                return False
         now = monotonic()
         rate_kind = "image" if message.kind is ChatMessageKind.IMAGE else "small"
         key = (message.sender_device_id, rate_kind)
@@ -554,6 +688,7 @@ class LanInteractionService(QObject):
                     display_name=self.display_name,
                     pet_name=self.pet_name,
                     port=self._port,
+                    alert_group_joined=self.alert_group_joined,
                 )
                 self._send_packet(packet, address, int(presence["port"]))
             return
@@ -574,10 +709,79 @@ class LanInteractionService(QObject):
             else:
                 self.codex_usage_sync_received.emit(usage_sync)
             return
+        try:
+            alert = LanPacketCodec.decode_danger_alert(
+                data,
+                local_device_id=self.device_id,
+                now=int(time()),
+            )
+        except LanProtocolError:
+            alert = None
+        if alert is not None:
+            self._handle_danger_alert(alert, address, source_port)
+            return
+        try:
+            ack = LanPacketCodec.decode_danger_alert_ack(data, local_device_id=self.device_id)
+        except LanProtocolError:
+            ack = None
+        if ack is not None:
+            self._handle_danger_alert_ack(ack, address, source_port)
+            return
         received = LanPacketCodec.decode_interaction(data, local_device_id=self.device_id)
         if not self._allow_interaction(received):
             return
         self.interaction_received.emit(received)
+
+    def _handle_danger_alert(self, alert: DangerAlert, address: QHostAddress, source_port: int) -> None:
+        peer = self._peers.get(alert.sender_device_id)
+        if (
+            not self.alert_group_joined
+            or peer is None
+            or not peer.ip_address
+            or not peer.port
+            or address.toString() != peer.ip_address
+            or int(source_port) != int(peer.port)
+            or not peer.alert_group_supported
+            or not peer.alert_group_joined
+        ):
+            return
+        if alert.alert_id in self._seen_danger_alert_ids:
+            self._send_danger_alert_ack(alert, address, source_port)
+            return
+        now = monotonic()
+        recent = [stamp for stamp in self._danger_alert_times.get(alert.sender_device_id, []) if now - stamp < 60]
+        if len(recent) >= 3:
+            self._danger_alert_times[alert.sender_device_id] = recent
+            LOGGER.warning("忽略过于频繁的危险预警：%s", alert.sender_device_id)
+            return
+        recent.append(now)
+        self._danger_alert_times[alert.sender_device_id] = recent
+        self._seen_danger_alert_ids = {
+            alert_id: stamp for alert_id, stamp in self._seen_danger_alert_ids.items() if now - stamp < 60
+        }
+        self._seen_danger_alert_ids[alert.alert_id] = now
+        while len(self._seen_danger_alert_ids) > 256:
+            self._seen_danger_alert_ids.pop(next(iter(self._seen_danger_alert_ids)))
+        self._send_danger_alert_ack(alert, address, source_port)
+        self.danger_alert_received.emit(alert)
+
+    def _send_danger_alert_ack(self, alert: DangerAlert, address: QHostAddress, source_port: int) -> None:
+        ack = DangerAlertAck(alert.alert_id, self.device_id, alert.sender_device_id)
+        self._send_packet(LanPacketCodec.danger_alert_ack(ack), address, int(source_port))
+
+    def _handle_danger_alert_ack(
+        self,
+        ack: DangerAlertAck,
+        address: QHostAddress,
+        source_port: int,
+    ) -> None:
+        pending = self._pending_danger_alerts.get(ack.alert_id)
+        if pending is None or ack.sender_device_id not in pending.endpoints:
+            return
+        host, port = pending.endpoints[ack.sender_device_id]
+        if address.toString() != host or int(source_port) != port:
+            return
+        pending.acknowledged.add(ack.sender_device_id)
 
     def _handle_presence(self, presence: dict[str, object], address: QHostAddress) -> LanPeer | None:
         device_id = str(presence["device_id"])
@@ -595,6 +799,8 @@ class LanInteractionService(QObject):
             online=True,
             saved=is_saved,
             connection_state="online",
+            alert_group_supported=bool(presence["alert_group_supported"]),
+            alert_group_joined=bool(presence["alert_group_joined"]),
         )
         previous = self._peers.get(device_id)
         self._peers[device_id] = peer

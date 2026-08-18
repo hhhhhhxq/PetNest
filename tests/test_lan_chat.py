@@ -15,7 +15,7 @@ from PySide6.QtCore import QCoreApplication
 from petnest.core.lan_chat import prepare_chat_image
 from petnest.core.lan_interaction import LanPacketCodec, LanProtocolError
 from petnest.core.lan_service import LanInteractionService
-from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, LanChatMessage, LanPeer
+from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, ChatScope, LanChatMessage, LanPeer
 from petnest.models.settings import Settings
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog
 
@@ -82,6 +82,66 @@ def test_chat_codec_marks_a_room_message_for_the_receiving_device() -> None:
     assert decoded.is_group is True
     assert decoded.peer_device_id("receiver") == "*"
     assert decoded.text == "大家好"
+    assert decoded.scope is ChatScope.LAN_ROOM
+
+
+def test_chat_codec_round_trips_alert_group_without_changing_legacy_room_wire_scope() -> None:
+    room_message = ChatDraft.group_text_message("普通群聊").to_message(
+        sender_device_id="sender",
+        sender_name="Sender",
+    )
+    assert LanPacketCodec.chat_message(replace(room_message, target_device_id="receiver"))["scope"] == "group"
+
+    alert_message = ChatDraft.alert_group_text_message("预警组消息").to_message(
+        sender_device_id="sender",
+        sender_name="Sender",
+    )
+    frame = LanPacketCodec.encode_chat_frame(replace(alert_message, target_device_id="receiver"))
+    decoded = LanPacketCodec.decode_chat_message(frame[4:], local_device_id="receiver")
+
+    assert decoded.scope is ChatScope.ALERT_GROUP
+    assert decoded.is_group is True
+    assert decoded.peer_device_id("receiver") == "@lan-alert-group"
+
+
+def test_service_fans_alert_group_chat_only_to_joined_compatible_peers(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="sender",
+        display_name="发送方",
+        pet_name="平安",
+        port=0,
+        alert_group_joined=True,
+        interface_provider=lambda: (),
+    )
+    sent: list[str] = []
+    try:
+        assert service.start()
+        service._peers = {
+            "joined": LanPeer(
+                "joined",
+                "甲",
+                ip_address="127.0.0.1",
+                port=19001,
+                alert_group_supported=True,
+                alert_group_joined=True,
+            ),
+            "left": LanPeer(
+                "left",
+                "乙",
+                ip_address="127.0.0.1",
+                port=19002,
+                alert_group_supported=True,
+                alert_group_joined=False,
+            ),
+            "legacy": LanPeer("legacy", "丙", ip_address="127.0.0.1", port=19003),
+        }
+        service._start_chat_send = lambda peer, _frame, _message: sent.append(peer.device_id)
+
+        assert service.send_chat(ChatDraft.alert_group_text_message("注意安全"))
+
+        assert sent == ["joined"]
+    finally:
+        service.stop()
 
 
 def test_chat_codec_rejects_image_bytes_that_are_not_a_safe_jpeg() -> None:
