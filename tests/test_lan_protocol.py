@@ -78,7 +78,7 @@ def test_chat_scope_enum_uses_stable_wire_values() -> None:
 
 
 def test_danger_alert_and_ack_round_trip() -> None:
-    alert = DangerAlert("alert-1", "sender", "小林", "receiver", 1_800_000_000)
+    alert = DangerAlert("alert-1", "sender", "小林", "receiver", 1_800_000_000, "请立即撤离")
     encoded = LanPacketCodec.encode(LanPacketCodec.danger_alert(alert))
 
     assert LanPacketCodec.decode_danger_alert(
@@ -93,6 +93,20 @@ def test_danger_alert_and_ack_round_trip() -> None:
         encoded_ack,
         local_device_id="sender",
     ) == ack
+
+
+def test_danger_alert_rejects_message_longer_than_thirty_characters() -> None:
+    alert = DangerAlert(
+        "alert-1",
+        "sender",
+        "小林",
+        "receiver",
+        1_800_000_000,
+        "过" * 31,
+    )
+
+    with pytest.raises(LanProtocolError, match="预警文案"):
+        LanPacketCodec.danger_alert(alert)
 
 
 def test_danger_alert_rejects_expired_and_wrong_target_messages() -> None:

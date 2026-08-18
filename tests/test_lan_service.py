@@ -130,7 +130,7 @@ def test_danger_alert_retries_unacknowledged_peer_and_reports_real_acks(qtbot) -
             lambda packet, address, port: sent.append((packet, address.toString(), port)) or True
         )
 
-        assert service.send_danger_alert()
+        assert service.send_danger_alert("请立即撤离")
         alert_id = str(sent[0][0]["alert_id"])
         ack = DangerAlertAck(alert_id, "acked", "sender")
         service._handle_datagram(
@@ -150,6 +150,11 @@ def test_danger_alert_retries_unacknowledged_peer_and_reports_real_acks(qtbot) -
         assert targets.count("acked") == 1
         assert targets.count("silent") == 2
         assert "left" not in targets
+        assert all(
+            packet.get("message") == "请立即撤离"
+            for packet, _host, _port in sent
+            if packet.get("kind") == "danger_alert"
+        )
     finally:
         service.stop()
 
@@ -693,6 +698,62 @@ def test_manual_peer_is_refreshed_by_direct_hello_without_broadcast(qtbot) -> No
     assert sender._peer_seen_at["receiver"] > before
     sender.stop()
     receiver.stop()
+
+
+def test_three_services_keep_alert_group_chat_and_danger_alerts_inside_membership(qtbot) -> None:
+    sender = LanInteractionService(
+        device_id="sender", display_name="发送方", pet_name="平安", port=0,
+        alert_group_joined=True, interface_provider=lambda: (),
+    )
+    joined = LanInteractionService(
+        device_id="joined", display_name="已加入", pet_name="橘猫", port=0,
+        alert_group_joined=True, interface_provider=lambda: (),
+    )
+    left = LanInteractionService(
+        device_id="left", display_name="未加入", pet_name="白猫", port=0,
+        alert_group_joined=False, interface_provider=lambda: (),
+    )
+    joined_chat = []
+    left_chat = []
+    joined_alerts = []
+    left_alerts = []
+    deliveries = []
+    joined.chat_message_received.connect(joined_chat.append)
+    left.chat_message_received.connect(left_chat.append)
+    joined.danger_alert_received.connect(joined_alerts.append)
+    left.danger_alert_received.connect(left_alerts.append)
+    sender.danger_alert_delivery_completed.connect(deliveries.append)
+    sender._danger_retry_ms = 30
+    sender._danger_completion_ms = 100
+    try:
+        assert sender.start()
+        assert joined.start()
+        assert left.start()
+        assert sender.probe_peer("127.0.0.1", joined.port)
+        qtbot.waitUntil(
+            lambda: any(peer.device_id == "joined" and peer.alert_group_joined for peer in sender.peers()),
+            timeout=2_000,
+        )
+        assert sender.probe_peer("127.0.0.1", left.port)
+        qtbot.waitUntil(
+            lambda: any(peer.device_id == "left" for peer in sender.peers()),
+            timeout=2_000,
+        )
+
+        assert sender.send_chat(ChatDraft.alert_group_text_message("预警组消息"))
+        qtbot.waitUntil(lambda: len(joined_chat) == 1, timeout=2_000)
+        assert left_chat == []
+        assert joined_chat[0].scope is ChatScope.ALERT_GROUP
+
+        assert sender.send_danger_alert()
+        qtbot.waitUntil(lambda: len(joined_alerts) == 1 and len(deliveries) == 1, timeout=2_000)
+
+        assert left_alerts == []
+        assert deliveries[0].acknowledged_device_ids == ("joined",)
+    finally:
+        sender.stop()
+        joined.stop()
+        left.stop()
 
 
 def test_discover_sends_to_each_active_interface_broadcast_and_limited_broadcast(qtbot) -> None:

@@ -101,6 +101,7 @@ class LanInteractionService(QObject):
         self._danger_completion_ms = 1_500
         self._manual_peer_targets: dict[str, tuple[str, int]] = {}
         self._manual_probe_target: tuple[str, int] | None = None
+        self._manual_probe_expected_device_id: str | None = None
         self._saved_probe_targets: dict[tuple[str, int], str] = {}
         self._socket = QUdpSocket(self)
         self._socket.readyRead.connect(self._read_datagrams)
@@ -234,6 +235,7 @@ class LanInteractionService(QObject):
         self._saved_probe_timer.stop()
         self._manual_peer_targets.clear()
         self._manual_probe_target = None
+        self._manual_probe_expected_device_id = None
         self._saved_probe_targets.clear()
         self._running = False
         self._peers.clear()
@@ -316,7 +318,13 @@ class LanInteractionService(QObject):
         if self._saved_probe_targets:
             self._saved_probe_timer.start()
 
-    def probe_peer(self, ip_address: str, port: int = LAN_INTERACTION_PORT) -> bool:
+    def probe_peer(
+        self,
+        ip_address: str,
+        port: int = LAN_INTERACTION_PORT,
+        *,
+        expected_device_id: str | None = None,
+    ) -> bool:
         """向指定 IPv4 发送一次定向握手，绕过跨网段广播不可达的问题。"""
         if not self._running:
             self.error.emit("局域网互动服务尚未启动")
@@ -335,6 +343,11 @@ class LanInteractionService(QObject):
         if self._manual_probe_target is not None:
             self.error.emit("正在验证另一台设备，请稍候")
             return False
+        if expected_device_id is not None:
+            expected_device_id = str(expected_device_id).strip()
+            if not expected_device_id or expected_device_id not in self._known_peers():
+                self.error.emit("要更新地址的伙伴不存在")
+                return False
 
         normalized_ip = str(parsed)
         packet = LanPacketCodec.hello(
@@ -345,11 +358,21 @@ class LanInteractionService(QObject):
             alert_group_joined=self.alert_group_joined,
         )
         self._manual_probe_target = (normalized_ip, port)
+        self._manual_probe_expected_device_id = expected_device_id
         if not self._send_packet(packet, QHostAddress(normalized_ip), port):
             self._manual_probe_target = None
+            self._manual_probe_expected_device_id = None
             return False
         self._manual_probe_timer.start()
         return True
+
+    def update_saved_peer_address(
+        self,
+        device_id: str,
+        ip_address: str,
+        port: int = LAN_INTERACTION_PORT,
+    ) -> bool:
+        return self.probe_peer(ip_address, port, expected_device_id=device_id)
 
     def send_interaction(self, draft: InteractionDraft) -> bool:
         if not self._running:
@@ -378,7 +401,7 @@ class LanInteractionService(QObject):
             )
         )
 
-    def send_danger_alert(self) -> bool:
+    def send_danger_alert(self, message: str = "") -> bool:
         if not self._running:
             self.error.emit("局域网互动服务尚未启动")
             return False
@@ -398,7 +421,14 @@ class LanInteractionService(QObject):
         endpoints = {peer.device_id: (str(peer.ip_address), int(peer.port or 0)) for peer in peers}
         packets = {
             peer.device_id: LanPacketCodec.danger_alert(
-                DangerAlert(alert_id, self.device_id, self.display_name, peer.device_id, created_at)
+                DangerAlert(
+                    alert_id,
+                    self.device_id,
+                    self.display_name,
+                    peer.device_id,
+                    created_at,
+                    message,
+                )
             )
             for peer in peers
         }
@@ -822,6 +852,7 @@ class LanInteractionService(QObject):
         ):
             return
         self._manual_probe_target = None
+        self._manual_probe_expected_device_id = None
         self._manual_probe_timer.stop()
         self._manual_peer_targets[peer.device_id] = (peer.ip_address, int(peer.port or target[1]))
         self._save_verified_peer(peer)
@@ -866,6 +897,13 @@ class LanInteractionService(QObject):
         if target is not None and target[0] == host:
             if int(source_port) != target[1] or int(presence["port"]) != target[1]:
                 return True
+            expected = self._manual_probe_expected_device_id
+            if expected is not None and device_id != expected:
+                self._manual_probe_target = None
+                self._manual_probe_expected_device_id = None
+                self._manual_probe_timer.stop()
+                self.error.emit("伙伴身份不匹配，已拒绝更新地址")
+                return True
         if target is None or target[0] != host:
             if (
                 self._peer_registry is not None
@@ -877,6 +915,7 @@ class LanInteractionService(QObject):
         if self._peer_registry is None or self._peer_registry.matches_expected_identity(host, device_id):
             return False
         self._manual_probe_target = None
+        self._manual_probe_expected_device_id = None
         self._manual_probe_timer.stop()
         self.error.emit("已保存伙伴身份不匹配，已拒绝覆盖")
         return True
@@ -899,6 +938,7 @@ class LanInteractionService(QObject):
     def _manual_probe_timeout(self) -> None:
         target = self._manual_probe_target
         self._manual_probe_target = None
+        self._manual_probe_expected_device_id = None
         if target is None:
             return
         self.error.emit(

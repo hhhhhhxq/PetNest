@@ -113,7 +113,7 @@ class LanPacketCodec:
 
     @classmethod
     def danger_alert(cls, alert: DangerAlert) -> dict[str, Any]:
-        return {
+        packet: dict[str, Any] = {
             "version": LAN_PROTOCOL_VERSION,
             "kind": "danger_alert",
             "alert_id": _identity(alert.alert_id, "预警 ID"),
@@ -122,6 +122,10 @@ class LanPacketCodec:
             "target_device_id": _identity(alert.target_device_id, "目标设备 ID"),
             "created_at": _alert_epoch(alert.created_at),
         }
+        message = _alert_message(alert.message)
+        if message:
+            packet["message"] = message
+        return packet
 
     @classmethod
     def danger_alert_ack(cls, ack: DangerAlertAck) -> dict[str, Any]:
@@ -335,6 +339,7 @@ class LanPacketCodec:
             sender_name=_bounded_text(raw.get("sender_name"), "发送方名称", MAX_DISPLAY_NAME_LENGTH),
             target_device_id=target,
             created_at=created_at,
+            message=_alert_message(raw.get("message")),
         )
 
     @classmethod
@@ -571,6 +576,17 @@ def _alert_epoch(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1_500_000_000 <= value <= 4_102_444_800:
         raise LanProtocolError("预警时间无效")
     return value
+
+
+def _alert_message(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise LanProtocolError("预警文案无效")
+    message = value.strip()
+    if len(message) > 30 or any(char in message for char in "\r\n\x00"):
+        raise LanProtocolError("预警文案不能超过 30 个字符")
+    return message
 
 
 def _sync_counter(value: object) -> int:

@@ -309,8 +309,8 @@ def test_chat_page_sends_group_text_and_emoji_to_every_visible_peer(qtbot) -> No
     )
     qtbot.addWidget(dialog)
 
-    assert dialog.peer_list.item(0).text().startswith("局域网群聊")
-    dialog.peer_list.setCurrentRow(0)
+    assert dialog.peer_list.item(1).text().startswith("局域网群聊")
+    dialog.peer_list.setCurrentRow(1)
     assert dialog.mode_tabs.currentIndex() == 3
     assert "2 台" in dialog.recipient_label.text()
     dialog.chat_input.setPlainText("大家好")
@@ -321,6 +321,33 @@ def test_chat_page_sends_group_text_and_emoji_to_every_visible_peer(qtbot) -> No
         ChatDraft.group_text_message("大家好"),
         ChatDraft.group_emoji("😊"),
     ]
+
+
+def test_chat_page_sends_alert_group_scope_to_joined_members(qtbot) -> None:
+    sent: list[ChatDraft] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local", lan_alert_group_joined=True),
+        peers=[
+            LanPeer(
+                "peer",
+                "小林",
+                ip_address="192.168.1.20",
+                port=18487,
+                alert_group_supported=True,
+                alert_group_joined=True,
+            )
+        ],
+        on_chat_send=lambda draft: sent.append(draft) or True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.peer_list.setCurrentRow(0)
+    dialog.chat_input.setPlainText("注意安全")
+
+    dialog.send_button.click()
+    dialog.emoji_buttons[0].click()
+
+    assert [draft.scope for draft in sent] == [ChatScope.ALERT_GROUP, ChatScope.ALERT_GROUP]
+    assert sent[0] == ChatDraft.alert_group_text_message("注意安全")
 
 
 def test_chat_page_keeps_group_and_private_conversations_separate(qtbot) -> None:
@@ -355,7 +382,7 @@ def test_chat_page_keeps_group_and_private_conversations_separate(qtbot) -> None
     assert dialog.chat_list.count() == 1
     assert "私聊内容" in dialog.chat_list.item(0).text()
 
-    dialog.peer_list.setCurrentRow(0)
+    dialog.peer_list.setCurrentRow(1)
 
     assert dialog.chat_list.count() == 1
     assert "群聊内容" in dialog.chat_list.item(0).text()
@@ -375,7 +402,7 @@ def test_chat_page_prepares_an_image_for_group_chat(tmp_path, qtbot, monkeypatch
         on_chat_send=lambda draft: sent.append(draft) or True,
     )
     qtbot.addWidget(dialog)
-    dialog.peer_list.setCurrentRow(0)
+    dialog.peer_list.setCurrentRow(1)
 
     dialog.chat_image_button.click()
 

@@ -73,6 +73,7 @@ class DangerAlert:
     sender_name: str
     target_device_id: str
     created_at: int
+    message: str = ""
 
 
 @dataclass(frozen=True, slots=True)
