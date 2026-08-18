@@ -104,6 +104,7 @@ class PetActionExchangeDialog(QDialog):
         self.action_import_page = ActionImportPage(
             self._packages,
             self._pets_root,
+            current_pet_id=desired_id,
             is_pet_locked=self._is_pet_locked,
             parent=self.stack,
         )
@@ -114,7 +115,11 @@ class PetActionExchangeDialog(QDialog):
             is_pet_locked=self._is_pet_locked,
             parent=self.stack,
         )
-        self.action_export_page = ActionExportPage(self._packages, self.stack)
+        self.action_export_page = ActionExportPage(
+            self._packages,
+            self.stack,
+            current_pet_id=desired_id,
+        )
         self._pages: tuple[ExchangePage, ...] = (
             self.pet_import_page,
             self.action_import_page,

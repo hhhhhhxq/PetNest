@@ -22,6 +22,21 @@ def test_exchange_dialog_has_four_pages_and_single_shell_footer(qtbot: object, t
     assert len(dialog.window_shell.findChildren(type(dialog.primary_button), "primaryButton")) == 1
 
 
+def test_exchange_dialog_defaults_pet_selectors_to_current_pet(qtbot: object, tmp_path: Path) -> None:
+    first = PackageLoader().load(_write_package(tmp_path / "first", id="first"))
+    second = PackageLoader().load(_write_package(tmp_path / "second", id="second"))
+    dialog = PetActionExchangeDialog(
+        [first, second],
+        tmp_path / "pets",
+        current_pet_id="second",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.action_import_page.target_combo.currentData() == "second"
+    assert dialog.animation_editor_page.current_package() is second
+    assert dialog.action_export_page.pet_combo.currentData() == "second"
+
+
 def test_editor_page_keeps_preview_visible_at_standard_dialog_size(qtbot: object, tmp_path: Path) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")

@@ -30,7 +30,13 @@ from petnest.ui.theme import dialog_stylesheet
 class ActionExportPage(ExchangePage):
     """列出宠物全部动作，支持筛选、多选、预览和 ZIP 导出。"""
 
-    def __init__(self, packages: Sequence[PetPackage], parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        packages: Sequence[PetPackage],
+        parent: QWidget | None = None,
+        *,
+        current_pet_id: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("actionExportPage")
         self.setStyleSheet(dialog_stylesheet())
@@ -50,6 +56,10 @@ class ActionExportPage(ExchangePage):
         self.pet_combo = QComboBox(self)
         for package in self._packages:
             self.pet_combo.addItem(package.name, package.identifier)
+        target_index = self.pet_combo.findData(current_pet_id)
+        if target_index < 0 and self.pet_combo.count():
+            target_index = 0
+        self.pet_combo.setCurrentIndex(target_index)
         self.pet_combo.currentIndexChanged.connect(self._load_package_actions)
         header.addWidget(self.pet_combo)
         layout.addLayout(header)

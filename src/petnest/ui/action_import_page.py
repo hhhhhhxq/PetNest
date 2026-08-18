@@ -50,6 +50,7 @@ class ActionImportPage(ExchangePage):
         packages: Sequence[PetPackage],
         pets_root: Path,
         *,
+        current_pet_id: str | None = None,
         is_pet_locked: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -72,6 +73,10 @@ class ActionImportPage(ExchangePage):
         self.target_combo = QComboBox(self)
         for package in self._packages:
             self.target_combo.addItem(package.name, package.identifier)
+        target_index = self.target_combo.findData(current_pet_id)
+        if target_index < 0 and self.target_combo.count():
+            target_index = 0
+        self.target_combo.setCurrentIndex(target_index)
         self.target_combo.currentIndexChanged.connect(self._refresh_conflicts)
         header.addWidget(self.target_combo)
         layout.addLayout(header)
