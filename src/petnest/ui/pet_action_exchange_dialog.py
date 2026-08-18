@@ -203,6 +203,16 @@ class PetActionExchangeDialog(QDialog):
         self.action_export_page.refresh_packages(next_packages, current_pet_id)
         return True
 
+    def complete_action_install(self, message: str) -> None:
+        """确认动作已被运行时采用，并清空本次导入来源。"""
+
+        self.action_import_page.complete_install(message)
+
+    def complete_action_install_failure(self, message: str) -> None:
+        """结束处理状态但保留来源，让用户可以直接重试。"""
+
+        self.action_import_page.complete_install_failure(message)
+
     def _on_navigation_changed(self, index: int) -> None:
         if index < 0 or index == self._active_index or self._closing:
             return

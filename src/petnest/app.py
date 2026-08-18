@@ -887,42 +887,52 @@ class PetNest:
         if identifier == self.package.identifier:
             if self.reload_current_pet(synchronize=False):
                 self._finalize_action_install(result)
+                self._complete_action_install(identifier, result)
             else:
                 rollback = getattr(result, "rollback", None)
                 if not callable(rollback):
+                    message = "动作已安装，但当前宠物重新载入失败；安装结果不支持自动恢复。"
+                    self._complete_action_install_failure(message)
                     QMessageBox.warning(
                         self.window,
                         "无法载入动作",
-                        "动作已安装，但当前宠物重新载入失败；安装结果不支持自动恢复。",
+                        message,
                     )
                 else:
                     try:
                         warnings = tuple(rollback())
                     except Exception as error:  # noqa: BLE001 - 必须报告磁盘回滚的真实失败原因。
                         LOGGER.exception("动作安装后的运行时重载和配置回滚均失败")
+                        message = f"当前宠物重新载入失败，且旧配置恢复失败：{error}"
+                        self._complete_action_install_failure(message)
                         QMessageBox.critical(
                             self.window,
                             "无法恢复动作",
-                            f"当前宠物重新载入失败，且旧配置恢复失败：{error}",
+                            message,
                         )
                     else:
                         for warning in warnings:
                             LOGGER.warning("动作安装回滚后的资源清理未完成：%s", warning)
                         self.packages = self.loader.discover(self.pets_root)
                         if self.reload_current_pet(synchronize=False):
+                            message = "新动作无法载入，已恢复导入前的宠物配置和运行状态。"
+                            self._complete_action_install_failure(message)
                             QMessageBox.warning(
                                 self.window,
                                 "动作导入未生效",
-                                "新动作无法载入，已恢复导入前的宠物配置和运行状态。",
+                                message,
                             )
                         else:
+                            message = "旧配置已经恢复，但当前宠物仍无法重新载入；请重新启动 PetNest。"
+                            self._complete_action_install_failure(message)
                             QMessageBox.critical(
                                 self.window,
                                 "无法恢复动作",
-                                "旧配置已经恢复，但当前宠物仍无法重新载入；请重新启动 PetNest。",
+                                message,
                             )
         else:
             self._finalize_action_install(result)
+            self._complete_action_install(identifier, result)
         if self._pet_action_exchange_dialog is not None:
             self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
 
@@ -938,6 +948,24 @@ class PetNest:
             return
         for warning in warnings:
             LOGGER.warning("动作更新已生效，但旧资源清理未完成：%s", warning)
+
+    def _complete_action_install(self, identifier: str, result: object) -> None:
+        installed = getattr(result, "installed", ())
+        count = len(installed) if isinstance(installed, (tuple, list)) else 0
+        package = next((item for item in self.packages if item.identifier == identifier), None)
+        pet_name = package.name if package is not None else identifier
+        message = f"已导入 {count} 个动作到 {pet_name}。"
+        dialog = self._pet_action_exchange_dialog
+        complete = getattr(dialog, "complete_action_install", None) if dialog is not None else None
+        if callable(complete):
+            complete(message)
+        QMessageBox.information(self.window, "动作安装完成", message)
+
+    def _complete_action_install_failure(self, message: str) -> None:
+        dialog = self._pet_action_exchange_dialog
+        complete = getattr(dialog, "complete_action_install_failure", None) if dialog is not None else None
+        if callable(complete):
+            complete(message)
 
     def _restore_pet_from_exchange_backup(self, result: PetImportResult) -> None:
         if result.backup_path is None:

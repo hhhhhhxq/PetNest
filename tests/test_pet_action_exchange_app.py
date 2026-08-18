@@ -169,6 +169,7 @@ def test_install_handlers_refresh_open_exchange_center_without_closing(
     monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
     monkeypatch.setattr(application, "switch_pet", lambda _identifier: True)
     monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: True)
+    monkeypatch.setattr(app_module.QMessageBox, "information", lambda *_args: None)
 
     application._handle_pet_exchange_installed(application.package.identifier, object())
     application._handle_actions_exchange_installed(application.package.identifier, object())
@@ -184,9 +185,12 @@ def test_action_install_handler_finalizes_after_current_pet_reload(
 ) -> None:
     application = _application(tmp_path, qtbot)
     calls: list[str] = []
+    completion: list[str] = []
+    information: list[tuple[str, str]] = []
     result = SimpleNamespace(
         rollback=lambda: calls.append("rollback"),
         finalize=lambda: calls.append("finalize") or (),
+        installed=("idle", "click"),
     )
     synchronizations: list[str] = []
     reload_modes: list[bool] = []
@@ -196,12 +200,24 @@ def test_action_install_handler_finalizes_after_current_pet_reload(
         "reload_current_pet",
         lambda *, synchronize=True: reload_modes.append(synchronize) or True,
     )
+    application._pet_action_exchange_dialog = SimpleNamespace(
+        complete_action_install=completion.append,
+        refresh_packages=lambda *_args: True,
+        close=lambda: None,
+    )  # type: ignore[assignment]
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "information",
+        lambda _parent, title, message: information.append((title, message)),
+    )
 
     application._handle_actions_exchange_installed(application.package.identifier, result)
 
     assert calls == ["finalize"]
     assert synchronizations == []
     assert reload_modes == [False]
+    assert completion and "2 个动作" in completion[0]
+    assert information and information[0][0] == "动作安装完成"
     application.shutdown()
 
 
@@ -212,9 +228,12 @@ def test_action_install_handler_rolls_back_when_current_pet_reload_fails(
     calls: list[str] = []
     reload_results = iter((False, True))
     messages: list[tuple[str, str]] = []
+    completion: list[str] = []
+    failures: list[str] = []
     result = SimpleNamespace(
         rollback=lambda: calls.append("rollback") or (),
         finalize=lambda: calls.append("finalize") or (),
+        installed=("idle",),
     )
     monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
     monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: next(reload_results))
@@ -223,11 +242,19 @@ def test_action_install_handler_rolls_back_when_current_pet_reload_fails(
         "warning",
         lambda _parent, title, message: messages.append((title, message)),
     )
+    application._pet_action_exchange_dialog = SimpleNamespace(
+        complete_action_install=completion.append,
+        complete_action_install_failure=failures.append,
+        refresh_packages=lambda *_args: True,
+        close=lambda: None,
+    )  # type: ignore[assignment]
 
     application._handle_actions_exchange_installed(application.package.identifier, result)
 
     assert calls == ["rollback"]
     assert messages and "已恢复" in messages[0][1]
+    assert completion == []
+    assert failures and "已恢复" in failures[0]
     application.shutdown()
 
 
@@ -239,9 +266,11 @@ def test_action_install_handler_finalizes_non_current_pet_without_reload(
     result = SimpleNamespace(
         rollback=lambda: calls.append("rollback") or (),
         finalize=lambda: calls.append("finalize") or (),
+        installed=("idle",),
     )
     monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
     monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: calls.append("reload") or True)
+    monkeypatch.setattr(app_module.QMessageBox, "information", lambda *_args: None)
 
     application._handle_actions_exchange_installed("another_pet", result)
 

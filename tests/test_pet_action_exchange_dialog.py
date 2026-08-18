@@ -37,6 +37,30 @@ def test_exchange_dialog_defaults_pet_selectors_to_current_pet(qtbot: object, tm
     assert dialog.action_export_page.pet_combo.currentData() == "second"
 
 
+def test_exchange_dialog_forwards_action_install_completion(
+    qtbot: object, tmp_path: Path, monkeypatch: object
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        dialog.action_import_page,
+        "complete_install",
+        lambda message: calls.append(("success", message)),
+    )
+    monkeypatch.setattr(
+        dialog.action_import_page,
+        "complete_install_failure",
+        lambda message: calls.append(("failure", message)),
+    )
+
+    dialog.complete_action_install("installed")
+    dialog.complete_action_install_failure("rolled back")
+
+    assert calls == [("success", "installed"), ("failure", "rolled back")]
+
+
 def test_editor_page_keeps_preview_visible_at_standard_dialog_size(qtbot: object, tmp_path: Path) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")

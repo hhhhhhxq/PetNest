@@ -6,8 +6,9 @@ from collections.abc import Callable, Sequence
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QEventLoop, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -62,6 +64,7 @@ class ActionImportPage(ExchangePage):
         self._is_pet_locked = is_pet_locked or (lambda _identifier: False)
         self._pack: ActionPack | None = None
         self._status_text = self._DEFAULT_STATUS
+        self._installing = False
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -198,6 +201,8 @@ class ActionImportPage(ExchangePage):
             self._sync_footer(f"无法读取来源：{error}")
 
     def install_selected(self) -> None:
+        if self._installing:
+            return
         package = self._target_package()
         if self._pack is None or package is None:
             self._sync_footer("请先读取来源并选择目标宠物。")
@@ -209,6 +214,9 @@ class ActionImportPage(ExchangePage):
         if not selected:
             self._sync_footer("至少选择一个动作。")
             return
+        self._installing = True
+        self._sync_footer(f"正在安装 {len(selected)} 个动作…")
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
         try:
             selected_pack = self._selected_pack(selected)
             result = install_actions(
@@ -218,10 +226,31 @@ class ActionImportPage(ExchangePage):
                 import_bindings=self.import_bindings.isChecked(),
             )
         except (ActionInstallError, ActionPackError) as error:
+            self._installing = False
             self._sync_footer(f"安装失败：{error}")
+            QMessageBox.warning(self, "动作安装失败", str(error))
             return
-        self._sync_footer(f"已导入 {len(result.installed)} 个动作。")
+        self._sync_footer("动作已写入，正在重新加载目标宠物…")
         self.actions_installed.emit(package.identifier, result)
+
+    def complete_install(self, message: str) -> None:
+        """运行时确认动作可用后，清空本次来源并保留最终结果。"""
+
+        self._close_pack()
+        self.source_input.clear()
+        self.source_kind_label.setText("尚未读取来源")
+        self.source_summary_label.clear()
+        self.action_list.clear()
+        self.conflict_table.setRowCount(0)
+        self.import_bindings.setChecked(False)
+        self._installing = False
+        self._sync_footer(message)
+
+    def complete_install_failure(self, message: str) -> None:
+        """运行时应用或回滚失败后恢复操作按钮，并保留来源以便重试。"""
+
+        self._installing = False
+        self._sync_footer(message)
 
     def _selected_pack(self, selected: set[str]) -> ActionPack:
         if self._pack is None:
@@ -300,7 +329,8 @@ class ActionImportPage(ExchangePage):
             self._status_text = message
         status = self._status_text
         enabled = (
-            self._pack is not None
+            not self._installing
+            and self._pack is not None
             and bool(self.selected_action_names())
             and self._target_package() is not None
         )
@@ -308,7 +338,7 @@ class ActionImportPage(ExchangePage):
         self.install_button.setEnabled(enabled)
         self.set_footer(
             status=status,
-            primary_text="安装选中动作",
+            primary_text="处理中…" if self._installing else "安装选中动作",
             primary_enabled=enabled,
         )
 
