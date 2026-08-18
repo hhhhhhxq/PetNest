@@ -46,7 +46,8 @@ def test_action_import_page_installs_selected_action(qtbot: object, tmp_path: Pa
 
     page.install_selected()
 
-    assert (target.root / "animations" / "shared" / "001.png").is_file()
+    config = json.loads((target.root / "pet.json").read_text(encoding="utf-8"))
+    assert (target.root / config["animations"]["shared"]["path"] / "001.png").is_file()
 
 
 def test_action_import_page_does_not_install_unselected_actions(qtbot: object, tmp_path: Path) -> None:

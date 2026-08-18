@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from petnest import app as app_module
 from petnest.app import PetNest
 from petnest.core.settings_manager import SettingsManager
 from tools.create_sample_pet import create_sample_pet
@@ -167,7 +168,7 @@ def test_install_handlers_refresh_open_exchange_center_without_closing(
     application._pet_action_exchange_dialog = fake_dialog  # type: ignore[assignment]
     monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
     monkeypatch.setattr(application, "switch_pet", lambda _identifier: True)
-    monkeypatch.setattr(application, "reload_current_pet", lambda: True)
+    monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: True)
 
     application._handle_pet_exchange_installed(application.package.identifier, object())
     application._handle_actions_exchange_installed(application.package.identifier, object())
@@ -175,4 +176,99 @@ def test_install_handlers_refresh_open_exchange_center_without_closing(
     assert len(calls) == 2
     assert all(current_id == application.package.identifier for _packages, current_id in calls)
     assert closed == []
+    application.shutdown()
+
+
+def test_action_install_handler_finalizes_after_current_pet_reload(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    calls: list[str] = []
+    result = SimpleNamespace(
+        rollback=lambda: calls.append("rollback"),
+        finalize=lambda: calls.append("finalize") or (),
+    )
+    synchronizations: list[str] = []
+    reload_modes: list[bool] = []
+    monkeypatch.setattr(application, "_synchronize_pet_library", lambda: synchronizations.append("sync"))
+    monkeypatch.setattr(
+        application,
+        "reload_current_pet",
+        lambda *, synchronize=True: reload_modes.append(synchronize) or True,
+    )
+
+    application._handle_actions_exchange_installed(application.package.identifier, result)
+
+    assert calls == ["finalize"]
+    assert synchronizations == []
+    assert reload_modes == [False]
+    application.shutdown()
+
+
+def test_action_install_handler_rolls_back_when_current_pet_reload_fails(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    calls: list[str] = []
+    reload_results = iter((False, True))
+    messages: list[tuple[str, str]] = []
+    result = SimpleNamespace(
+        rollback=lambda: calls.append("rollback") or (),
+        finalize=lambda: calls.append("finalize") or (),
+    )
+    monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
+    monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: next(reload_results))
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "warning",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+
+    application._handle_actions_exchange_installed(application.package.identifier, result)
+
+    assert calls == ["rollback"]
+    assert messages and "已恢复" in messages[0][1]
+    application.shutdown()
+
+
+def test_action_install_handler_finalizes_non_current_pet_without_reload(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    calls: list[str] = []
+    result = SimpleNamespace(
+        rollback=lambda: calls.append("rollback") or (),
+        finalize=lambda: calls.append("finalize") or (),
+    )
+    monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
+    monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: calls.append("reload") or True)
+
+    application._handle_actions_exchange_installed("another_pet", result)
+
+    assert calls == ["finalize"]
+    application.shutdown()
+
+
+def test_action_install_handler_reports_rollback_failure(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    messages: list[tuple[str, str]] = []
+
+    def fail_rollback() -> tuple[str, ...]:
+        raise RuntimeError("config changed")
+
+    result = SimpleNamespace(rollback=fail_rollback, finalize=lambda: ())
+    monkeypatch.setattr(application, "_synchronize_pet_library", lambda: None)
+    monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: False)
+    monkeypatch.setattr(
+        app_module.QMessageBox,
+        "critical",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(app_module.QMessageBox, "warning", lambda *_args: None)
+
+    application._handle_actions_exchange_installed(application.package.identifier, result)
+
+    assert messages and "config changed" in messages[0][1]
     application.shutdown()

@@ -456,8 +456,8 @@ class PetNest:
         self._refresh_visible_work_finish_reminder()
         return True
 
-    def reload_current_pet(self) -> bool:
-        """重新从磁盘校验并载入当前包，失败时保留现有资源。"""
+    def reload_current_pet(self, *, synchronize: bool = True) -> bool:
+        """重新载入当前包；事务调用方可禁止重载前再次写入配置。"""
         previous = self.package
         position = self.window.pos()
         previous_action = self.window.current_action
@@ -466,8 +466,9 @@ class PetNest:
         sync_result = None
         original_config: bytes | None = None
         try:
-            original_config = self.action_synchronizer.snapshot_config_bytes(previous.root)
-            sync_result = self.action_synchronizer.sync(previous.root)
+            if synchronize:
+                original_config = self.action_synchronizer.snapshot_config_bytes(previous.root)
+                sync_result = self.action_synchronizer.sync(previous.root)
             reloaded = self.loader.load(previous.root)
             window_load_attempted = True
             self.window.load_package(reloaded)
@@ -491,10 +492,10 @@ class PetNest:
         self.packages = [reloaded if item.identifier == reloaded.identifier else item for item in self.packages]
         if self.tray is not None:
             self.tray.set_current_pet_name(self.package.name)
-        if sync_result.added and self.tray is not None:
+        if sync_result is not None and sync_result.added and self.tray is not None:
             summary = "、".join(f"{action.name}（{action.frame_count} 帧）" for action in sync_result.added)
             self.tray.showMessage("PetNest", f"已自动登记：{summary}")
-        elif sync_result.reconciled and self.tray is not None:
+        elif sync_result is not None and sync_result.reconciled and self.tray is not None:
             summary = "、".join(f"{timeline.name}（{timeline.frame_count} 帧）" for timeline in sync_result.reconciled)
             self.tray.showMessage("PetNest", f"已同步逐帧时长：{summary}")
         self._refresh_visible_work_finish_reminder()
@@ -879,15 +880,64 @@ class PetNest:
         if self._pet_action_exchange_dialog is not None:
             self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
 
-    def _handle_actions_exchange_installed(self, identifier: str, _result: object) -> None:
-        self._synchronize_pet_library()
+    def _handle_actions_exchange_installed(self, identifier: str, result: object) -> None:
         self.packages = self.loader.discover(self.pets_root)
         if self.tray is not None:
             self.tray.set_pet_names({item.identifier: item.name for item in self.packages})
-        if identifier == self.package.identifier and not self.reload_current_pet():
-            QMessageBox.warning(self.window, "无法载入动作", "动作已安装，但当前宠物重新载入失败；原运行状态已保留。")
+        if identifier == self.package.identifier:
+            if self.reload_current_pet(synchronize=False):
+                self._finalize_action_install(result)
+            else:
+                rollback = getattr(result, "rollback", None)
+                if not callable(rollback):
+                    QMessageBox.warning(
+                        self.window,
+                        "无法载入动作",
+                        "动作已安装，但当前宠物重新载入失败；安装结果不支持自动恢复。",
+                    )
+                else:
+                    try:
+                        warnings = tuple(rollback())
+                    except Exception as error:  # noqa: BLE001 - 必须报告磁盘回滚的真实失败原因。
+                        LOGGER.exception("动作安装后的运行时重载和配置回滚均失败")
+                        QMessageBox.critical(
+                            self.window,
+                            "无法恢复动作",
+                            f"当前宠物重新载入失败，且旧配置恢复失败：{error}",
+                        )
+                    else:
+                        for warning in warnings:
+                            LOGGER.warning("动作安装回滚后的资源清理未完成：%s", warning)
+                        self.packages = self.loader.discover(self.pets_root)
+                        if self.reload_current_pet(synchronize=False):
+                            QMessageBox.warning(
+                                self.window,
+                                "动作导入未生效",
+                                "新动作无法载入，已恢复导入前的宠物配置和运行状态。",
+                            )
+                        else:
+                            QMessageBox.critical(
+                                self.window,
+                                "无法恢复动作",
+                                "旧配置已经恢复，但当前宠物仍无法重新载入；请重新启动 PetNest。",
+                            )
+        else:
+            self._finalize_action_install(result)
         if self._pet_action_exchange_dialog is not None:
             self._pet_action_exchange_dialog.refresh_packages(self.packages, self.package.identifier)
+
+    @staticmethod
+    def _finalize_action_install(result: object) -> None:
+        finalize = getattr(result, "finalize", None)
+        if not callable(finalize):
+            return
+        try:
+            warnings = tuple(finalize())
+        except Exception:  # noqa: BLE001 - 旧资源清理失败不能推翻已成功的配置提交。
+            LOGGER.exception("动作更新已生效，但旧资源清理失败")
+            return
+        for warning in warnings:
+            LOGGER.warning("动作更新已生效，但旧资源清理未完成：%s", warning)
 
     def _restore_pet_from_exchange_backup(self, result: PetImportResult) -> None:
         if result.backup_path is None:
