@@ -72,19 +72,31 @@ class PackageTransaction:
         candidate = self.candidate
         self._validate(candidate)
         backup: Path | None = None
+        original_moved = False
         try:
             if self.target.exists():
                 backup = self.target.parent / f".{self.target.name}.rollback-{uuid4().hex}"
                 self.target.rename(backup)
+                original_moved = True
                 self._backup = backup
             candidate.rename(self.target)
             self._candidate = None
             self._committed = True
         except Exception as error:
-            if self.target.exists() and backup is not None and self.target.is_dir():
-                shutil.rmtree(self.target, ignore_errors=True)
-            if backup is not None and backup.exists() and not self.target.exists():
+            if not original_moved:
+                self._backup = None
+                raise PackageTransactionError(f"原子切换失败，原目录未改动：{error}") from error
+            try:
+                if self.target.exists() and self.target.is_dir():
+                    shutil.rmtree(self.target)
+                if backup is None or not backup.exists():
+                    raise FileNotFoundError(f"回滚目录不存在：{backup}")
                 backup.rename(self.target)
+            except Exception as restore_error:
+                self._backup = backup
+                raise PackageTransactionError(
+                    f"原子切换失败，且无法恢复原目录；回滚目录保留在 {backup}：{restore_error}"
+                ) from error
             self._backup = None
             raise PackageTransactionError(f"原子切换失败，已恢复原目录：{error}") from error
 
