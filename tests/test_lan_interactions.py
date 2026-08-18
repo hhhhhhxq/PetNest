@@ -9,10 +9,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from petnest.core.device_identity import display_name_for
-from petnest.models.lan_interaction import InteractionDraft, InteractionKind, LanPeer
+from petnest.models.lan_interaction import ChatScope, InteractionDraft, InteractionKind, LanPeer
 from petnest.models.settings import Settings
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog, ManualPeerDialog, RemotePairDialog
 
@@ -73,10 +74,116 @@ def test_dialog_has_explicit_empty_states_for_peers_and_effects(qtbot) -> None:
     dialog = LanInteractionDialog(settings=Settings(device_id="local-1"), peers=[])
     qtbot.addWidget(dialog)
 
-    assert dialog.peer_list.count() == 1
-    assert "没有发现" in dialog.peer_list.item(0).text()
+    assert dialog.peer_list.count() == 2
+    assert "当前 0 人在线" in dialog.peer_list.item(0).text()
+    assert "当前 0 台设备" in dialog.peer_list.item(1).text()
     dialog.mode_tabs.setCurrentIndex(2)
     assert "暂无可用动效" in dialog.effect_list.item(0).text()
+
+
+def test_dialog_always_shows_alert_group_and_can_join_it(qtbot) -> None:
+    changed: list[bool] = []
+    peer = LanPeer(
+        "peer",
+        "小林",
+        ip_address="192.168.1.20",
+        port=18487,
+        alert_group_supported=True,
+        alert_group_joined=True,
+    )
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local", lan_alert_group_joined=False),
+        peers=[peer],
+        on_alert_membership_changed=lambda joined: changed.append(joined) or True,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.peer_list.item(0).data(Qt.ItemDataRole.UserRole) == "@lan-alert-group"
+    assert dialog.peer_list.item(1).data(Qt.ItemDataRole.UserRole) == "*"
+    dialog.peer_list.setCurrentRow(0)
+    assert dialog.alert_group_panel.isVisibleTo(dialog)
+    assert not dialog.chat_input.isEnabled()
+
+    dialog.alert_join_button.click()
+
+    assert changed == [True]
+    assert dialog.settings.lan_alert_group_joined is True
+    assert dialog.chat_input.isEnabled()
+
+
+def test_dialog_confirms_before_leaving_alert_group(qtbot, monkeypatch) -> None:
+    changed: list[bool] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local", lan_alert_group_joined=True),
+        peers=[],
+        on_alert_membership_changed=lambda joined: changed.append(joined) or True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.peer_list.setCurrentRow(0)
+    answers = iter((QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes))
+    monkeypatch.setattr(
+        "petnest.ui.lan_interaction_dialog.QMessageBox.question",
+        lambda *_args, **_kwargs: next(answers),
+    )
+
+    dialog._request_leave_alert_group()
+    assert changed == []
+
+    dialog._request_leave_alert_group()
+    assert changed == [False]
+
+
+def test_dialog_labels_saved_offline_and_unsupported_peers(qtbot) -> None:
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local"),
+        peers=[
+            LanPeer(
+                "saved",
+                "小周",
+                ip_address="192.168.20.12",
+                port=18487,
+                online=False,
+                saved=True,
+                connection_state="offline",
+            ),
+            LanPeer("legacy", "小陈", ip_address="192.168.1.20", port=18487),
+        ],
+    )
+    qtbot.addWidget(dialog)
+
+    rows = "\n".join(dialog.peer_list.item(row).text() for row in range(dialog.peer_list.count()))
+    assert "已保存 · 离线" in rows
+    assert "不支持预警组" in rows
+
+
+def test_dialog_forgets_only_the_selected_saved_peer(qtbot, monkeypatch) -> None:
+    forgotten: list[str] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local"),
+        peers=[
+            LanPeer(
+                "saved",
+                "小周",
+                ip_address="192.168.20.12",
+                port=18487,
+                online=False,
+                saved=True,
+                connection_state="offline",
+            )
+        ],
+        on_forget_peer=lambda device_id: forgotten.append(device_id) or True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.peer_list.setCurrentRow(2)
+    monkeypatch.setattr(
+        "petnest.ui.lan_interaction_dialog.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    dialog._forget_selected_peer()
+
+    assert forgotten == ["saved"]
+    assert all(peer.device_id != "saved" for peer in dialog._peers)
 
 
 def test_dialog_updates_nearby_devices_without_losing_selected_target(qtbot) -> None:
@@ -87,11 +194,11 @@ def test_dialog_updates_nearby_devices_without_losing_selected_target(qtbot) -> 
     dialog = LanInteractionDialog(settings=Settings(device_id="local-1"), peers=[first])
     qtbot.addWidget(dialog)
     dialog.set_peers([first, second])
-    dialog.peer_list.setCurrentRow(2)
+    dialog.peer_list.setCurrentRow(3)
 
     dialog.set_peers([first, second])
 
-    assert dialog.peer_list.count() == 3
+    assert dialog.peer_list.count() == 4
     assert dialog.interaction_draft().target_device_id == "peer-2"
 
 
@@ -102,7 +209,7 @@ def test_dialog_peer_rows_keep_avatar_initials_out_of_display_name(qtbot) -> Non
     )
     qtbot.addWidget(dialog)
 
-    item = dialog.peer_list.item(1)
+    item = dialog.peer_list.item(2)
 
     assert item.text().splitlines()[0] == "用户-AB12"
     assert not item.icon().isNull()

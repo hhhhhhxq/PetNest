@@ -13,8 +13,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
+from PySide6.QtCore import QPoint, QRect, Qt
 
 from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
@@ -24,7 +24,7 @@ from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import PetEvent
-from petnest.models.lan_interaction import ChatMessageKind
+from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, LanPeer
 from petnest.models.settings import Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
@@ -42,6 +42,90 @@ class _IdleAdapter:
 
     def get_idle_seconds(self) -> float:
         return self.idle_seconds
+
+
+def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "config" / "settings.json")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    assert application.peer_registry.path == manager.path.parent / "known-lan-peers.json"
+    assert application.danger_alert_action.text() == "⚠  发送危险预警"
+    assert application.danger_alert_overlay is not None
+    application.shutdown()
+
+
+def test_app_shows_received_alert_on_pet_screen(qtbot: pytest.QtBot, tmp_path: Path, monkeypatch) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    shown = []
+    monkeypatch.setattr(application.danger_alert_overlay, "show_alert", lambda *args: shown.append(args))
+    monkeypatch.setattr(application, "_pet_screen_geometry", lambda: QRect(10, 20, 800, 600))
+
+    application._handle_danger_alert(
+        DangerAlert(
+            "alert-1",
+            "peer",
+            "小林",
+            application.settings.device_id,
+            1_800_000_000,
+            "请立即撤离",
+        )
+    )
+
+    assert shown == [("alert-1", "小林", QRect(10, 20, 800, 600), "请立即撤离")]
+    application.shutdown()
+
+
+def test_app_confirms_context_alert_and_persists_membership(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=manager, enable_tray=False)
+    qtbot.addWidget(application.window)
+    application._set_lan_alert_group_joined(True)
+    application.lan_service._peers["peer"] = LanPeer(
+        "peer",
+        "小林",
+        ip_address="127.0.0.1",
+        port=19000,
+        alert_group_supported=True,
+        alert_group_joined=True,
+    )
+    sent = []
+    monkeypatch.setattr(
+        application.lan_service,
+        "send_danger_alert",
+        lambda message="": sent.append(message) or True,
+    )
+    monkeypatch.setattr(
+        "petnest.app.DangerAlertConfirmDialog.exec",
+        lambda _dialog: QDialog.DialogCode.Accepted,
+    )
+    monkeypatch.setattr(
+        "petnest.app.DangerAlertConfirmDialog.alert_message",
+        lambda _dialog: "请立即撤离",
+    )
+
+    application._confirm_danger_alert()
+
+    assert sent == ["请立即撤离"]
+    assert manager.load().lan_alert_group_joined is True
+    assert application.lan_service.alert_group_joined is True
+    application.shutdown()
 
 
 def test_effect_directories_include_custom_pets_and_installation_resources(tmp_path: Path) -> None:

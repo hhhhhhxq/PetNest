@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QSize, Qt
+from PySide6.QtCore import QPoint, QTimer, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QTabWidget,
@@ -34,6 +36,7 @@ from petnest.models.lan_interaction import (
     MAX_CHAT_TEXT_LENGTH,
     ChatDraft,
     ChatMessageKind,
+    ChatScope,
     InteractionDraft,
     InteractionKind,
     LanChatMessage,
@@ -154,6 +157,7 @@ class LanInteractionDialog(QDialog):
     _PREVIEW_SAMPLE_COUNT = 9
     _DEFAULT_STATUS = "选择一个互动方式后发送"
     _LAN_GROUP_DEVICE_ID = "*"
+    _ALERT_GROUP_DEVICE_ID = "@lan-alert-group"
 
     def __init__(
         self,
@@ -164,6 +168,9 @@ class LanInteractionDialog(QDialog):
         effects: Sequence[object] = (),
         on_send: Callable[[InteractionDraft], bool | None] | None = None,
         on_chat_send: Callable[[ChatDraft], bool | None] | None = None,
+        on_alert_membership_changed: Callable[[bool], bool | None] | None = None,
+        on_update_peer_address: Callable[[str, str], bool | None] | None = None,
+        on_forget_peer: Callable[[str], bool | None] | None = None,
         on_remote_send: Callable[[InteractionDraft], bool | None] | None = None,
         on_probe: Callable[[str], bool | None] | None = None,
         on_remote_pair: Callable[[str], bool | None] | None = None,
@@ -185,6 +192,9 @@ class LanInteractionDialog(QDialog):
         self._effects = tuple(effects)
         self._on_send = on_send
         self._on_chat_send = on_chat_send
+        self._on_alert_membership_changed = on_alert_membership_changed
+        self._on_update_peer_address = on_update_peer_address
+        self._on_forget_peer = on_forget_peer
         self._on_remote_send = on_remote_send
         self._on_probe = on_probe
         self._on_remote_pair = on_remote_pair
@@ -219,6 +229,7 @@ class LanInteractionDialog(QDialog):
             lan_group_chat_notifications_enabled=(
                 self.group_chat_notifications_input.isChecked()
             ),
+            lan_alert_group_joined=self._settings.lan_alert_group_joined,
             remote_interaction_enabled=self.remote_enabled_input.isChecked(),
         )
 
@@ -268,6 +279,7 @@ class LanInteractionDialog(QDialog):
     def set_peers(self, peers: Sequence[LanPeer]) -> None:
         """刷新设备列表，并尽量保留用户当前选择。"""
         selected_id = self._selected_peer.device_id if self._selected_peer is not None else None
+        selected_mode = self.mode_tabs.currentIndex()
         self._peers = tuple(peers)
         self._populate_peers()
         if not self._peers:
@@ -276,8 +288,10 @@ class LanInteractionDialog(QDialog):
             return
         row = self._peer_row(selected_id)
         if row < 0:
-            row = 1
+            row = 2
         self.peer_list.setCurrentRow(row)
+        self._peer_changed(self.peer_list.item(row), None)
+        self.mode_tabs.setCurrentIndex(selected_mode)
 
     def update_peer(self, peer: LanPeer) -> None:
         """接收发现服务的单个更新。"""
@@ -418,6 +432,8 @@ class LanInteractionDialog(QDialog):
         self.peer_list.setSpacing(4)
         self.peer_list.setIconSize(QSize(30, 30))
         self.peer_list.currentItemChanged.connect(self._peer_changed)
+        self.peer_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.peer_list.customContextMenuRequested.connect(self._show_peer_context_menu)
         nearby_layout.addWidget(self.peer_list, 1)
         self.device_tabs.addTab(nearby_page, "附近设备")
 
@@ -579,6 +595,23 @@ class LanInteractionDialog(QDialog):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 12, 8, 8)
         layout.setSpacing(8)
+        self.alert_group_panel = QFrame(page)
+        self.alert_group_panel.setObjectName("alertGroupPanel")
+        alert_layout = QHBoxLayout(self.alert_group_panel)
+        alert_layout.setContentsMargins(10, 8, 10, 8)
+        self.alert_group_label = QLabel(self.alert_group_panel)
+        self.alert_group_label.setWordWrap(True)
+        alert_layout.addWidget(self.alert_group_label, 1)
+        self.alert_join_button = QPushButton("加入预警组", self.alert_group_panel)
+        self.alert_join_button.setObjectName("primaryButton")
+        self.alert_join_button.clicked.connect(lambda: self._set_alert_group_joined(True))
+        alert_layout.addWidget(self.alert_join_button)
+        self.alert_leave_button = QPushButton("退出", self.alert_group_panel)
+        self.alert_leave_button.setObjectName("secondaryButton")
+        self.alert_leave_button.clicked.connect(self._request_leave_alert_group)
+        alert_layout.addWidget(self.alert_leave_button)
+        self.alert_group_panel.hide()
+        layout.addWidget(self.alert_group_panel)
         self.chat_list = QListWidget(page)
         self.chat_list.setObjectName("chatList")
         self.chat_list.setSpacing(5)
@@ -622,21 +655,31 @@ class LanInteractionDialog(QDialog):
 
     def _populate_peers(self) -> None:
         self.peer_list.clear()
-        if not self._peers:
-            item = QListWidgetItem("没有发现附近设备\n请确认对方已开启互动", self.peer_list)
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            item.setForeground(QColor("#8f8b86"))
-            return
+        online = tuple(peer for peer in self._peers if peer.online)
+        alert_members = tuple(
+            peer for peer in online if peer.alert_group_supported and peer.alert_group_joined
+        )
+        alert_item = QListWidgetItem(
+            self._peer_avatar("预警"),
+            f"局域网预警组\n当前 {len(alert_members)} 人在线 · 自愿加入",
+            self.peer_list,
+        )
+        alert_item.setData(Qt.ItemDataRole.UserRole, self._ALERT_GROUP_DEVICE_ID)
+        alert_item.setToolTip("组内成员可聊天并发送危险预警")
         group_item = QListWidgetItem(
             self._peer_avatar("群聊"),
-            f"局域网群聊\n当前 {len(self._peers)} 台设备 · 文字/表情/图片",
+            f"局域网群聊\n当前 {len(online)} 台设备 · 文字/表情/图片",
             self.peer_list,
         )
         group_item.setData(Qt.ItemDataRole.UserRole, self._LAN_GROUP_DEVICE_ID)
         group_item.setToolTip("发送给当前已连接的所有局域网设备")
         for peer in self._peers:
             label = peer.display_name.strip() or f"用户-{peer.device_id[-4:].upper()}"
-            item = QListWidgetItem(self._peer_avatar(label), label + "\n" + peer.subtitle, self.peer_list)
+            item = QListWidgetItem(
+                self._peer_avatar(label),
+                label + "\n" + self._peer_status_text(peer),
+                self.peer_list,
+            )
             item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
             item.setToolTip(peer.ip_address or "局域网设备")
 
@@ -652,6 +695,118 @@ class LanInteractionDialog(QDialog):
             item = QListWidgetItem(self._peer_avatar(label), label + "\n" + peer.subtitle, self.remote_peer_list)
             item.setData(Qt.ItemDataRole.UserRole, peer.device_id)
             item.setToolTip("Firebase 远程伙伴")
+
+    @staticmethod
+    def _peer_status_text(peer: LanPeer) -> str:
+        if peer.connection_state == "conflict":
+            return "地址冲突"
+        if peer.saved and not peer.online:
+            return "已保存 · 离线"
+        status = "已保存 · 在线" if peer.saved else ("附近 · 在线" if peer.online else "离线")
+        if peer.online and not peer.alert_group_supported:
+            status += " · 不支持预警组"
+        elif peer.online and peer.alert_group_joined:
+            status += " · 已加入预警组"
+        return status
+
+    def _alert_group_peers(self) -> tuple[LanPeer, ...]:
+        return tuple(
+            peer
+            for peer in self._peers
+            if peer.online and peer.alert_group_supported and peer.alert_group_joined
+        )
+
+    def _set_alert_group_joined(self, joined: bool) -> None:
+        if self._settings.lan_alert_group_joined == joined:
+            return
+        if self._on_alert_membership_changed is not None:
+            try:
+                result = self._on_alert_membership_changed(joined)
+            except Exception as error:  # noqa: BLE001 - UI surfaces callback errors.
+                self._show_feedback(f"更新预警组状态失败：{error}", timeout_ms=self._failure_feedback_timeout_ms)
+                return
+            if result is False:
+                self._show_feedback("更新预警组状态失败", timeout_ms=self._failure_feedback_timeout_ms)
+                return
+        self._settings = replace(self._settings, lan_alert_group_joined=joined)
+        self._refresh_alert_group_panel()
+        self._refresh_send_button()
+        self._restore_default_status()
+
+    def _request_leave_alert_group(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "退出局域网预警组",
+            "退出后将不再接收预警组聊天和危险预警，确定退出吗？",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._set_alert_group_joined(False)
+
+    def _refresh_alert_group_panel(self) -> None:
+        if not hasattr(self, "alert_group_panel"):
+            return
+        selected = self._selected_peer is not None and self._selected_peer.transport == "alert_group"
+        self.alert_group_panel.setVisible(selected)
+        if not selected:
+            return
+        joined = self._settings.lan_alert_group_joined
+        count = len(self._alert_group_peers())
+        self.alert_group_label.setText(
+            f"已加入 · 当前 {count} 人在线"
+            if joined
+            else "加入后可参与预警组聊天，并接收危险预警"
+        )
+        self.alert_join_button.setVisible(not joined)
+        self.alert_leave_button.setVisible(joined)
+
+    def _selected_saved_peer(self) -> LanPeer | None:
+        return self._selected_peer if self._selected_peer is not None and self._selected_peer.saved else None
+
+    def _show_peer_context_menu(self, position: QPoint) -> None:
+        peer = self._selected_saved_peer()
+        if peer is None:
+            return
+        menu = QMenu(self.peer_list)
+        update_action = menu.addAction("更新地址…")
+        forget_action = menu.addAction("忘记此伙伴")
+        selected = menu.exec(self.peer_list.viewport().mapToGlobal(position))
+        if selected is update_action:
+            self._update_selected_peer_address()
+        elif selected is forget_action:
+            self._forget_selected_peer()
+
+    def _update_selected_peer_address(self) -> None:
+        peer = self._selected_saved_peer()
+        if peer is None or self._on_update_peer_address is None:
+            return
+        dialog = ManualPeerDialog(self)
+        if peer.ip_address:
+            dialog.ip_input.setText(peer.ip_address)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        result = self._on_update_peer_address(peer.device_id, dialog.ip_address())
+        if result is False:
+            self._show_feedback("更新地址失败", timeout_ms=self._failure_feedback_timeout_ms)
+        else:
+            self._show_feedback("正在验证新地址…", timeout_ms=self._success_feedback_timeout_ms)
+
+    def _forget_selected_peer(self) -> None:
+        peer = self._selected_saved_peer()
+        if peer is None or self._on_forget_peer is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "忘记局域网伙伴",
+            f"确定忘记“{peer.display_name}”吗？以后可重新输入 IP 添加。",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        result = self._on_forget_peer(peer.device_id)
+        if result is False:
+            self._show_feedback("忘记伙伴失败", timeout_ms=self._failure_feedback_timeout_ms)
+            return
+        self.remove_peer(peer.device_id)
+        self._show_feedback("已忘记伙伴", timeout_ms=self._success_feedback_timeout_ms)
 
     @staticmethod
     def _peer_avatar(label: str) -> QIcon:
@@ -688,9 +843,13 @@ class LanInteractionDialog(QDialog):
 
     def _select_initial_values(self) -> None:
         if self._peers:
+            self.peer_list.setCurrentRow(2)
+            self.mode_tabs.setCurrentIndex(0)
+        else:
             self.peer_list.setCurrentRow(1)
+            self.mode_tabs.setCurrentIndex(3)
         self._update_nickname_button()
-        self._mode_changed(0)
+        self._mode_changed(self.mode_tabs.currentIndex())
 
     def _peer_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if self.device_tabs.currentIndex() != 0:
@@ -699,7 +858,15 @@ class LanInteractionDialog(QDialog):
         self._selected_peer = None
         if current is not None:
             peer_id = current.data(Qt.ItemDataRole.UserRole)
-            if peer_id == self._LAN_GROUP_DEVICE_ID and self._peers:
+            if peer_id == self._ALERT_GROUP_DEVICE_ID:
+                self._selected_peer = LanPeer(
+                    device_id=self._ALERT_GROUP_DEVICE_ID,
+                    display_name="局域网预警组",
+                    online=True,
+                    transport="alert_group",
+                )
+                self.mode_tabs.setCurrentIndex(3)
+            elif peer_id == self._LAN_GROUP_DEVICE_ID:
                 self._selected_peer = LanPeer(
                     device_id=self._LAN_GROUP_DEVICE_ID,
                     display_name="局域网群聊",
@@ -713,11 +880,16 @@ class LanInteractionDialog(QDialog):
                     None,
                 )
         label = self._selected_peer.display_name if self._selected_peer else "未选择设备"
-        if self._selected_peer is not None and self._selected_peer.transport == "lan_group":
-            self.recipient_label.setText(f"发送给：{label}（{len(self._peers)} 台）")
+        if self._selected_peer is not None and self._selected_peer.transport in {"lan_group", "alert_group"}:
+            count = len(self._alert_group_peers()) if self._selected_peer.transport == "alert_group" else len(
+                tuple(peer for peer in self._peers if peer.online)
+            )
+            unit = "人" if self._selected_peer.transport == "alert_group" else "台"
+            self.recipient_label.setText(f"发送给：{label}（{count} {unit}在线）")
         else:
             self.recipient_label.setText(f"发送给：{label}" if self._selected_peer else label)
         self._refresh_chat_messages()
+        self._refresh_alert_group_panel()
         self._refresh_send_button()
 
     def _remote_peer_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -728,6 +900,8 @@ class LanInteractionDialog(QDialog):
         if current is not None:
             peer_id = current.data(Qt.ItemDataRole.UserRole)
             self._selected_peer = next((peer for peer in self._remote_peers if peer.device_id == peer_id), None)
+        if self._selected_peer is not None and self.mode_tabs.currentIndex() == 3:
+            self.mode_tabs.setCurrentIndex(0)
         label = self._selected_peer.display_name if self._selected_peer else "未选择伙伴"
         self.recipient_label.setText(f"发送给：{label}" if self._selected_peer else label)
         self._refresh_chat_messages()
@@ -735,8 +909,8 @@ class LanInteractionDialog(QDialog):
 
     def _device_tab_changed(self, index: int) -> None:
         if index == 0:
-            if self._peers and self.peer_list.currentRow() < 0:
-                self.peer_list.setCurrentRow(1)
+            if self.peer_list.currentRow() < 0:
+                self.peer_list.setCurrentRow(2 if self._peers else 1)
             self._peer_changed(self.peer_list.currentItem(), None)
         else:
             if self._remote_peers and self.remote_peer_list.currentRow() < 0:
@@ -868,24 +1042,26 @@ class LanInteractionDialog(QDialog):
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor("#8f8b86"))
             return
-        if peer.transport not in {"lan", "lan_group"}:
+        if peer.transport not in {"lan", "lan_group", "alert_group"}:
             empty = QListWidgetItem("图片聊天暂仅支持局域网附近设备", self.chat_list)
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             empty.setForeground(QColor("#8f8b86"))
             return
         if peer.transport == "lan_group":
-            messages = [item for item in self._chat_messages if item.is_group]
+            messages = [item for item in self._chat_messages if item.scope is ChatScope.LAN_ROOM]
+        elif peer.transport == "alert_group":
+            messages = [item for item in self._chat_messages if item.scope is ChatScope.ALERT_GROUP]
         else:
             messages = [
                 item
                 for item in self._chat_messages
-                if not item.is_group
+                if item.scope is ChatScope.DIRECT
                 and item.peer_device_id(self._settings.device_id) == peer.device_id
             ]
         if not messages:
             text = (
                 "还没有群聊消息，发个表情和大家打招呼吧"
-                if peer.transport == "lan_group"
+                if peer.transport in {"lan_group", "alert_group"}
                 else "还没有消息，发个表情打招呼吧"
             )
             empty = QListWidgetItem(text, self.chat_list)
@@ -932,7 +1108,7 @@ class LanInteractionDialog(QDialog):
         self.send_button.setEnabled(True)
         if (
             self._selected_peer is not None
-            and self._selected_peer.transport == "lan_group"
+            and self._selected_peer.transport in {"lan_group", "alert_group"}
             and self.mode_tabs.currentIndex() != 3
         ):
             self.send_button.setText("群聊仅支持聊天")
@@ -948,8 +1124,16 @@ class LanInteractionDialog(QDialog):
             self.send_button.setText("发送动效")
             return
         local_peer = self._selected_peer is not None and (
-            self._selected_peer.transport == "lan"
-            or (self._selected_peer.transport == "lan_group" and bool(self._peers))
+            (self._selected_peer.transport == "lan" and self._selected_peer.online)
+            or (
+                self._selected_peer.transport == "lan_group"
+                and any(peer.online for peer in self._peers)
+            )
+            or (
+                self._selected_peer.transport == "alert_group"
+                and self._settings.lan_alert_group_joined
+                and bool(self._alert_group_peers())
+            )
         )
         self.send_button.setText("发送消息")
         self.send_button.setEnabled(local_peer and bool(self.chat_input.toPlainText().strip()))
@@ -1012,12 +1196,14 @@ class LanInteractionDialog(QDialog):
             self._show_feedback("发送失败，请稍后重试", timeout_ms=self._failure_feedback_timeout_ms)
 
     def _send_chat_text(self) -> None:
-        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group", "alert_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         try:
             if self._selected_peer.transport == "lan_group":
                 draft = ChatDraft.group_text_message(self.chat_input.toPlainText())
+            elif self._selected_peer.transport == "alert_group":
+                draft = ChatDraft.alert_group_text_message(self.chat_input.toPlainText())
             else:
                 draft = ChatDraft.text_message(
                     self._selected_peer.device_id,
@@ -1030,12 +1216,14 @@ class LanInteractionDialog(QDialog):
             self.chat_input.clear()
 
     def _send_chat_emoji(self, emoji: str) -> None:
-        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group", "alert_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         try:
             if self._selected_peer.transport == "lan_group":
                 draft = ChatDraft.group_emoji(emoji)
+            elif self._selected_peer.transport == "alert_group":
+                draft = ChatDraft.alert_group_emoji(emoji)
             else:
                 draft = ChatDraft.emoji(self._selected_peer.device_id, emoji)
         except ValueError as error:
@@ -1044,7 +1232,7 @@ class LanInteractionDialog(QDialog):
         self._send_chat_draft(draft)
 
     def _choose_chat_image(self) -> None:
-        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group"}:
+        if self._selected_peer is None or self._selected_peer.transport not in {"lan", "lan_group", "alert_group"}:
             self._show_feedback("请先选择一台附近设备", timeout_ms=self._failure_feedback_timeout_ms)
             return
         filename, _filter = QFileDialog.getOpenFileName(
@@ -1060,6 +1248,8 @@ class LanInteractionDialog(QDialog):
             data, safe_name = prepare_chat_image(Path(filename))
             if self._selected_peer.transport == "lan_group":
                 draft = ChatDraft.group_image(data, safe_name)
+            elif self._selected_peer.transport == "alert_group":
+                draft = ChatDraft.alert_group_image(data, safe_name)
             else:
                 draft = ChatDraft.image(self._selected_peer.device_id, data, safe_name)
         except (LanChatImageError, OSError, ValueError) as error:
@@ -1094,11 +1284,14 @@ class LanInteractionDialog(QDialog):
             if hasattr(self, "mode_tabs") and self.mode_tabs.currentIndex() == 3:
                 if (
                     self._selected_peer is not None
-                    and self._selected_peer.transport == "lan_group"
+                    and self._selected_peer.transport in {"lan_group", "alert_group"}
                 ):
-                    self.status_label.setText(
-                        f"群聊将发送给当前 {len(self._peers)} 台设备；记录仅在本次运行保留"
+                    count = (
+                        len(self._alert_group_peers())
+                        if self._selected_peer.transport == "alert_group"
+                        else len(tuple(peer for peer in self._peers if peer.online))
                     )
+                    self.status_label.setText(f"群聊将发送给当前 {count} 人；记录仅在本次运行保留")
                 else:
                     self.status_label.setText("聊天记录仅保留在本次 PetNest 运行中")
             else:

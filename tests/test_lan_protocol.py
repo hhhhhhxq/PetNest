@@ -7,7 +7,13 @@ import json
 import pytest
 
 from petnest.core.lan_interaction import LanPacketCodec, LanProtocolError
-from petnest.models.lan_interaction import InteractionDraft, InteractionKind
+from petnest.models.lan_interaction import (
+    ChatScope,
+    DangerAlert,
+    DangerAlertAck,
+    InteractionDraft,
+    InteractionKind,
+)
 
 
 def test_hello_packet_contains_identity_but_no_resource_path() -> None:
@@ -28,6 +34,97 @@ def test_hello_packet_contains_identity_but_no_resource_path() -> None:
         "capabilities": ["greeting", "heart", "text", "effect"],
     }
     assert "path" not in packet
+
+
+def test_presence_round_trips_optional_alert_group_membership_and_accepts_legacy() -> None:
+    packet = LanPacketCodec.hello(
+        device_id="peer-1",
+        display_name="小林",
+        pet_name="平安",
+        port=18487,
+        alert_group_joined=True,
+    )
+
+    decoded = LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+
+    assert packet["capabilities"] == ["greeting", "heart", "text", "effect"]
+    assert decoded["alert_group_supported"] is True
+    assert decoded["alert_group_joined"] is True
+
+    packet.pop("alert_group_joined")
+    legacy = LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+
+    assert legacy["alert_group_supported"] is False
+    assert legacy["alert_group_joined"] is False
+
+
+def test_presence_rejects_non_boolean_alert_group_membership() -> None:
+    packet = LanPacketCodec.hello(
+        device_id="peer-1",
+        display_name="小林",
+        pet_name="平安",
+        port=18487,
+    )
+    packet["alert_group_joined"] = "yes"
+
+    with pytest.raises(LanProtocolError, match="预警组"):
+        LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+
+
+def test_chat_scope_enum_uses_stable_wire_values() -> None:
+    assert ChatScope.DIRECT.value == "direct"
+    assert ChatScope.LAN_ROOM.value == "lan_room"
+    assert ChatScope.ALERT_GROUP.value == "alert_group"
+
+
+def test_danger_alert_and_ack_round_trip() -> None:
+    alert = DangerAlert("alert-1", "sender", "小林", "receiver", 1_800_000_000, "请立即撤离")
+    encoded = LanPacketCodec.encode(LanPacketCodec.danger_alert(alert))
+
+    assert LanPacketCodec.decode_danger_alert(
+        encoded,
+        local_device_id="receiver",
+        now=1_800_000_001,
+    ) == alert
+
+    ack = DangerAlertAck("alert-1", "receiver", "sender")
+    encoded_ack = LanPacketCodec.encode(LanPacketCodec.danger_alert_ack(ack))
+    assert LanPacketCodec.decode_danger_alert_ack(
+        encoded_ack,
+        local_device_id="sender",
+    ) == ack
+
+
+def test_danger_alert_rejects_message_longer_than_thirty_characters() -> None:
+    alert = DangerAlert(
+        "alert-1",
+        "sender",
+        "小林",
+        "receiver",
+        1_800_000_000,
+        "过" * 31,
+    )
+
+    with pytest.raises(LanProtocolError, match="预警文案"):
+        LanPacketCodec.danger_alert(alert)
+
+
+def test_danger_alert_rejects_expired_and_wrong_target_messages() -> None:
+    alert = DangerAlert("alert-1", "sender", "小林", "receiver", 1_800_000_000)
+    encoded = LanPacketCodec.encode(LanPacketCodec.danger_alert(alert))
+
+    with pytest.raises(LanProtocolError, match="过期"):
+        LanPacketCodec.decode_danger_alert(
+            encoded,
+            local_device_id="receiver",
+            now=1_800_000_020,
+        )
+    with pytest.raises(LanProtocolError, match="目标设备"):
+        LanPacketCodec.decode_danger_alert(
+            encoded,
+            local_device_id="someone-else",
+            now=1_800_000_001,
+        )
 
 
 def test_interaction_packet_round_trips_as_one_validated_message() -> None:

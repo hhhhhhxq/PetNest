@@ -17,9 +17,9 @@ from threading import Thread
 from time import monotonic
 import uuid
 
-from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QPoint, QRect, QTimer, QUrl, Qt
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QPalette
-from PySide6.QtWidgets import QApplication, QMenu, QMenuBar, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMenuBar, QMessageBox
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest import __version__
@@ -41,6 +41,7 @@ from petnest.core.codex_usage import (
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
+from petnest.core.lan_peer_registry import KnownLanPeerRegistry
 from petnest.core.lottie_effects import EffectCatalog
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
@@ -61,11 +62,17 @@ from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.core.device_identity import display_name_for
 from petnest.models.event import PetEvent
-from petnest.models.lan_interaction import ChatMessageKind, InteractionKind
+from petnest.models.lan_interaction import (
+    ChatMessageKind,
+    DangerAlert,
+    DangerAlertDeliveryResult,
+    InteractionKind,
+)
 from petnest.models.pet_package import PetPackage
 from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.app_update_dialog import AppUpdateDialog
 from petnest.ui.codex_usage_dialog import CodexUsageDialog
+from petnest.ui.danger_alert import DangerAlertConfirmDialog, DangerAlertOverlay
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.ui.pet_window import PetWindow
@@ -247,14 +254,21 @@ class PetNest:
             position_saved=self._save_window_position,
             countdown_root=countdown_root,
         )
+        self.peer_registry = KnownLanPeerRegistry(
+            self.settings_manager.path.parent / "known-lan-peers.json"
+        )
         self.lan_service = LanInteractionService(
             device_id=self.settings.device_id,
             display_name=display_name_for(self.settings),
             pet_name=self.package.name,
+            peer_registry=self.peer_registry,
+            alert_group_joined=self.settings.lan_alert_group_joined,
             parent=self.window,
         )
         self.lan_service.interaction_received.connect(self._handle_lan_interaction)
         self.lan_service.chat_message_received.connect(self._handle_lan_chat)
+        self.lan_service.danger_alert_received.connect(self._handle_danger_alert)
+        self.lan_service.danger_alert_delivery_completed.connect(self._handle_danger_alert_delivery)
         self.lan_service.error.connect(lambda message: LOGGER.warning("%s", message))
         self.codex_usage_sync = CodexUsageSyncCoordinator(
             self.lan_service,
@@ -274,6 +288,7 @@ class PetNest:
         self.remote_interaction_service.error.connect(lambda message: LOGGER.warning("%s", message))
         self.work_countdown = WorkCountdownWindow(self.window)
         self.work_finish_reminder = WorkFinishReminder()
+        self.danger_alert_overlay = DangerAlertOverlay()
         self._work_finish_visibility_lease = PetVisibilityLease()
         self.work_finish_reminder.finish_requested.connect(self._finish_work)
         self.work_finish_reminder.continue_requested.connect(self._continue_overtime)
@@ -284,6 +299,9 @@ class PetNest:
         self.context_header_action = QAction(self.pet_context_menu)
         self.context_header_action.setEnabled(False)
         self.pet_context_menu.addAction(self.context_header_action)
+        self.pet_context_menu.addSeparator()
+        self.danger_alert_action = self.pet_context_menu.addAction("⚠  发送危险预警")
+        self.danger_alert_action.triggered.connect(self._confirm_danger_alert)
         self.pet_context_menu.addSeparator()
         self.zoom_out_action = self.pet_context_menu.addAction("－  缩小")
         self.zoom_in_action = self.pet_context_menu.addAction("＋  放大")
@@ -558,6 +576,7 @@ class PetNest:
             or settings.system_bored_seconds != self.settings.system_bored_seconds
             or settings.system_sleep_seconds != self.settings.system_sleep_seconds
         )
+        alert_membership_changed = settings.lan_alert_group_joined != self.settings.lan_alert_group_joined
         previous_cursor_pending = self.settings.cursor_restore_pending
         self.window.set_scale(settings.scale)
         self.window.set_paused(settings.animation_paused)
@@ -565,6 +584,8 @@ class PetNest:
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
+        if alert_membership_changed:
+            self.lan_service.update_alert_group_membership(settings.lan_alert_group_joined)
         self.remote_interaction_service.update_identity(
             display_name=display_name_for(self.settings),
             pet_name=self.package.name,
@@ -585,6 +606,27 @@ class PetNest:
         """在宠物右键位置弹出跨平台快捷菜单。"""
         self._sync_pet_context_menu()
         self.pet_context_menu.popup(position)
+
+    def _set_lan_alert_group_joined(self, joined: bool) -> bool:
+        if self.settings.lan_alert_group_joined != joined:
+            self.apply_settings(replace(self.settings, lan_alert_group_joined=joined))
+        return True
+
+    def _confirm_danger_alert(self) -> None:
+        if not self.settings.lan_alert_group_joined:
+            QMessageBox.information(
+                self.window,
+                "尚未加入预警组",
+                "请先在“互动”页面加入局域网预警组。",
+            )
+            return
+        dialog = DangerAlertConfirmDialog(
+            online=self.lan_service.alert_group_peers(),
+            unavailable=self.lan_service.unavailable_known_peers(),
+            parent=self.window,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.lan_service.send_danger_alert(dialog.alert_message())
 
     def _sync_pet_context_menu(self) -> None:
         """让快捷菜单文字、勾选状态与当前运行状态保持一致。"""
@@ -754,6 +796,9 @@ class PetNest:
             effects=effects,
             on_send=self.lan_service.send_interaction,
             on_chat_send=self.lan_service.send_chat,
+            on_alert_membership_changed=self._set_lan_alert_group_joined,
+            on_update_peer_address=self._update_lan_peer_address,
+            on_forget_peer=lambda device_id: self.lan_service.forget_peer(device_id),
             on_remote_send=(
                 self.remote_interaction_service.send_interaction
                 if self.remote_interaction_service.is_configured
@@ -798,9 +843,13 @@ class PetNest:
             or updated.lan_interaction_enabled != self.settings.lan_interaction_enabled
             or updated.lan_group_chat_notifications_enabled
             != self.settings.lan_group_chat_notifications_enabled
+            or updated.lan_alert_group_joined != self.settings.lan_alert_group_joined
             or updated.remote_interaction_enabled != self.settings.remote_interaction_enabled
         ):
             self.apply_settings(updated)
+
+    def _update_lan_peer_address(self, device_id: str, ip_address: str) -> bool:
+        return self.lan_service.update_saved_peer_address(device_id, ip_address)
 
     def _preview_lan_effect(self, effect: object) -> bool:
         """在本机宠物上一次性预览局域网动效，不发送网络消息。"""
@@ -1035,6 +1084,7 @@ class PetNest:
         self._work_finish_visibility_lease.cancel()
         self._run_shutdown_step("隐藏打卡卡片", lambda: self._apply_pet_visibility(False))
         self._run_shutdown_step("关闭下班全屏提醒", self.work_finish_reminder.shutdown)
+        self._run_shutdown_step("关闭危险预警层", self.danger_alert_overlay.stop)
         self._run_shutdown_step("隐藏宠物窗口", self.window.hide)
         server, self.external_server = self.external_server, None
         if server is not None:
@@ -1501,6 +1551,37 @@ class PetNest:
         prefix = f"群聊 · {sender}" if is_group else sender
         self.window.show_interaction_bubble(f"{prefix}：{summary}")
         LOGGER.info("收到局域网聊天：%s", sender)
+
+    def _pet_screen_geometry(self) -> QRect:
+        center = self.window.frameGeometry().center()
+        screen = QGuiApplication.screenAt(center) or QGuiApplication.primaryScreen()
+        if screen is not None:
+            return screen.geometry()
+        return self.window.screen().geometry()
+
+    def _handle_danger_alert(self, alert: DangerAlert) -> None:
+        self.danger_alert_overlay.show_alert(
+            alert.alert_id,
+            alert.sender_name,
+            self._pet_screen_geometry(),
+            alert.message,
+        )
+        LOGGER.info("收到局域网危险预警：%s", alert.sender_name)
+
+    def _handle_danger_alert_delivery(self, result: DangerAlertDeliveryResult) -> None:
+        acknowledged = len(result.acknowledged_device_ids)
+        total = len(result.target_device_ids)
+        if acknowledged == total:
+            message = f"预警已送达 {acknowledged} 人"
+        else:
+            peers = {peer.device_id: peer.display_name for peer in self.lan_service.peers()}
+            missing = [
+                peers.get(device_id, device_id[-4:].upper())
+                for device_id in result.target_device_ids
+                if device_id not in result.acknowledged_device_ids
+            ]
+            message = f"已送达 {acknowledged}/{total}，{'、'.join(missing)}未响应"
+        self.window.show_interaction_bubble(message)
 
     def _configure_system_idle_timer(self) -> None:
         if self.settings.system_idle_enabled:
