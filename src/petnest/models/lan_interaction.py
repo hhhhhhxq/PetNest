@@ -39,6 +39,10 @@ class LanPeer:
     port: int | None = None
     online: bool = True
     transport: str = "lan"
+    saved: bool = False
+    connection_state: str = "online"
+    alert_group_supported: bool = False
+    alert_group_joined: bool = False
 
     @property
     def subtitle(self) -> str:

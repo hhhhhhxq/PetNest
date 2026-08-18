@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 import logging
 from ipaddress import IPv4Address, ip_address as parse_ip_address
@@ -10,6 +11,8 @@ from time import monotonic
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket, QUdpSocket
 
+from petnest.core.codex_usage import CodexDeviceUsageSnapshot
+from petnest.core.lan_discovery import InterfaceIPv4, eligible_broadcast_addresses, qt_interface_ipv4
 from petnest.core.lan_interaction import (
     LAN_INTERACTION_PORT,
     MAX_CHAT_PACKET_BYTES,
@@ -18,7 +21,7 @@ from petnest.core.lan_interaction import (
     ReceivedCodexUsageSync,
     ReceivedInteraction,
 )
-from petnest.core.codex_usage import CodexDeviceUsageSnapshot
+from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
 from petnest.models.lan_interaction import ChatDraft, ChatMessageKind, InteractionDraft, LanChatMessage, LanPeer
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +50,8 @@ class LanInteractionService(QObject):
         display_name: str,
         pet_name: str,
         port: int = LAN_INTERACTION_PORT,
+        interface_provider: Callable[[], Iterable[InterfaceIPv4]] | None = None,
+        peer_registry: KnownLanPeerRegistry | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -54,6 +59,8 @@ class LanInteractionService(QObject):
         self.display_name = display_name
         self.pet_name = pet_name
         self.requested_port = port
+        self._interface_provider = interface_provider or qt_interface_ipv4
+        self._peer_registry = peer_registry
         self._port = port
         self._running = False
         self._peers: dict[str, LanPeer] = {}
@@ -65,6 +72,7 @@ class LanInteractionService(QObject):
         self._chat_message_ids: set[str] = set()
         self._manual_peer_targets: dict[str, tuple[str, int]] = {}
         self._manual_probe_target: tuple[str, int] | None = None
+        self._saved_probe_targets: dict[tuple[str, int], str] = {}
         self._socket = QUdpSocket(self)
         self._socket.readyRead.connect(self._read_datagrams)
         self._tcp_server = QTcpServer(self)
@@ -81,6 +89,10 @@ class LanInteractionService(QObject):
         self._manual_probe_timer.setSingleShot(True)
         self._manual_probe_timer.setInterval(MANUAL_PROBE_TIMEOUT_MS)
         self._manual_probe_timer.timeout.connect(self._manual_probe_timeout)
+        self._saved_probe_timer = QTimer(self)
+        self._saved_probe_timer.setSingleShot(True)
+        self._saved_probe_timer.setInterval(MANUAL_PROBE_TIMEOUT_MS)
+        self._saved_probe_timer.timeout.connect(self._saved_probe_timeout)
         self._manual_refresh_timer = QTimer(self)
         self._manual_refresh_timer.setInterval(MANUAL_REFRESH_INTERVAL_MS)
         self._manual_refresh_timer.timeout.connect(self._refresh_manual_peers)
@@ -98,7 +110,48 @@ class LanInteractionService(QObject):
         return self._running and self._tcp_server.isListening()
 
     def peers(self) -> tuple[LanPeer, ...]:
-        return tuple(sorted(self._peers.values(), key=lambda item: item.display_name.casefold()))
+        peers = dict(self._peers)
+        for saved_peer in self._known_peers().values():
+            current = peers.get(saved_peer.device_id)
+            if current is not None:
+                peers[saved_peer.device_id] = replace(current, saved=True, connection_state="online")
+                continue
+            connecting = saved_peer.device_id in self._saved_probe_targets.values()
+            peers[saved_peer.device_id] = LanPeer(
+                device_id=saved_peer.device_id,
+                display_name=saved_peer.display_name,
+                ip_address=saved_peer.ip_address,
+                port=saved_peer.port,
+                online=False,
+                saved=True,
+                connection_state="connecting" if connecting else "offline",
+            )
+        return tuple(sorted(peers.values(), key=lambda item: item.display_name.casefold()))
+
+    def unavailable_known_peers(self) -> tuple[LanPeer, ...]:
+        """Return saved peers that do not currently have a live LAN presence."""
+        return tuple(peer for peer in self.peers() if peer.saved and not peer.online)
+
+    def forget_peer(self, device_id: str) -> None:
+        """Forget one locally saved peer without contacting the remote device."""
+        if self._peer_registry is not None:
+            self._peer_registry.forget(device_id)
+        self._peers.pop(device_id, None)
+        self._peer_seen_at.pop(device_id, None)
+        self._manual_peer_targets.pop(device_id, None)
+        self._saved_probe_targets = {
+            target: expected_device_id
+            for target, expected_device_id in self._saved_probe_targets.items()
+            if expected_device_id != device_id
+        }
+        self._interaction_times.pop(device_id, None)
+        self._usage_sync_times.pop(device_id, None)
+        self.peer_removed.emit(device_id)
+
+    def _known_peers(self) -> dict[str, KnownLanPeer]:
+        if self._peer_registry is None:
+            return {}
+        return {peer.device_id: peer for peer in self._peer_registry.load()}
 
     def manual_peer_ids(self) -> tuple[str, ...]:
         return tuple(self._manual_peer_targets)
@@ -132,6 +185,7 @@ class LanInteractionService(QObject):
         self._manual_refresh_timer.start()
         self.running_changed.emit(True)
         self.discover()
+        self._probe_saved_peers()
         return True
 
     def stop(self) -> None:
@@ -148,8 +202,10 @@ class LanInteractionService(QObject):
         self._incoming_chat_buffers.clear()
         self._outgoing_chat_sockets.clear()
         self._manual_probe_timer.stop()
+        self._saved_probe_timer.stop()
         self._manual_peer_targets.clear()
         self._manual_probe_target = None
+        self._saved_probe_targets.clear()
         self._running = False
         self._peers.clear()
         self._peer_seen_at.clear()
@@ -173,7 +229,13 @@ class LanInteractionService(QObject):
             pet_name=self.pet_name,
             port=self._port,
         )
-        self._send_packet(packet, QHostAddress.SpecialAddress.Broadcast, self._port)
+        try:
+            broadcasts = eligible_broadcast_addresses(self._interface_provider())
+        except Exception:
+            LOGGER.warning("无法枚举局域网接口广播地址", exc_info=True)
+            broadcasts = ()
+        for broadcast in dict.fromkeys((*broadcasts, "255.255.255.255")):
+            self._send_packet(packet, QHostAddress(broadcast), self._port)
 
     def _refresh_manual_peers(self) -> None:
         """用定向 hello 续期手动添加的跨网段设备。"""
@@ -187,6 +249,27 @@ class LanInteractionService(QObject):
         )
         for ip_address, port in tuple(self._manual_peer_targets.values()):
             self._send_packet(packet, QHostAddress(ip_address), port)
+
+    def _probe_saved_peers(self) -> None:
+        """Probe all persisted peers concurrently after the local socket is running."""
+        if not self._running:
+            return
+        saved_peers = tuple(self._known_peers().values())
+        if not saved_peers:
+            return
+        packet = LanPacketCodec.hello(
+            device_id=self.device_id,
+            display_name=self.display_name,
+            pet_name=self.pet_name,
+            port=self._port,
+        )
+        for saved_peer in saved_peers:
+            target = (saved_peer.ip_address, saved_peer.port)
+            self._manual_peer_targets[saved_peer.device_id] = target
+            if self._send_packet(packet, QHostAddress(saved_peer.ip_address), saved_peer.port):
+                self._saved_probe_targets[target] = saved_peer.device_id
+        if self._saved_probe_targets:
+            self._saved_probe_timer.start()
 
     def probe_peer(self, ip_address: str, port: int = LAN_INTERACTION_PORT) -> bool:
         """向指定 IPv4 发送一次定向握手，绕过跨网段广播不可达的问题。"""
@@ -459,9 +542,12 @@ class LanInteractionService(QObject):
         except LanProtocolError:
             presence = None
         if presence is not None:
+            if self._reject_unexpected_probe_identity(presence, address, source_port):
+                return
             peer = self._handle_presence(presence, address)
             if peer is not None:
-                self._complete_manual_probe(peer)
+                self._complete_manual_probe(peer, source_port)
+                self._complete_saved_probe(peer, source_port)
             if presence["kind"] == "hello" and self._running and self._port > 0:
                 packet = LanPacketCodec.hello_ack(
                     device_id=self.device_id,
@@ -499,6 +585,7 @@ class LanInteractionService(QObject):
             return
         address = address if isinstance(address, QHostAddress) else QHostAddress(address)
         host = address.toString()
+        is_saved = device_id in self._known_peers()
         peer = LanPeer(
             device_id=device_id,
             display_name=str(presence["display_name"]),
@@ -506,24 +593,102 @@ class LanInteractionService(QObject):
             ip_address=host,
             port=int(presence["port"]),
             online=True,
+            saved=is_saved,
+            connection_state="online",
         )
         previous = self._peers.get(device_id)
         self._peers[device_id] = peer
         self._peer_seen_at[device_id] = monotonic()
+        if is_saved:
+            self._save_verified_peer(peer)
         if device_id in self._manual_peer_targets:
             self._manual_peer_targets[device_id] = (host, int(presence["port"]))
         if previous != peer:
             self.peer_changed.emit(peer)
         return peer
 
-    def _complete_manual_probe(self, peer: LanPeer) -> None:
+    def _complete_manual_probe(self, peer: LanPeer, source_port: int) -> None:
         target = self._manual_probe_target
-        if target is None or peer.ip_address != target[0]:
+        if (
+            target is None
+            or (peer.ip_address, int(source_port)) != target
+            or peer.port != target[1]
+        ):
             return
         self._manual_probe_target = None
         self._manual_probe_timer.stop()
-        self._manual_peer_targets[peer.device_id] = target
+        self._manual_peer_targets[peer.device_id] = (peer.ip_address, int(peer.port or target[1]))
+        self._save_verified_peer(peer)
         self.manual_probe_succeeded.emit(peer)
+
+    def _complete_saved_probe(self, peer: LanPeer, source_port: int) -> None:
+        target = (peer.ip_address, int(source_port))
+        expected_device_id = self._saved_probe_targets.get(target)
+        if expected_device_id is not None and expected_device_id != peer.device_id:
+            return
+        if expected_device_id is None and not peer.saved:
+            return
+        self._saved_probe_targets = {
+            saved_target: saved_device_id
+            for saved_target, saved_device_id in self._saved_probe_targets.items()
+            if saved_device_id != peer.device_id
+        }
+        if not self._saved_probe_targets:
+            self._saved_probe_timer.stop()
+        self._manual_peer_targets[peer.device_id] = (
+            peer.ip_address,
+            int(peer.port or source_port),
+        )
+
+    def _reject_unexpected_probe_identity(
+        self,
+        presence: dict[str, object],
+        address: QHostAddress,
+        source_port: int,
+    ) -> bool:
+        host = (
+            address.toString()
+            if isinstance(address, QHostAddress)
+            else QHostAddress(address).toString()
+        )
+        device_id = str(presence["device_id"])
+        expected_device_id = self._saved_probe_targets.get((host, int(source_port)))
+        if expected_device_id is not None and expected_device_id != device_id:
+            self.error.emit("已保存伙伴身份不匹配，已拒绝此次重连")
+            return True
+        target = self._manual_probe_target
+        if target is not None and target[0] == host:
+            if int(source_port) != target[1] or int(presence["port"]) != target[1]:
+                return True
+        if target is None or target[0] != host:
+            if (
+                self._peer_registry is not None
+                and not self._peer_registry.matches_expected_identity(host, device_id)
+            ):
+                self.error.emit("已保存伙伴身份不匹配，已拒绝此次重连")
+                return True
+            return False
+        if self._peer_registry is None or self._peer_registry.matches_expected_identity(host, device_id):
+            return False
+        self._manual_probe_target = None
+        self._manual_probe_timer.stop()
+        self.error.emit("已保存伙伴身份不匹配，已拒绝覆盖")
+        return True
+
+    def _save_verified_peer(self, peer: LanPeer) -> None:
+        if self._peer_registry is None or not peer.ip_address or not peer.port:
+            return
+        try:
+            self._peer_registry.upsert(
+                KnownLanPeer(
+                    device_id=peer.device_id,
+                    display_name=peer.display_name,
+                    ip_address=peer.ip_address,
+                    port=peer.port,
+                )
+            )
+        except (OSError, ValueError) as error:
+            self.error.emit(f"无法保存局域网伙伴：{error}")
 
     def _manual_probe_timeout(self) -> None:
         target = self._manual_probe_target
@@ -536,13 +701,35 @@ class LanInteractionService(QObject):
             "如需聊天，还需放行 TCP 18487。"
         )
 
+    def _saved_probe_timeout(self) -> None:
+        pending_device_ids = set(self._saved_probe_targets.values())
+        self._saved_probe_targets.clear()
+        for peer in self.peers():
+            if peer.device_id in pending_device_ids and not peer.online:
+                self.peer_changed.emit(peer)
+
     def _expire_peers(self) -> None:
         cutoff = monotonic() - 24
         expired = [device_id for device_id, seen_at in self._peer_seen_at.items() if seen_at < cutoff]
+        known_peers = self._known_peers()
         for device_id in expired:
             self._peer_seen_at.pop(device_id, None)
             self._peers.pop(device_id, None)
-            self.peer_removed.emit(device_id)
+            saved_peer = known_peers.get(device_id)
+            if saved_peer is None:
+                self.peer_removed.emit(device_id)
+                continue
+            self.peer_changed.emit(
+                LanPeer(
+                    device_id=saved_peer.device_id,
+                    display_name=saved_peer.display_name,
+                    ip_address=saved_peer.ip_address,
+                    port=saved_peer.port,
+                    online=False,
+                    saved=True,
+                    connection_state="offline",
+                )
+            )
 
     def _allow_interaction(self, received: ReceivedInteraction) -> bool:
         """限制单个设备的速率，避免局域网广播被用来刷屏。"""

@@ -211,6 +211,28 @@ def test_schema_21_adds_empty_work_finish_state(tmp_path) -> None:
     assert migrated.work_finish_state is None
 
 
+def test_alert_group_membership_round_trips_and_migrates(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+
+    manager.save(Settings(lan_alert_group_joined=True))
+    assert manager.load().lan_alert_group_joined is True
+
+    path.write_text(json.dumps({"schema_version": 22}), encoding="utf-8")
+    migrated = manager.load()
+    assert migrated.schema_version == 23
+    assert migrated.lan_alert_group_joined is False
+
+    path.write_text(
+        json.dumps({"schema_version": 22, "lan_alert_group_joined": True}),
+        encoding="utf-8",
+    )
+    assert manager.load().lan_alert_group_joined is True
+
+    path.write_text(json.dumps({"schema_version": 24}), encoding="utf-8")
+    assert manager.load() == Settings()
+
+
 def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:
     path = tmp_path / "settings.json"
     manager = SettingsManager(path)

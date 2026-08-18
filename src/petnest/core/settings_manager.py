@@ -200,6 +200,10 @@ class SettingsManager:
             version = 21
         if version == 21:
             migrated.setdefault("work_finish_state", None)
+            migrated["schema_version"] = 22
+            version = 22
+        if version == 22:
+            migrated.setdefault("lan_alert_group_joined", False)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 
