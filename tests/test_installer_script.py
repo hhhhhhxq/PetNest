@@ -44,9 +44,9 @@ def test_release_version_is_consistent_across_python_and_installer() -> None:
     package = Path("src/petnest/__init__.py").read_text(encoding="utf-8")
     installer = Path("installer/PetNest.iss").read_text(encoding="utf-8")
 
-    assert 'version = "0.1.5"' in pyproject
-    assert '__version__ = "0.1.5"' in package
-    assert '#define AppVersion "0.1.5"' in installer
+    assert 'version = "0.1.6"' in pyproject
+    assert '__version__ = "0.1.6"' in package
+    assert '#define AppVersion "0.1.6"' in installer
 
 
 def test_installer_and_application_use_the_dedicated_app_icon() -> None:
