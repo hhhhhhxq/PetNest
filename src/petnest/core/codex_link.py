@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import hmac
 import json
 import os
 from pathlib import Path
@@ -56,6 +55,125 @@ class CodexHookStatus:
 
 
 HookTransport = Callable[[str, int, bytes], object]
+
+
+@dataclass(frozen=True, slots=True)
+class CodexLinkSnapshot:
+    """多个 Codex 任务聚合后的宠物与气泡状态。"""
+
+    state: str = "idle"
+    count: int = 0
+    unread_review_count: int = 0
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexTask:
+    state: str
+    unread_review: bool = False
+
+
+class CodexLinkCoordinator:
+    """把可信 Hook 事件聚合成通用 agent 事件和展示快照。"""
+
+    _STATE_PRIORITY = ("waiting", "failed", "review", "running")
+    _PET_EVENTS = {
+        "idle": "agent.idle",
+        "running": "agent.working",
+        "waiting": "agent.waiting",
+        "failed": "agent.error",
+        "review": "agent.success",
+    }
+
+    def __init__(
+        self,
+        publish: Callable[["PetEvent"], object],
+        snapshot_changed: Callable[[CodexLinkSnapshot], object] | None = None,
+    ) -> None:
+        self._publish = publish
+        self._snapshot_changed = snapshot_changed
+        self._tasks: dict[tuple[str, str], _CodexTask] = {}
+        self._snapshot = CodexLinkSnapshot()
+
+    @property
+    def snapshot(self) -> CodexLinkSnapshot:
+        return self._snapshot
+
+    def consume(self, event: "PetEvent") -> bool:
+        """处理一条已鉴权事件；无效来源和缺失标识不会改变状态。"""
+        if event.event_name != "codex.hook" or event.source != "codex-hook":
+            return False
+        payload = event.payload
+        hook_name = payload.get("hook_event_name")
+        session_id = _bounded_identifier(payload.get("session_id"))
+        turn_id = _bounded_identifier(payload.get("turn_id"))
+        if hook_name not in CODEX_HOOK_EVENTS or session_id is None:
+            return False
+        if hook_name == "SessionStart":
+            return True
+        if hook_name == "SessionEnd":
+            removed = False
+            for key in tuple(self._tasks):
+                if key[0] == session_id:
+                    removed = True
+                    del self._tasks[key]
+            if removed:
+                self._emit_snapshot()
+            return removed
+        if turn_id is None:
+            return False
+        key = (session_id, turn_id)
+        if hook_name == "Stop" and payload.get("stop_hook_active") is True:
+            return False
+        if hook_name == "Stop":
+            task = _CodexTask("review", True)
+        elif hook_name == "PermissionRequest":
+            task = _CodexTask("waiting")
+        elif hook_name == "PostToolUse" and payload.get("tool_failed") is True:
+            task = _CodexTask("failed")
+        else:
+            task = _CodexTask("running")
+        self._tasks[key] = task
+        self._emit_snapshot()
+        return True
+
+    def mark_reviews_read(self) -> None:
+        """只清除未读徽标，不改变 review 动作状态。"""
+        changed = False
+        for key, task in tuple(self._tasks.items()):
+            if task.unread_review:
+                changed = True
+                self._tasks[key] = _CodexTask(task.state, False)
+        if changed:
+            self._emit_snapshot(publish_pet_event=False)
+
+    def clear(self) -> None:
+        """关闭联动时清空所有任务并恢复宠物上下文。"""
+        if not self._tasks and self._snapshot.state == "idle":
+            return
+        self._tasks.clear()
+        self._emit_snapshot()
+
+    def _emit_snapshot(self, *, publish_pet_event: bool = True) -> None:
+        snapshot = self._aggregate()
+        if snapshot == self._snapshot:
+            return
+        self._snapshot = snapshot
+        if publish_pet_event:
+            from petnest.models.event import PetEvent
+
+            self._publish(PetEvent(self._PET_EVENTS[snapshot.state], source="codex-link", priority=90))
+        if self._snapshot_changed is not None:
+            self._snapshot_changed(snapshot)
+
+    def _aggregate(self) -> CodexLinkSnapshot:
+        if not self._tasks:
+            return CodexLinkSnapshot()
+        states = tuple(task.state for task in self._tasks.values())
+        state = next(candidate for candidate in self._STATE_PRIORITY if candidate in states)
+        count = states.count(state)
+        unread = sum(task.unread_review for task in self._tasks.values())
+        return CodexLinkSnapshot(state, count, unread, _snapshot_message(state, count))
 
 
 class CodexHookManager:
@@ -299,6 +417,24 @@ def _valid_port(value: object) -> int:
     return value
 
 
+def _bounded_identifier(value: object) -> str | None:
+    if not isinstance(value, str) or not 0 < len(value) <= 200:
+        return None
+    return value
+
+
+def _snapshot_message(state: str, count: int) -> str:
+    if state == "waiting":
+        return "Codex 正在等待你处理" if count == 1 else f"{count} 个 Codex 任务等待你处理"
+    if state == "failed":
+        return "Codex 执行遇到问题" if count == 1 else f"{count} 个 Codex 任务执行遇到问题"
+    if state == "review":
+        return "Codex 任务已停止，等待查看" if count == 1 else f"{count} 个 Codex 任务等待查看"
+    if state == "running":
+        return "Codex 正在运行" if count == 1 else f"{count} 个 Codex 任务正在运行"
+    return ""
+
+
 def _default_command_prefix() -> tuple[str, ...]:
     if getattr(sys, "frozen", False):
         return (str(Path(sys.executable).resolve()),)
@@ -361,7 +497,9 @@ __all__ = [
     "CODEX_HOOK_EVENTS",
     "CodexHookManager",
     "CodexHookStatus",
+    "CodexLinkCoordinator",
     "CodexLinkError",
     "CodexLinkMetadata",
+    "CodexLinkSnapshot",
     "forward_codex_hook",
 ]

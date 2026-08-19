@@ -9,9 +9,11 @@ import pytest
 
 from petnest.core.codex_link import (
     CodexHookManager,
+    CodexLinkCoordinator,
     CodexLinkError,
     forward_codex_hook,
 )
+from petnest.models.event import PetEvent
 
 
 def _manager(tmp_path: Path) -> CodexHookManager:
@@ -166,3 +168,91 @@ def test_forward_codex_hook_rejects_malformed_or_oversized_input_without_sending
     assert not forward_codex_hook(manager.metadata_path, b"{ broken", transport=transport)
     assert not forward_codex_hook(manager.metadata_path, b"x" * 70_000, transport=transport)
     assert sent == []
+
+
+def _hook(event_name: str, session: str = "s1", turn: str | None = "t1", **payload: object) -> PetEvent:
+    values: dict[str, object] = {"hook_event_name": event_name, "session_id": session, **payload}
+    if turn is not None:
+        values["turn_id"] = turn
+    return PetEvent("codex.hook", source="codex-hook", payload=values)
+
+
+def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+
+    assert coordinator.consume(_hook("UserPromptSubmit"))
+    assert coordinator.snapshot.state == "running"
+    assert published[-1].event_name == "agent.working"
+
+    assert coordinator.consume(_hook("PermissionRequest"))
+    assert coordinator.snapshot.state == "waiting"
+    assert coordinator.snapshot.message == "Codex 正在等待你处理"
+    assert published[-1].event_name == "agent.waiting"
+
+    assert coordinator.consume(_hook("Stop"))
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.unread_review_count == 1
+    assert published[-1].event_name == "agent.success"
+    assert snapshots[-1] == coordinator.snapshot
+
+
+def test_tool_failure_is_temporary_and_later_activity_restores_running() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+
+    coordinator.consume(_hook("PostToolUse", tool_failed=True))
+    assert coordinator.snapshot.state == "failed"
+    assert published[-1].event_name == "agent.error"
+
+    coordinator.consume(_hook("PreToolUse"))
+    assert coordinator.snapshot.state == "running"
+    assert published[-1].event_name == "agent.working"
+
+
+def test_coordinator_aggregates_multiple_tasks_by_priority_and_count() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+
+    coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+    coordinator.consume(_hook("PermissionRequest", session="s2", turn="t2"))
+    coordinator.consume(_hook("PermissionRequest", session="s3", turn="t3"))
+
+    assert coordinator.snapshot.state == "waiting"
+    assert coordinator.snapshot.count == 2
+    assert coordinator.snapshot.message == "2 个 Codex 任务等待你处理"
+
+    coordinator.consume(_hook("Stop", session="s2", turn="t2"))
+    assert coordinator.snapshot.state == "waiting"
+    assert coordinator.snapshot.count == 1
+
+
+def test_session_end_cleans_tasks_and_stop_guard_does_not_mark_review() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+
+    assert not coordinator.consume(_hook("Stop", session="s1", turn="t1", stop_hook_active=True))
+    assert coordinator.snapshot.state == "running"
+
+    assert coordinator.consume(_hook("SessionEnd", session="s1", turn=None))
+    assert coordinator.snapshot.state == "idle"
+    assert published[-1].event_name == "agent.idle"
+
+
+def test_coordinator_rejects_untrusted_sources_and_invalid_identifiers() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+
+    assert not coordinator.consume(PetEvent("codex.hook", source="external", payload={"hook_event_name": "Stop"}))
+    assert not coordinator.consume(PetEvent("codex.hook", source="codex-hook", payload={"hook_event_name": "Stop"}))
+    assert coordinator.snapshot.state == "idle"
+
+
+def test_marking_reviews_read_keeps_review_state_but_clears_unread_count() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator.consume(_hook("Stop"))
+
+    coordinator.mark_reviews_read()
+
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.unread_review_count == 0

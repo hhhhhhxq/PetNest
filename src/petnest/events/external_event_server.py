@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+import hmac
 import json
 import logging
 import socket
@@ -12,11 +13,16 @@ from time import monotonic
 from typing import Any
 
 from petnest.core.event_bus import EventBus
+from petnest.core.codex_link import CODEX_HOOK_EVENTS
 from petnest.models.event import PetEvent
 
 LOGGER = logging.getLogger(__name__)
 _LOOPBACK_HOST = "127.0.0.1"
 _ALLOWED_FIELDS = frozenset({"event", "source", "payload", "priority"})
+_CODEX_ALLOWED_FIELDS = _ALLOWED_FIELDS | {"token"}
+_CODEX_PAYLOAD_FIELDS = frozenset(
+    {"hook_event_name", "session_id", "turn_id", "tool_name", "tool_failed", "stop_hook_active"}
+)
 
 
 class ExternalEventServer:
@@ -30,6 +36,8 @@ class ExternalEventServer:
         port: int = 18486,
         max_message_bytes: int = 4096,
         max_events_per_second: int = 30,
+        codex_token: str | None = None,
+        event_sink: Callable[[PetEvent], object] | None = None,
     ) -> None:
         if host != _LOOPBACK_HOST:
             raise ValueError("外部事件服务只能绑定 127.0.0.1")
@@ -42,6 +50,8 @@ class ExternalEventServer:
         self.port = port
         self._max_message_bytes = max_message_bytes
         self._max_events_per_second = max_events_per_second
+        self._codex_token = codex_token
+        self._event_sink = event_sink or event_bus.publish
         self._server_socket: socket.socket | None = None
         self._thread: Thread | None = None
         self._stop_requested = Event()
@@ -155,7 +165,7 @@ class ExternalEventServer:
             LOGGER.warning("外部事件超过速率限制，已忽略")
             return
         try:
-            self._event_bus.publish(event)
+            self._event_sink(event)
         except Exception:  # noqa: BLE001 - 外部输入绝不能结束服务线程。
             LOGGER.exception("分发外部事件失败：%s（来源：%s）", event.event_name, event.source)
 
@@ -163,7 +173,8 @@ class ExternalEventServer:
         if not isinstance(parsed, Mapping):
             LOGGER.warning("拒绝非对象的外部事件 JSON")
             return None
-        unknown_fields = set(parsed) - _ALLOWED_FIELDS
+        is_codex_hook = parsed.get("event") == "codex.hook"
+        unknown_fields = set(parsed) - (_CODEX_ALLOWED_FIELDS if is_codex_hook else _ALLOWED_FIELDS)
         if unknown_fields:
             LOGGER.warning("拒绝包含未知字段的外部事件")
             return None
@@ -180,7 +191,41 @@ class ExternalEventServer:
         if not isinstance(payload, Mapping) or not isinstance(priority, int) or isinstance(priority, bool):
             LOGGER.warning("拒绝 payload 或 priority 类型无效的外部事件")
             return None
+        if is_codex_hook and not self._valid_codex_hook(parsed, source, payload):
+            return None
         return PetEvent(name=name, source=source, payload=dict(payload), priority=priority)
+
+    def _valid_codex_hook(
+        self,
+        parsed: Mapping[str, object],
+        source: object,
+        payload: Mapping[str, object],
+    ) -> bool:
+        token = parsed.get("token")
+        if (
+            self._codex_token is None
+            or not isinstance(token, str)
+            or not hmac.compare_digest(token, self._codex_token)
+        ):
+            LOGGER.warning("拒绝未通过鉴权的 Codex Hook 事件")
+            return False
+        if source != "codex-hook" or set(payload) - _CODEX_PAYLOAD_FIELDS:
+            LOGGER.warning("拒绝来源或字段无效的 Codex Hook 事件")
+            return False
+        if payload.get("hook_event_name") not in CODEX_HOOK_EVENTS:
+            LOGGER.warning("拒绝事件名无效的 Codex Hook 事件")
+            return False
+        for name in ("session_id", "turn_id", "tool_name"):
+            value = payload.get(name)
+            if value is not None and (not isinstance(value, str) or not 0 < len(value) <= 200):
+                LOGGER.warning("拒绝标识字段无效的 Codex Hook 事件")
+                return False
+        for name in ("tool_failed", "stop_hook_active"):
+            value = payload.get(name)
+            if value is not None and not isinstance(value, bool):
+                LOGGER.warning("拒绝状态字段无效的 Codex Hook 事件")
+                return False
+        return True
 
     def _allow_event(self) -> bool:
         now = monotonic()

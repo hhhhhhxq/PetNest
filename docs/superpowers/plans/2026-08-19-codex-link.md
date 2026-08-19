@@ -144,7 +144,7 @@ assert received == []
 
 ### 任务 4：Codex 多任务状态协调器
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 在 `tests/test_codex_link.py` 覆盖状态转换、同 turn 覆盖、SessionEnd 清理、`stop_hook_active` 不结算、工具失败可被后续运行恢复、多任务优先级和气泡数量。
 
@@ -157,19 +157,19 @@ assert coordinator.snapshot.count == 1
 assert published[-1].event_name == "agent.waiting"
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_codex_link.py -q`
 
 预期：`CodexLinkCoordinator` 未定义。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 定义不可变 `CodexLinkSnapshot(state, count, unread_review_count, message)`；协调器只接收 `source="codex-hook"` 的 `codex.hook`，校验 ID 长度和事件白名单，按 `(session_id, turn_id or "session")` 聚合；变更时调用注入的 `publish(PetEvent)` 和 `snapshot_changed(snapshot)`。
 
 优先级固定为 `waiting > failed > review > running > idle`，映射到 `agent.waiting / agent.error / agent.success / agent.working`。`Stop` 产生 review，`SessionEnd` 删除会话，后续 running 清除同 turn 的临时 failed/review。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_codex_link.py -q`
 

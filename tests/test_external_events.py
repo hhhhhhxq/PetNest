@@ -8,6 +8,7 @@ import time
 
 from petnest.core.event_bus import EventBus
 from petnest.events.external_event_server import ExternalEventServer
+from petnest.models.event import PetEvent
 
 
 def _send(port: int, body: bytes) -> None:
@@ -101,3 +102,64 @@ def test_port_in_use_disables_only_the_second_server() -> None:
     finally:
         second.stop()
         first.stop()
+
+
+def test_codex_hook_requires_matching_token_and_strips_it_before_delivery() -> None:
+    received: list[PetEvent] = []
+    server = ExternalEventServer(EventBus(), port=0, codex_token="correct-secret", event_sink=received.append)
+    assert server.start()
+    try:
+        _send(
+            server.port,
+            b'{"event":"codex.hook","source":"codex-hook","payload":{"hook_event_name":"Stop","session_id":"s","turn_id":"t"}}\n',
+        )
+        _send(
+            server.port,
+            b'{"event":"codex.hook","source":"codex-hook","token":"wrong","payload":{"hook_event_name":"Stop","session_id":"s","turn_id":"t"}}\n',
+        )
+        _send(
+            server.port,
+            b'{"event":"codex.hook","source":"codex-hook","token":"correct-secret","payload":{"hook_event_name":"Stop","session_id":"s","turn_id":"t"}}\n',
+        )
+        _wait_for(lambda: len(received) == 1)
+    finally:
+        server.stop()
+
+    assert received[0].event_name == "codex.hook"
+    assert received[0].source == "codex-hook"
+    assert received[0].payload == {"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"}
+
+
+def test_codex_hook_rejects_unknown_or_malformed_status_fields() -> None:
+    received: list[PetEvent] = []
+    server = ExternalEventServer(EventBus(), port=0, codex_token="secret", event_sink=received.append)
+    assert server.start()
+    try:
+        _send(
+            server.port,
+            b'{"event":"codex.hook","source":"codex-hook","token":"secret","payload":{"hook_event_name":"Stop","prompt":"private"}}\n',
+        )
+        _send(
+            server.port,
+            b'{"event":"codex.hook","source":"codex-hook","token":"secret","payload":{"hook_event_name":"Stop","session_id":42}}\n',
+        )
+        time.sleep(0.1)
+    finally:
+        server.stop()
+
+    assert received == []
+
+
+def test_token_field_is_rejected_for_non_codex_events() -> None:
+    bus = EventBus()
+    received: list[PetEvent] = []
+    bus.subscribe(received.append)
+    server = ExternalEventServer(bus, port=0, codex_token="secret")
+    assert server.start()
+    try:
+        _send(server.port, b'{"event":"agent.success","token":"secret"}\n')
+        time.sleep(0.1)
+    finally:
+        server.stop()
+
+    assert received == []
