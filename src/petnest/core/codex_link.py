@@ -218,6 +218,10 @@ class CodexHookManager:
             token,
         )
 
+    def set_port(self, port: int) -> None:
+        """端口设置变化时刷新后续元数据写入目标。"""
+        self.port = _valid_port(port)
+
     def install(self) -> CodexHookStatus:
         """结构化合并全部 PetNest Hook；已有配置无法解析时绝不覆盖。"""
         document = self._read_hooks() if self.hooks_path.exists() else {"hooks": {}}

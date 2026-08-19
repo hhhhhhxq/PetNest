@@ -17,7 +17,7 @@ from threading import Thread
 from time import monotonic
 import uuid
 
-from PySide6.QtCore import QPoint, QRect, QTimer, QUrl, Qt
+from PySide6.QtCore import QObject, QPoint, QRect, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QPalette
 from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMenuBar, QMessageBox
 
@@ -39,6 +39,12 @@ from petnest.core.codex_usage import (
     codex_device_usage_path,
 )
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
+from petnest.core.codex_link import (
+    CodexHookManager,
+    CodexHookStatus,
+    CodexLinkCoordinator,
+    CodexLinkSnapshot,
+)
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
 from petnest.core.lan_discovery import qt_interface_ipv4
@@ -67,7 +73,7 @@ from petnest.core.work_finish_state import WorkFinishState, state_from_dict, sta
 from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.core.device_identity import display_name_for
-from petnest.models.event import PetEvent
+from petnest.models.event import EventName, PetEvent
 from petnest.models.lan_interaction import (
     ChatMessageKind,
     DangerAlert,
@@ -175,6 +181,12 @@ def resource_directory_for_cache(cache: RemoteResourceCache, *, verify_files: bo
     return cache.verified_resource_directory(verify_files=verify_files)
 
 
+class _ExternalEventRelay(QObject):
+    """把 socket 工作线程收到的事件排队送回 Qt 主线程。"""
+
+    event_received = Signal(object)
+
+
 class PetNest:
     """第一阶段桌宠运行时，负责有序启动、宠物切换和有序退出。"""
 
@@ -185,6 +197,7 @@ class PetNest:
         settings_manager: SettingsManager | None = None,
         platform_adapter: PlatformEventAdapter | None = None,
         cursor_controller: CursorController | None = None,
+        codex_hook_manager: CodexHookManager | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
     ) -> None:
@@ -192,6 +205,12 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
+        self.codex_hook_manager = codex_hook_manager or CodexHookManager(
+            None,
+            self.settings_manager.path.parent,
+            port=self.settings.external_event_port,
+        )
+        self.codex_hook_status = self.codex_hook_manager.inspect()
         if not self.settings.device_id:
             self.settings = replace(self.settings, device_id=uuid.uuid4().hex)
             self.settings_manager.save(self.settings)
@@ -274,6 +293,11 @@ class PetNest:
             position_saved=self._save_window_position,
             countdown_root=countdown_root,
         )
+        self._external_event_relay = _ExternalEventRelay(self.window)
+        self._external_event_relay.event_received.connect(self._publish_external_event)
+        self.codex_link = CodexLinkCoordinator(self.event_bus.publish, self._handle_codex_snapshot)
+        self.window.codex_status_activated.connect(self._activate_codex_status)
+        self.window.codex_status_bubble.dismissed.connect(self._dismiss_codex_status)
         self.peer_registry = KnownLanPeerRegistry(
             self.settings_manager.path.parent / "known-lan-peers.json"
         )
@@ -356,6 +380,7 @@ class PetNest:
         self.window.countdown_clicked.connect(lambda: self._show_settings_center("countdown"))
         self._restore_window_settings()
         self.event_bus.subscribe(self.window.handle_pet_event)
+        self.event_bus.subscribe(self._handle_codex_hook_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
         self._system_idle_monitor = self._new_system_idle_monitor(self.settings)
         self.system_idle_timer = QTimer(self.window)
@@ -431,8 +456,7 @@ class PetNest:
     def start(self) -> None:
         """显示窗口并按设置启动可选本地事件服务。"""
         self.platform_adapter.start()
-        if self.settings.external_event_server_enabled:
-            self._start_external_server()
+        self._configure_external_event_server()
         self._configure_system_idle_timer()
         self._configure_lan_service()
         self._configure_remote_interaction_service()
@@ -614,12 +638,24 @@ class PetNest:
             or settings.system_sleep_seconds != self.settings.system_sleep_seconds
         )
         alert_membership_changed = settings.lan_alert_group_joined != self.settings.lan_alert_group_joined
+        external_event_configuration_changed = (
+            settings.external_event_server_enabled != self.settings.external_event_server_enabled
+            or settings.external_event_port != self.settings.external_event_port
+            or settings.codex_link_enabled != self.settings.codex_link_enabled
+        )
+        codex_bubble_configuration_changed = (
+            settings.codex_link_show_attention_bubbles != self.settings.codex_link_show_attention_bubbles
+            or settings.codex_link_show_review_bubbles != self.settings.codex_link_show_review_bubbles
+        )
         previous_cursor_pending = self.settings.cursor_restore_pending
         self.window.set_scale(settings.scale)
         self.window.set_paused(settings.animation_paused)
         self.window.set_always_on_top(settings.always_on_top)
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
         self.settings = settings
+        if not settings.codex_link_enabled:
+            self.codex_link.clear()
+            self.window.clear_codex_status()
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
         if alert_membership_changed:
             self.lan_service.update_alert_group_membership(settings.lan_alert_group_joined)
@@ -632,6 +668,10 @@ class PetNest:
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
+        if external_event_configuration_changed:
+            self._configure_external_event_server(restart=True)
+        elif codex_bubble_configuration_changed:
+            self._handle_codex_snapshot(self.codex_link.snapshot)
         if self.tray is not None:
             self.tray.set_always_on_top_enabled(settings.always_on_top)
         if idle_configuration_changed:
@@ -772,6 +812,82 @@ class PetNest:
         if self._codex_usage_dialog is not None:
             self._codex_usage_dialog.reload_synced_usage(account_key)
 
+    def _install_codex_hook(self) -> CodexHookStatus:
+        """由设置页显式触发；应用启动绝不自动修改 Codex 配置。"""
+        self.codex_hook_manager.set_port(self.settings.external_event_port)
+        self.codex_hook_status = self.codex_hook_manager.install()
+        return self.codex_hook_status
+
+    def _remove_codex_hook(self) -> CodexHookStatus:
+        self.codex_hook_status = self.codex_hook_manager.remove()
+        return self.codex_hook_status
+
+    def _codex_action_availability(self) -> dict[str, str]:
+        requested = {
+            "working": self.package.bindings.get("agent.working", "working"),
+            "waiting": self.package.bindings.get("agent.waiting", "waiting"),
+            "error": self.package.bindings.get("agent.error", "error"),
+            "review": self.package.bindings.get("agent.success", "review"),
+        }
+        resolved: dict[str, str] = {}
+        for semantic, action in requested.items():
+            if action in self.package.animations:
+                resolved[semantic] = action
+                continue
+            fallback = next(
+                (candidate for candidate in self.package.fallbacks.get(action, ()) if candidate in self.package.animations),
+                "idle",
+            )
+            resolved[semantic] = fallback if fallback == action else f"{fallback}（回退）"
+        return resolved
+
+    def _publish_external_event(self, event: object) -> None:
+        if isinstance(event, PetEvent) and not self._shutdown:
+            self.event_bus.publish(event)
+
+    def _handle_codex_hook_event(self, event: PetEvent) -> bool:
+        if not self.settings.codex_link_enabled:
+            return False
+        consumed = self.codex_link.consume(event)
+        if consumed and event.event_name == "codex.hook":
+            self.codex_hook_status = CodexHookStatus(
+                "connected",
+                "已连接，PetNest 正在接收 Codex 状态",
+                True,
+                self.codex_hook_status.token,
+            )
+            if self._settings_center_dialog is not None:
+                self._settings_center_dialog.set_codex_hook_status(self.codex_hook_status)
+        return consumed
+
+    def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
+        if not self.settings.codex_link_enabled or snapshot.state in {"idle", "running"}:
+            self.window.clear_codex_status()
+            return
+        if snapshot.state in {"waiting", "failed"}:
+            if self.settings.codex_link_show_attention_bubbles:
+                self.window.show_codex_status(snapshot)
+            else:
+                self.window.clear_codex_status()
+            return
+        if (
+            snapshot.state == "review"
+            and snapshot.unread_review_count > 0
+            and self.settings.codex_link_show_review_bubbles
+        ):
+            self.window.show_codex_status(snapshot)
+        else:
+            self.window.clear_codex_status()
+
+    def _activate_codex_status(self) -> None:
+        self.codex_link.mark_reviews_read()
+        self.window.clear_codex_status()
+        _bring_codex_window_to_front()
+
+    def _dismiss_codex_status(self) -> None:
+        self.codex_link.mark_reviews_read()
+        self.window.clear_codex_status()
+
     def show_cursor_style_dialog(self) -> None:
         """保留托盘独立入口，但定位到设置中心的鼠标分类。"""
         self._show_settings_center("mouse_behavior")
@@ -800,6 +916,10 @@ class PetNest:
             on_check_app_update=self._check_app_update_from_settings if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_download_app_update=self._schedule_app_update_download if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_unlock_codex_usage=self._unlock_codex_usage,
+            codex_hook_status=self.codex_hook_status,
+            codex_action_availability=self._codex_action_availability(),
+            on_install_codex_hook=self._install_codex_hook,
+            on_remove_codex_hook=self._remove_codex_hook,
             cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
             pet_preview_path=preview_path,
@@ -1170,6 +1290,8 @@ class PetNest:
             self._run_shutdown_step("隐藏托盘图标", self.tray.hide)
         if self._codex_usage_dialog is not None:
             self._run_shutdown_step("关闭 Codex 用量窗口", self._codex_usage_dialog.close)
+        self._run_shutdown_step("清理 Codex 联动状态", self.codex_link.clear)
+        self._run_shutdown_step("隐藏 Codex 状态气泡", self.window.clear_codex_status)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
         self._work_finish_visibility_lease.cancel()
@@ -1210,11 +1332,42 @@ class PetNest:
         except Exception:  # noqa: BLE001 - 退出必须优先让用户可见的进程结束。
             LOGGER.exception("PetNest 退出时无法%s", name)
 
+    def _configure_external_event_server(self, *, restart: bool = False) -> None:
+        needed = self.settings.external_event_server_enabled or self.settings.codex_link_enabled
+        if self.external_server is not None and (restart or not needed):
+            server, self.external_server = self.external_server, None
+            server.stop()
+        if needed and self.external_server is None:
+            self._start_external_server()
+
     def _start_external_server(self) -> None:
-        server = ExternalEventServer(self.event_bus, port=self.settings.external_event_port)
+        token: str | None = None
+        if self.settings.codex_link_enabled:
+            try:
+                self.codex_hook_manager.set_port(self.settings.external_event_port)
+                token = self.codex_hook_manager.ensure_metadata().token
+            except Exception as error:  # noqa: BLE001 - 普通桌宠功能仍需继续运行。
+                self.codex_hook_status = CodexHookStatus("error", f"Codex 联动元数据不可用：{error}", False)
+                LOGGER.warning("Codex 联动元数据不可用：%s", error)
+        server = ExternalEventServer(
+            self.event_bus,
+            port=self.settings.external_event_port,
+            codex_token=token,
+            event_sink=self._external_event_relay.event_received.emit,
+        )
         if server.start():
             self.external_server = server
+            if self.settings.codex_link_enabled and token is not None and server.port != self.settings.external_event_port:
+                self.codex_hook_manager.set_port(server.port)
+                self.codex_hook_manager.ensure_metadata()
         else:
+            if self.settings.codex_link_enabled:
+                self.codex_hook_status = CodexHookStatus(
+                    "error",
+                    f"本机端口 {self.settings.external_event_port} 被占用，Codex 联动未启动",
+                    self.codex_hook_status.installed,
+                    self.codex_hook_status.token,
+                )
             LOGGER.warning("本地外部事件服务未启用，桌宠仍可正常使用")
 
     def _schedule_resource_check(self, force: bool = False) -> None:
@@ -1641,6 +1794,7 @@ class PetNest:
         else:
             return
         self.window.show_interaction_bubble(message)
+        self.event_bus.publish(PetEvent(EventName.INTERACTION_MESSAGE, source="interaction"))
         LOGGER.info("收到局域网互动：%s", message)
 
     def _handle_lan_chat(self, message: object) -> None:
@@ -1662,6 +1816,7 @@ class PetNest:
             return
         prefix = f"群聊 · {sender}" if is_group else sender
         self.window.show_interaction_bubble(f"{prefix}：{summary}")
+        self.event_bus.publish(PetEvent(EventName.INTERACTION_MESSAGE, source="chat"))
         LOGGER.info("收到局域网聊天：%s", sender)
 
     def _pet_screen_geometry(self) -> QRect:
@@ -1960,6 +2115,41 @@ class PetNest:
             return override.frame_durations_ms
         target_total = round(sum(source) / override.speed_multiplier)
         return _scaled_timeline(source, target_total)
+
+
+def _bring_codex_window_to_front() -> bool:
+    """只尝试前置现有 Codex 窗口，不启动程序或打开不稳定深链。"""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        found: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+        @callback_type
+        def visit(window_handle: int, _parameter: int) -> bool:
+            if not user32.IsWindowVisible(window_handle):
+                return True
+            length = user32.GetWindowTextLengthW(window_handle)
+            if length <= 0:
+                return True
+            title = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(window_handle, title, length + 1)
+            if "codex" in title.value.casefold():
+                found.append(window_handle)
+                return False
+            return True
+
+        user32.EnumWindows(visit, 0)
+        if not found:
+            return False
+        user32.ShowWindow(found[0], 9)  # SW_RESTORE
+        return bool(user32.SetForegroundWindow(found[0]))
+    except (AttributeError, OSError):
+        LOGGER.debug("无法前置 Codex 窗口", exc_info=True)
+        return False
 
 
 def _pet_context_menu_stylesheet(palette: QPalette) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import socket
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,17 +15,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QPoint, QRect, QThread, Qt
 
 from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
+from petnest.core.codex_link import CodexHookManager
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
-from petnest.models.event import PetEvent
-from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, LanPeer
+from petnest.models.event import EventName, PetEvent
+from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, InteractionKind, LanPeer
 from petnest.models.settings import Settings
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
@@ -42,6 +44,23 @@ class _IdleAdapter:
 
     def get_idle_seconds(self) -> float:
         return self.idle_seconds
+
+
+def _free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def _send_codex_hook(port: int, token: str, event_name: str, *, session: str = "s", turn: str = "t") -> None:
+    message = {
+        "event": "codex.hook",
+        "source": "codex-hook",
+        "token": token,
+        "payload": {"hook_event_name": event_name, "session_id": session, "turn_id": turn},
+    }
+    with socket.create_connection(("127.0.0.1", port), timeout=1) as client:
+        client.sendall(json.dumps(message).encode() + b"\n")
 
 
 def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -253,7 +272,7 @@ def test_countdown_click_opens_work_countdown_settings(qtbot: pytest.QtBot, tmp_
 
     dialog = application._settings_center_dialog
     assert dialog is not None
-    assert dialog.section_list.currentRow() == 3
+    assert dialog.section_list.currentRow() == 4
     dialog.reject()
     application.shutdown()
 
@@ -988,6 +1007,143 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     assert application.external_server is None
 
 
+def test_codex_link_alone_starts_authenticated_loopback_server_without_editing_hooks(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    port = _free_loopback_port()
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(
+        Settings(
+            work_countdown_enabled=False,
+            external_event_server_enabled=False,
+            external_event_port=port,
+            codex_link_enabled=True,
+        )
+    )
+    hook_manager = CodexHookManager(
+        tmp_path / "codex-home",
+        settings_manager.path.parent,
+        port=port,
+        command_prefix=("PetNest.exe",),
+    )
+    hook_manager.hooks_path.parent.mkdir(parents=True)
+    original_hooks = '{"hooks":{"Stop":[]},"keep":true}\n'
+    hook_manager.hooks_path.write_text(original_hooks, encoding="utf-8")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_hook_manager=hook_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert application.external_server is not None
+    assert application.external_server.is_running
+    assert hook_manager.hooks_path.read_text(encoding="utf-8") == original_hooks
+    assert hook_manager.metadata_path.is_file()
+    application.shutdown()
+
+
+def test_codex_hook_reaches_pet_and_ui_on_qt_main_thread(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    port = _free_loopback_port()
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(external_event_port=port, codex_link_enabled=True, work_countdown_enabled=False))
+    hook_manager = CodexHookManager(
+        tmp_path / "codex-home",
+        settings_manager.path.parent,
+        port=port,
+        command_prefix=("PetNest.exe",),
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_hook_manager=hook_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    handled_on: list[QThread] = []
+    application.event_bus.subscribe(
+        lambda event: handled_on.append(QThread.currentThread()) if event.event_name == "codex.hook" else None
+    )
+    application.start()
+    token = hook_manager.ensure_metadata().token
+
+    _send_codex_hook(port, token, "PermissionRequest")
+    qtbot.waitUntil(lambda: application.codex_link.snapshot.state == "waiting", timeout=2_000)
+
+    assert handled_on and handled_on[-1] == application.window.thread()
+    assert application.window.current_action == "waiting"
+    assert application.window.codex_status_text == "Codex 正在等待你处理"
+    assert application.codex_hook_status.state == "connected"
+    application.shutdown()
+
+
+def test_disabling_codex_link_clears_state_and_stops_unneeded_server(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    port = _free_loopback_port()
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(external_event_port=port, codex_link_enabled=True, work_countdown_enabled=False))
+    hook_manager = CodexHookManager(
+        tmp_path / "codex-home",
+        settings_manager.path.parent,
+        port=port,
+        command_prefix=("PetNest.exe",),
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_hook_manager=hook_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    _send_codex_hook(port, hook_manager.ensure_metadata().token, "PermissionRequest")
+    qtbot.waitUntil(lambda: application.codex_link.snapshot.state == "waiting", timeout=2_000)
+
+    application.apply_settings(replace(application.settings, codex_link_enabled=False))
+
+    assert application.codex_link.snapshot.state == "idle"
+    assert application.window.codex_status_text is None
+    assert application.external_server is None
+    assert application.window.current_action == "idle"
+    application.shutdown()
+
+
+def test_settings_center_installs_and_removes_only_petnest_codex_hooks(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    port = _free_loopback_port()
+    hook_manager = CodexHookManager(
+        tmp_path / "codex-home",
+        settings_manager.path.parent,
+        port=port,
+        command_prefix=("PetNest.exe",),
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_hook_manager=hook_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application._show_settings_center("codex_link")
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    qtbot.mouseClick(dialog.codex_hook_install_button, Qt.MouseButton.LeftButton)
+    assert hook_manager.inspect().installed
+    qtbot.mouseClick(dialog.codex_hook_remove_button, Qt.MouseButton.LeftButton)
+    assert not hook_manager.inspect().installed
+    dialog.reject()
+    application.shutdown()
+
+
 def test_tray_quit_still_hides_window_when_cleanup_fails(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app
@@ -1303,6 +1459,58 @@ def test_shutdown_clears_remote_interaction_overlay(qtbot: pytest.QtBot, tmp_pat
     application.shutdown()
 
     assert application.window.interaction_bubble_text is None
+
+
+def test_received_lan_interaction_publishes_message_pet_event(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    events: list[str] = []
+    application.event_bus.subscribe(lambda event: events.append(event.event_name))
+
+    application._handle_lan_interaction(
+        SimpleNamespace(
+            sender_name="小林",
+            draft=SimpleNamespace(kind=InteractionKind.GREETING),
+        )
+    )
+
+    assert events == [EventName.INTERACTION_MESSAGE]
+    application.shutdown()
+
+
+def test_received_lan_chat_publishes_message_pet_event(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    events: list[str] = []
+    application.event_bus.subscribe(lambda event: events.append(event.event_name))
+
+    application._handle_lan_chat(
+        SimpleNamespace(
+            sender_name="小林",
+            kind=ChatMessageKind.TEXT,
+            text="收到一条消息",
+            is_group=False,
+        )
+    )
+
+    assert events == [EventName.INTERACTION_MESSAGE]
+    application.shutdown()
 
 
 def test_group_chat_pet_bubble_can_be_disabled_without_silencing_private_chat(

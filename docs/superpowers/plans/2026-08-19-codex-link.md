@@ -114,7 +114,7 @@ Hook handler 使用 `type=command`、`commandWindows`、`timeoutSec=5`、`async=
 
 ### 任务 3：本机服务鉴权与 Qt 线程出口
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 扩展 `tests/test_external_events.py`：普通事件继续兼容；`codex.hook` 缺令牌、错令牌、未知 payload 字段时被拒绝；正确令牌被发布且 token 不进入 `PetEvent.payload`；`event_sink` 在服务线程调用而不是直接依赖应用总线。
 
@@ -124,19 +124,19 @@ _send(server.port, b'{"event":"codex.hook","token":"wrong","payload":{}}\n')
 assert received == []
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_external_events.py -q`
 
 预期：构造器不接受 `codex_token` / `event_sink`。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 为服务器新增可选的 `codex_token` 和 `event_sink`。只有 `event == "codex.hook"` 时允许顶层 `token`；使用 `hmac.compare_digest` 验证；验证后移除 token。若提供 `event_sink` 则调用它，否则保持原 `EventBus.publish` 行为。
 
 应用侧增加一个私有 `QObject` 中继：后台 `event_sink` 只发 `Signal(object)`，信号槽在创建它的 Qt 主线程调用 `event_bus.publish`。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_external_events.py tests/test_app_and_platforms.py -q`
 
@@ -265,7 +265,7 @@ assert dialog.updated_settings().codex_link_enabled
 
 ### 任务 8：应用装配与生命周期
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 在 `tests/test_app_and_platforms.py` 覆盖：仅 Codex 联动开启也启动服务；关闭两种入口才停止；应用启动只 inspect 不改写 hooks；设置页安装/移除回调；Hook 事件在主线程更新状态；关闭联动清状态；shutdown 先清气泡/协调器再停 server。
 
@@ -275,17 +275,17 @@ assert application.external_server is not None
 assert application.external_server.is_running
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_app_and_platforms.py -q`
 
 预期：Codex 联动尚未装配。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 PetNest 初始化 `CodexHookManager`、Qt 事件中继和 `CodexLinkCoordinator`；服务需要条件为 `external_event_server_enabled or codex_link_enabled`。`apply_settings` 检测开关变化，启动/重启/停止服务并清理 UI；设置页传入实时状态和动作可用性。协调器快照根据偏好调用 `window.show_codex_status`，并把激活信号连接到 Windows 上查找并前置 Codex 顶层窗口的安全帮助函数；未找到时只隐藏气泡，不启动程序或打开任意文件。
 
-- [ ] **步骤 4：验证绿灯与回归**
+- [x] **步骤 4：验证绿灯与回归**
 
 运行：
 
