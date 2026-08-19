@@ -402,6 +402,10 @@ class PetNest:
         self.app_update_check_timer = QTimer(self.window)
         self.app_update_check_timer.setInterval(APP_UPDATE_CHECK_INTERVAL_MS)
         self.app_update_check_timer.timeout.connect(self._schedule_app_update_check)
+        self.app_update_startup_timer = QTimer(self.window)
+        self.app_update_startup_timer.setSingleShot(True)
+        self.app_update_startup_timer.setInterval(APP_UPDATE_STARTUP_DELAY_MS)
+        self.app_update_startup_timer.timeout.connect(lambda: self._schedule_app_update_check(force=False))
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -474,7 +478,7 @@ class PetNest:
         if sys.platform in APP_UPDATE_PLATFORMS:
             self.app_update_result_timer.start()
             self.app_update_check_timer.start()
-            QTimer.singleShot(APP_UPDATE_STARTUP_DELAY_MS, self._schedule_app_update_check)
+            self.app_update_startup_timer.start()
         self._schedule_resource_check(force=False)
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
 
@@ -1308,6 +1312,7 @@ class PetNest:
         self._run_shutdown_step("停止远程资源检查计时器", self.resource_update_timer.stop)
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
+        self._run_shutdown_step("停止程序启动更新计时器", self.app_update_startup_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
         self._run_shutdown_step("停止预警池名单同步", self.lan_pool_sync.stop)

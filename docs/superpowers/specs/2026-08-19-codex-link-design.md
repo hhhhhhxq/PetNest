@@ -21,6 +21,7 @@ PetNest 提供一个不启动 GUI 的轻量 `--codex-hook` 桥接子命令，并
 - 卸载只移除 PetNest 条目，绝不整体覆盖或删除 Hooks 配置；
 - Windows 安装版使用 `commandWindows` 调用当前 PetNest 可执行文件；源码运行时调用当前 Python 解释器的 `-m petnest --codex-hook`；
 - 桥接子命令在创建 Qt 窗口和单实例锁前读取 Codex 传入的标准输入 JSON，裁剪后发送到 `127.0.0.1` 并立即退出；
+- 当前 Codex 尚不支持这些事件的异步 command hook，因此使用同步 Hook；命令连接本机服务最多等待 250ms，普通 Hook 超时为 5 秒，`SessionEnd` 按 Codex 上限使用 3 秒；
 - Codex 对非托管 Hook 的审查/信任仍由 Codex 自身完成，PetNest 只提示用户进入 `/hooks` 确认，不伪造信任状态。
 
 监听事件：

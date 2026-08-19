@@ -104,7 +104,7 @@ class CodexHookManager:
     def ensure_metadata(self) -> CodexLinkMetadata: ...
 ```
 
-Hook handler 使用 `type=command`、`commandWindows`、`timeoutSec=5`、`async=True`；命令带稳定参数 `--codex-hook`。文件写入采用同目录临时文件、`fsync`、原子 `replace`；存在的 hooks.json 在首次修改前复制带时间戳备份。`forward_codex_hook()` 只提取 `hook_event_name`、`session_id`、`turn_id`、`tool_name`、工具响应中明确的成功标志和 `stop_hook_active`，然后向元数据中的回环端口发送一行 JSON，连接失败在 250ms 内静默退出。安装版命令调用当前 exe，源码命令调用 `sys.executable -m petnest`。
+Hook handler 使用 `type=command`、`commandWindows`、`async=False`，普通事件 `timeout=5`，Codex 上限更低的 `SessionEnd` 使用 `timeout=3`；当前 Codex 尚不支持这些事件的 async command hook，开启 async 会使事件被跳过。命令带稳定参数 `--codex-hook`。文件写入采用同目录临时文件、`fsync`、原子 `replace`；存在的 hooks.json 在首次修改前复制带时间戳备份。`forward_codex_hook()` 只提取 `hook_event_name`、`session_id`、`turn_id`、`tool_name`、工具响应中明确的成功标志和 `stop_hook_active`，然后向元数据中的回环端口发送一行 JSON，连接失败在 250ms 内静默退出。安装版命令调用当前 exe，源码命令调用 `sys.executable -m petnest`。
 
 - [x] **步骤 4：验证绿灯**
 
@@ -297,17 +297,17 @@ python -m pytest tests/test_codex_link.py tests/test_external_events.py tests/te
 
 ### 任务 9：端到端验证与提交
 
-- [ ] **步骤 1：桥接烟雾测试**
+- [x] **步骤 1：桥接烟雾测试**
 
 使用临时 Codex home 安装 Hook，启动随机端口服务，把一份最小 `PermissionRequest` JSON 通过生成的桥接脚本标准输入发送，断言服务收到脱敏 `codex.hook` 且协调器输出 waiting；再发送 Stop，断言 review。
 
-- [ ] **步骤 2：完整测试**
+- [x] **步骤 2：完整测试**
 
 运行：`python -m pytest -q`
 
 预期：全部通过；既有平台条件跳过可保留。
 
-- [ ] **步骤 3：静态检查与差异审查**
+- [x] **步骤 3：静态检查与差异审查**
 
 运行：
 
@@ -319,7 +319,7 @@ git status --short
 
 预期：compileall 和 diff check 退出码为 0；状态只包含本功能文件以及用户原有的 `build_windows.bat`、`tests/test_installer_script.py` 和其他未跟踪文件。
 
-- [ ] **步骤 4：功能提交**
+- [x] **步骤 4：功能提交**
 
 只暂存本计划列出的实现、测试、规格和计划文件，明确排除用户已有改动。提交信息：
 

@@ -569,6 +569,27 @@ def test_empty_app_update_check_clears_stale_available_update(qtbot: pytest.QtBo
         return False
 
 
+def test_startup_update_delay_is_owned_and_stopped_with_application(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr(application, "_schedule_resource_check", lambda force=False: None)
+
+    application.start()
+
+    assert application.app_update_startup_timer.parent() is application.window
+    assert application.app_update_startup_timer.isSingleShot()
+    assert application.app_update_startup_timer.isActive()
+    application.shutdown()
+    assert not application.app_update_startup_timer.isActive()
+
+
 class _FailingStopAdapter(_IdleAdapter):
     def stop(self) -> None:
         raise RuntimeError("simulated shutdown failure")

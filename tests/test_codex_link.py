@@ -65,9 +65,11 @@ def test_install_creates_all_hook_events_and_stable_metadata(tmp_path: Path) -> 
     assert len(_petnest_handlers(first_document)) == 7
     handler = _petnest_handlers(first_document)[0]
     assert handler["type"] == "command"
-    assert handler["timeoutSec"] == 5
-    assert handler["async"] is True
+    assert handler["timeout"] == 5
+    assert handler["async"] is False
+    assert "timeoutSec" not in handler
     assert "--codex-hook" in str(handler["commandWindows"])
+    assert first_document["hooks"]["SessionEnd"][-1]["hooks"][0]["timeout"] == 3
     assert first.token is not None and len(first.token) >= 43
 
 

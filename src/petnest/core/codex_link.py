@@ -234,7 +234,7 @@ class CodexHookManager:
             if not isinstance(existing, list):
                 raise CodexLinkError(f"Codex hooks.json 的 {event_name} 字段不是数组，未做任何修改")
             cleaned = _remove_petnest_handlers(existing)
-            cleaned.append({"matcher": "", "hooks": [self._handler()]})
+            cleaned.append({"matcher": "", "hooks": [self._handler(event_name)]})
             hooks[event_name] = cleaned
         self._write_hooks(document)
         return CodexHookStatus(
@@ -308,14 +308,14 @@ class CodexHookManager:
             raise CodexLinkError("Codex 联动元数据无效")
         return CodexLinkMetadata(token, host, _valid_port(port))
 
-    def _handler(self) -> dict[str, object]:
+    def _handler(self, event_name: str) -> dict[str, object]:
         arguments = (*self._command_prefix, _BRIDGE_ARGUMENT, str(self.metadata_path))
         return {
             "type": "command",
             "command": shlex.join(arguments),
             "commandWindows": subprocess.list2cmdline(arguments),
-            "timeoutSec": 5,
-            "async": True,
+            "timeout": 3 if event_name == "SessionEnd" else 5,
+            "async": False,
             "statusMessage": "同步 PetNest 宠物状态",
         }
 
