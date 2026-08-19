@@ -71,14 +71,14 @@ class PetStateMachine:
 
         requested = self._bindings.get(event_name)
         if requested is None:
-            if event_name == "mouse.leave":
+            if event_name in {"mouse.leave", "mouse.drag_end", "agent.idle"}:
                 requested = self._context_action()
             else:
                 return self._transition(previous, False, "unbound")
         target = self._resolver.resolve(requested, self.animations)
         if target == GLOBAL_PLACEHOLDER:
             return self._transition(previous, False, "unavailable")
-        forced = event_name == "mouse.drag_end"
+        forced = event_name in {"mouse.drag_end", "agent.idle"}
         if target == previous:
             return self._transition(previous, False, "already-current")
         if not self._may_interrupt(target, event.priority, forced):

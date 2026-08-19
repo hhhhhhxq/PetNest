@@ -177,7 +177,7 @@ assert published[-1].event_name == "agent.waiting"
 
 ### 任务 5：精灵图语义与拖动结束恢复
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 修改 `tests/test_spritesheet_importer.py`，断言第 5 行生成 `hover`、第 9 行生成 `review`、`agent.success -> review`、没有 `drop` 和 `mouse.drag_end` 绑定。修改 `tests/test_state_machine.py`，构造只有 `drag` 无 drag_end 绑定的包，断言松手恢复 hover/idle。
 
@@ -187,17 +187,17 @@ assert transition.changed
 assert transition.current_action == "idle"
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_spritesheet_importer.py tests/test_state_machine.py -q`
 
 预期：旧映射仍生成 drop，未绑定 drag_end 返回 unbound。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 将 row 4（jumping）映射为 `hover`，row 8（review）映射为 `review`；移除 drop 映射与 drag_end 绑定；将 success fallback 改为 review fallback。状态机在 `mouse.drag_end` 未绑定时直接请求 `_context_action()`，仍保留 forced 中断语义。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_spritesheet_importer.py tests/test_state_machine.py tests/test_pet_window.py -q`
 

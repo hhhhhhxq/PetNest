@@ -41,11 +41,11 @@ _TRIGGER_TEXT = {
     "drag": "拖动宠物时",
     "codex_running_left": "可由外部事件触发",
     "click": "鼠标点击时",
-    "drop": "结束拖动时",
+    "hover": "鼠标移入时",
     "error": "任务报错时",
     "waiting": "任务等待时",
     "working": "任务工作时",
-    "hover": "鼠标移入时",
+    "review": "任务停止待查看时",
 }
 
 
@@ -185,8 +185,8 @@ class SpriteSheetImportContent(QWidget):
         source_layout.addWidget(self.source_dropzone)
         self.rules_label = QLabel(
             "仅读取本机文件，不上传或联网。透明 PNG：1536 × 1872 像素、8 列 × 9 行、每格 192 × 208。\n"
-            "默认映射：running-right → drag；waving → click；jumping → drop；failed → error；"
-            "waiting → waiting；running → working；review → hover。\n"
+            "默认映射：running-right → drag；waving → click；jumping → hover；failed → error；"
+            "waiting → waiting；running → working；review → review。\n"
             "自动模式会跳过无内容格位。"
         )
         self.rules_label.setWordWrap(True)

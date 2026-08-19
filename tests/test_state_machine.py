@@ -83,3 +83,35 @@ def test_missing_bound_action_uses_configured_fallback() -> None:
     machine = _machine()
     machine = PetStateMachine(machine.animations, {"custom.wave": "missing"}, {"missing": ("hover", "idle")})
     assert machine.handle(PetEvent("custom.wave")).current_action == "hover"
+
+
+def test_unbound_drag_end_forces_drag_to_restore_pointer_context() -> None:
+    animations = {
+        "idle": _animation("idle", priority=10),
+        "hover": _animation("hover", priority=30),
+        "drag": _animation("drag", priority=80, interruptible=False),
+    }
+    machine = PetStateMachine(
+        animations,
+        {"mouse.enter": "hover", "mouse.drag_start": "drag"},
+        {},
+    )
+
+    machine.handle(PetEvent("mouse.drag_start", timestamp=1.0))
+    released = machine.handle(PetEvent("mouse.drag_end", timestamp=2.0))
+    assert released.changed
+    assert released.current_action == "idle"
+
+    machine.handle(PetEvent("mouse.enter", timestamp=3.0))
+    machine.handle(PetEvent("mouse.drag_start", timestamp=4.0))
+    assert machine.handle(PetEvent("mouse.drag_end", timestamp=5.0)).current_action == "hover"
+
+
+def test_agent_idle_forces_attention_animation_back_to_pointer_context() -> None:
+    machine = _machine()
+    machine.handle(PetEvent("agent.success", timestamp=1.0))
+
+    transition = machine.handle(PetEvent("agent.idle", timestamp=2.0))
+
+    assert transition.changed
+    assert transition.current_action == "idle"

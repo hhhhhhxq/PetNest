@@ -67,11 +67,11 @@ _ROW_MAPPINGS: tuple[_RowMapping, ...] = (
     _RowMapping("drag", True, 10, 80, False, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
     _RowMapping("codex_running_left", True, 10, 20, True, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
     _RowMapping("click", False, 10, 50, False, "context", (140, 140, 140, 280)),
-    _RowMapping("drop", False, 10, 70, False, "context", (140, 140, 140, 140, 280)),
+    _RowMapping("hover", True, 10, 30, True, frame_durations_ms=(140, 140, 140, 140, 280)),
     _RowMapping("error", False, 10, 100, False, "context", (140, 140, 140, 140, 140, 140, 140, 240)),
     _RowMapping("waiting", True, 8, 60, True, frame_durations_ms=(150, 150, 150, 150, 150, 260)),
     _RowMapping("working", True, 10, 60, True, frame_durations_ms=(120, 120, 120, 120, 120, 220)),
-    _RowMapping("hover", True, 8, 30, True, frame_durations_ms=(150, 150, 150, 150, 150, 280)),
+    _RowMapping("review", True, 8, 90, True, frame_durations_ms=(150, 150, 150, 150, 150, 280)),
 )
 
 
@@ -194,11 +194,11 @@ class SpriteSheetImporter:
             "display": {"default_scale": 0.8, "min_scale": 0.25, "max_scale": 2.0, "alpha_hit_test_threshold": 10},
             "animations": animations,
             "bindings": {
-                "mouse.enter": "hover", "mouse.click": "click", "mouse.drag_start": "drag", "mouse.drag_end": "drop",
-                "agent.working": "working", "agent.waiting": "waiting", "agent.success": "success", "agent.error": "error",
+                "mouse.enter": "hover", "mouse.click": "click", "mouse.drag_start": "drag",
+                "agent.working": "working", "agent.waiting": "waiting", "agent.success": "review", "agent.error": "error",
                 "system.bored": "bored", "system.sleep": "sleep", "system.wake": "wake",
             },
-            "fallbacks": {"success": ["idle"], "bored": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
+            "fallbacks": {"review": ["idle"], "bored": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
             "import_metadata": {"source_format": "codex_8x9", "selected_columns_by_action": selected_by_action},
         }
 

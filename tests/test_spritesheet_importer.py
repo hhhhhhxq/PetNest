@@ -48,9 +48,14 @@ def test_importer_splits_all_rows_and_generates_a_valid_configured_package(tmp_p
     assert package.canvas.height == 208
     assert len(package.animations["idle"].frames) == 8
     assert len(package.animations["working"].frames) == 8
-    assert package.bindings["agent.success"] == "success"
+    assert package.bindings["agent.success"] == "review"
+    assert package.bindings["mouse.enter"] == "hover"
+    assert "mouse.drag_end" not in package.bindings
+    assert "drop" not in package.animations
+    assert len(package.animations["hover"].frames) == 8
+    assert len(package.animations["review"].frames) == 8
     assert package.bindings["system.bored"] == "bored"
-    assert package.fallbacks["success"] == ("idle",)
+    assert package.fallbacks["review"] == ("idle",)
     assert package.fallbacks["sleep"] == ("idle",)
     assert (result.package_root / "animations" / "codex_running_left" / "008.png").is_file()
 

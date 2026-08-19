@@ -33,6 +33,8 @@ class EventName(StrEnum):
     AGENT_WAITING = "agent.waiting"
     AGENT_SUCCESS = "agent.success"
     AGENT_ERROR = "agent.error"
+    AGENT_IDLE = "agent.idle"
+    INTERACTION_MESSAGE = "interaction.message"
 
 
 @dataclass(frozen=True, slots=True)
