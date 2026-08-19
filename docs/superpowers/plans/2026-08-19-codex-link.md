@@ -66,7 +66,7 @@ codex_link_show_review_bubbles: bool = True
 
 ### 任务 2：Hook 管理器与桥接脚本
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 在 `tests/test_codex_link.py` 覆盖：空配置安装、保留未知字段和其他 Hook、重复安装幂等、只移除 PetNest handler、损坏 JSON 不写入、元数据令牌持久且至少 32 字节、桥接请求不包含提示词字段。`tests/test_main.py` 覆盖桥接子命令不会创建 QApplication 或获取单实例锁。
 
@@ -79,13 +79,13 @@ assert document["hooks"]["Stop"][0]["hooks"][0]["commandWindows"]
 assert manager.install().token == result.token
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_codex_link.py -q`
 
 预期：导入 `petnest.core.codex_link` 失败。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 实现以下公开接口：
 
@@ -106,7 +106,7 @@ class CodexHookManager:
 
 Hook handler 使用 `type=command`、`commandWindows`、`timeoutSec=5`、`async=True`；命令带稳定参数 `--codex-hook`。文件写入采用同目录临时文件、`fsync`、原子 `replace`；存在的 hooks.json 在首次修改前复制带时间戳备份。`forward_codex_hook()` 只提取 `hook_event_name`、`session_id`、`turn_id`、`tool_name`、工具响应中明确的成功标志和 `stop_hook_active`，然后向元数据中的回环端口发送一行 JSON，连接失败在 250ms 内静默退出。安装版命令调用当前 exe，源码命令调用 `sys.executable -m petnest`。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_codex_link.py -q`
 
