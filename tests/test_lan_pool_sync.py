@@ -9,7 +9,9 @@ from PySide6.QtCore import QObject, Signal
 from petnest.core.lan_pool_protocol import LanPoolPacketCodec, PoolRecords
 from petnest.core.lan_pool_roster import PoolRosterStore
 from petnest.core.lan_pool_sync import LanPoolSyncService
+from petnest.core.lan_service import LanInteractionService
 from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState
+from petnest.models.lan_interaction import LanPeer
 
 
 class FakeLanService(QObject):
@@ -23,6 +25,7 @@ class FakeLanService(QObject):
         self.heartbeats: list[bytes] = []
         self.frames: list[tuple[str, bytes]] = []
         self.probes: list[tuple[str, int, str | None]] = []
+        self.peer_values = ()
         self.transport_available = True
 
     def send_pool_heartbeat(self, packet: bytes, targets=()) -> bool:
@@ -44,7 +47,7 @@ class FakeLanService(QObject):
         return True
 
     def peers(self):
-        return ()
+        return self.peer_values
 
 
 def record(device_id: str, revision: int, *, state=PoolMemberState.JOINED) -> PoolMemberRecord:
@@ -138,3 +141,96 @@ def test_local_join_and_leave_increment_revision_and_emit_heartbeat(qtbot, tmp_p
     assert (joined.revision, left.revision) == (1, 2)
     assert len(a.lan.heartbeats) == 2
     assert a.roster.records()["a"].state is PoolMemberState.LEFT
+
+
+def test_periodic_sync_rotates_across_more_than_three_reachable_peers(qtbot, tmp_path) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=(record("a", 1),))
+    a.lan.peer_values = tuple(
+        LanPeer(
+            f"peer-{index}", f"成员{index}", ip_address=f"192.168.1.{index + 20}",
+            port=18487, online=True,
+        )
+        for index in range(5)
+    )
+
+    a.sync.sync_reachable_peers()
+    first = {target for target, _frame in a.lan.frames}
+    a.lan.frames.clear()
+    a.sync.sync_reachable_peers()
+    second = {target for target, _frame in a.lan.frames}
+
+    assert len(first) <= 3
+    assert len(second) <= 3
+    assert first | second == {f"peer-{index}" for index in range(5)}
+
+
+def test_real_services_sync_members_joining_after_the_bridge(qtbot, tmp_path) -> None:
+    nodes = []
+
+    def start_chat_service(service: LanInteractionService) -> None:
+        for _attempt in range(5):
+            assert service.start()
+            if service.chat_is_available:
+                return
+            service.stop()
+            qtbot.wait(50)
+        raise AssertionError("TCP chat port did not become available after 5 retries")
+
+    try:
+        for device_id in ("a", "d"):
+            lan = LanInteractionService(
+                device_id=device_id,
+                display_name=device_id.upper(),
+                pet_name="平安",
+                port=0,
+                interface_provider=lambda: (),
+            )
+            start_chat_service(lan)
+            roster = PoolRosterStore(tmp_path / device_id / "roster.json", local_device_id=device_id)
+            roster.update_local(
+                display_name=device_id.upper(), state=PoolMemberState.JOINED,
+                ip_address="127.0.0.1", port=lan.port,
+            )
+            sync = LanPoolSyncService(lan, roster, display_name=lambda value=device_id: value.upper())
+            sync.start()
+            nodes.append(SimpleNamespace(device_id=device_id, lan=lan, roster=roster, sync=sync))
+        a, d = nodes
+        assert a.lan.probe_peer("127.0.0.1", d.lan.port)
+        qtbot.waitUntil(
+            lambda: set(a.roster.joined_device_ids()) == {"a", "d"}
+            and set(d.roster.joined_device_ids()) == {"a", "d"},
+            timeout=3_000,
+        )
+
+        for device_id, entry in (("b", a), ("e", d)):
+            lan = LanInteractionService(
+                device_id=device_id,
+                display_name=device_id.upper(),
+                pet_name="平安",
+                port=0,
+                interface_provider=lambda: (),
+            )
+            start_chat_service(lan)
+            roster = PoolRosterStore(tmp_path / device_id / "roster.json", local_device_id=device_id)
+            roster.update_local(
+                display_name=device_id.upper(), state=PoolMemberState.JOINED,
+                ip_address="127.0.0.1", port=lan.port,
+            )
+            sync = LanPoolSyncService(lan, roster, display_name=lambda value=device_id: value.upper())
+            sync.start()
+            node = SimpleNamespace(device_id=device_id, lan=lan, roster=roster, sync=sync)
+            nodes.append(node)
+            assert node.lan.probe_peer("127.0.0.1", entry.lan.port)
+
+        qtbot.waitUntil(
+            lambda: all(
+                set(node.roster.joined_device_ids()) == {"a", "b", "d", "e"}
+                for node in nodes
+            ),
+            timeout=6_000,
+        )
+    finally:
+        for node in reversed(nodes):
+            node.sync.stop()
+            node.lan.stop()
+        qtbot.wait(50)

@@ -39,16 +39,23 @@ class LanPoolSyncService(QObject):
         self._verification_queue: deque[tuple[str, str, int]] = deque()
         self._verification_queued_ids: set[str] = set()
         self._active_verification: tuple[str, str, int] | None = None
+        self._sync_cursor = 0
         self._running = False
         self._periodic_timer = QTimer(self)
         self._periodic_timer.setInterval(30_000)
         self._periodic_timer.timeout.connect(self.sync_reachable_peers)
+        self._verification_timeout = QTimer(self)
+        self._verification_timeout.setSingleShot(True)
+        self._verification_timeout.setInterval(4_500)
+        self._verification_timeout.timeout.connect(self._expire_active_verification)
         if hasattr(lan_service, "pool_heartbeat_received"):
             lan_service.pool_heartbeat_received.connect(self._on_heartbeat_context)
         if hasattr(lan_service, "pool_frame_received"):
             lan_service.pool_frame_received.connect(self._on_frame_context)
         if hasattr(lan_service, "manual_probe_succeeded"):
             lan_service.manual_probe_succeeded.connect(self._on_probe_succeeded)
+        if hasattr(lan_service, "peer_changed"):
+            lan_service.peer_changed.connect(self._on_peer_changed)
 
     @property
     def is_running(self) -> bool:
@@ -60,10 +67,12 @@ class LanPoolSyncService(QObject):
         self._running = True
         self._periodic_timer.start()
         self.broadcast_heartbeat()
+        self.sync_reachable_peers()
 
     def stop(self) -> None:
         self._running = False
         self._periodic_timer.stop()
+        self._verification_timeout.stop()
         self._verification_queue.clear()
         self._verification_queued_ids.clear()
         self._active_verification = None
@@ -143,6 +152,8 @@ class LanPoolSyncService(QObject):
                 ):
                     self._queue_verification(record)
             self.roster_changed.emit()
+            self.broadcast_heartbeat()
+            self.sync_reachable_peers()
 
     def set_local_joined(
         self,
@@ -186,10 +197,25 @@ class LanPoolSyncService(QObject):
         )
 
     def sync_reachable_peers(self) -> None:
-        peers = tuple(getattr(self.lan_service, "peers", lambda: ())())
-        for peer in sorted(peers, key=lambda item: item.device_id)[:3]:
-            if getattr(peer, "online", False):
-                self.send_summary(peer.device_id)
+        peers = tuple(
+            sorted(
+                (
+                    peer
+                    for peer in tuple(getattr(self.lan_service, "peers", lambda: ())())
+                    if getattr(peer, "online", False)
+                ),
+                key=lambda item: item.device_id,
+            )
+        )
+        if not peers:
+            self._sync_cursor = 0
+            return
+        count = min(3, len(peers))
+        start = self._sync_cursor % len(peers)
+        selected = tuple(peers[(start + offset) % len(peers)] for offset in range(count))
+        self._sync_cursor = (start + count) % len(peers)
+        for peer in selected:
+            self.send_summary(peer.device_id)
 
     def member_views(self) -> tuple[PoolMemberView, ...]:
         now = monotonic()
@@ -228,6 +254,7 @@ class LanPoolSyncService(QObject):
         )
         if result.changed_device_ids:
             self.roster_changed.emit()
+            self.sync_reachable_peers()
         if heartbeat.roster_digest != self.roster.digest():
             self.send_summary(sender)
 
@@ -260,18 +287,27 @@ class LanPoolSyncService(QObject):
             self._verification_queued_ids.discard(device_id)
             self._pump_verification_queue()
             return
-        QTimer.singleShot(4_500, lambda: self._expire_active_verification(candidate))
+        self._verification_timeout.start()
 
     def _on_probe_succeeded(self, peer: object) -> None:
         active = self._active_verification
         if active is None or getattr(peer, "device_id", None) != active[0]:
             return
         self._active_verification = None
+        self._verification_timeout.stop()
         self._verification_queued_ids.discard(active[0])
         self._pump_verification_queue()
 
-    def _expire_active_verification(self, candidate: tuple[str, str, int]) -> None:
-        if self._active_verification != candidate:
+    def _on_peer_changed(self, peer: object) -> None:
+        device_id = str(getattr(peer, "device_id", ""))
+        if not self._running or not device_id or not getattr(peer, "online", False):
+            return
+        self._online_seen_at[device_id] = monotonic()
+        self.send_summary(device_id)
+
+    def _expire_active_verification(self) -> None:
+        candidate = self._active_verification
+        if candidate is None:
             return
         self._active_verification = None
         self._verification_queued_ids.discard(candidate[0])
