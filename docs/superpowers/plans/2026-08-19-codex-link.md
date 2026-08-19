@@ -236,7 +236,7 @@ PetWindow 创建该窗口，公开 `show_codex_status(snapshot)`、`clear_codex_
 
 ### 任务 7：设置中心 Codex 联动页
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 修改 `tests/test_settings_dialog.py`：导航为六页且 Codex 位于空闲和倒计时之间；三个开关正确读写；状态标签和动作可用性文案可刷新；安装、移除按钮调用回调并更新状态；关闭总开关时提醒开关禁用但值保留。
 
@@ -247,17 +247,17 @@ dialog.codex_link_enabled_input.setChecked(True)
 assert dialog.updated_settings().codex_link_enabled
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_settings_dialog.py -q`
 
 预期：构造器和 Codex 控件缺失。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 新增构造参数 `codex_hook_status`、`codex_action_availability`、`on_install_codex_hook`、`on_remove_codex_hook`。页面包含联动开关/状态/最近事件、四项动作解析结果和两项气泡偏好。按钮回调返回 `CodexHookStatus`，页面就地更新并把错误显示为可换行文案。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_settings_dialog.py -q`
 

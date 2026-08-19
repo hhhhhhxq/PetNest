@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.core.cursor_style_catalog import CursorStyle
+from petnest.core.codex_link import CodexHookStatus
 from petnest.models.settings import Settings
 from petnest.ui.theme import dialog_stylesheet
 
@@ -243,7 +244,7 @@ class MinuteStepTimeEdit(_FocusWheelMixin, QTimeEdit):
 
 
 class SettingsCenterDialog(QDialog):
-    """一个窗口承载显示、鼠标、空闲、倒计时和更新五类设置。"""
+    """一个窗口承载桌宠显示、行为、联动、倒计时和更新设置。"""
 
     _PREFERRED_SIZE = QSize(1180, 760)
     _ROOMY_MINIMUM_SIZE = QSize(1000, 680)
@@ -253,6 +254,7 @@ class SettingsCenterDialog(QDialog):
         ("display", "显示与窗口"),
         ("mouse_behavior", "鼠标与行为"),
         ("idle", "系统空闲"),
+        ("codex_link", "Codex 联动"),
         ("countdown", "工作倒计时"),
         ("app_update", "应用与更新"),
     )
@@ -266,6 +268,10 @@ class SettingsCenterDialog(QDialog):
         on_check_app_update: Callable[[], object] | None = None,
         on_download_app_update: Callable[[object], object] | None = None,
         on_unlock_codex_usage: Callable[[], object] | None = None,
+        codex_hook_status: CodexHookStatus | None = None,
+        codex_action_availability: Mapping[str, str] | None = None,
+        on_install_codex_hook: Callable[[], CodexHookStatus] | None = None,
+        on_remove_codex_hook: Callable[[], CodexHookStatus] | None = None,
         cursor_styles: list[CursorStyle] | None = None,
         supported_roles: Iterable[str] | None = None,
         pet_preview_path: Path | None = None,
@@ -278,6 +284,12 @@ class SettingsCenterDialog(QDialog):
         self._on_check_app_update = on_check_app_update
         self._on_download_app_update = on_download_app_update
         self._on_unlock_codex_usage = on_unlock_codex_usage
+        self._codex_hook_status = codex_hook_status or CodexHookStatus(
+            "missing", "尚未安装 PetNest Codex Hook", False
+        )
+        self._codex_action_availability = dict(codex_action_availability or {})
+        self._on_install_codex_hook = on_install_codex_hook
+        self._on_remove_codex_hook = on_remove_codex_hook
         self._version_click_count = 0
         self._pet_preview_path = pet_preview_path
         self._pet_preview_pixmap = QPixmap()
@@ -394,6 +406,7 @@ class SettingsCenterDialog(QDialog):
         self.page_stack.addWidget(self._build_display_page())
         self.page_stack.addWidget(self._build_mouse_behavior_page())
         self.page_stack.addWidget(self._build_idle_page())
+        self.page_stack.addWidget(self._build_codex_link_page())
         self.page_stack.addWidget(self._build_countdown_page())
         self.page_stack.addWidget(self._build_app_update_page())
         scroll = QScrollArea(content_pane)
@@ -469,12 +482,14 @@ class SettingsCenterDialog(QDialog):
             "显示与窗口": 0,
             "鼠标与行为": 1,
             "系统空闲": 2,
-            "工作倒计时": 3,
-            "应用与更新": 4,
+            "Codex 联动": 3,
+            "工作倒计时": 4,
+            "应用与更新": 5,
             "mouse": 1,
             "idle": 2,
-            "work_countdown": 3,
-            "update": 4,
+            "codex": 3,
+            "work_countdown": 4,
+            "update": 5,
         }
         return aliases.get(section, next((i for i, (key, _label) in enumerate(self._SECTION_NAMES) if key == section), 0))
 
@@ -493,6 +508,7 @@ class SettingsCenterDialog(QDialog):
             "调整桌宠在桌面上的显示方式",
             "控制宠物如何响应鼠标和系统光标",
             "让宠物在长时间没有操作时自动改变状态",
+            "让当前宠物跟随本机 Codex 的运行、等待和完成状态",
             "工作日只选择一次，再选择固定时段或弹性打卡的计算方式",
             "查看当前版本，并在需要时手动检查新的 PetNest 安装包",
         )
@@ -752,6 +768,108 @@ class SettingsCenterDialog(QDialog):
             blocker = QSignalBlocker(self.system_sleep_input)
             self.system_sleep_input.setValue(min(86_400, self.system_bored_input.value() + 1))
             del blocker
+
+    def _build_codex_link_page(self) -> QWidget:
+        page, layout = self._page(
+            "Codex 联动",
+            "通过本机 Codex Hooks 同步任务状态；不会读取提示词、回复正文、代码或账号凭据。",
+            self,
+        )
+
+        link_card, link_layout = self._card(
+            "联动开关与 Hook",
+            "Hook 只向 127.0.0.1 发送脱敏状态。首次安装后请在 Codex 的 /hooks 页面确认信任。",
+            page,
+        )
+        self.codex_link_enabled_input = ToggleSwitch("跟随 Codex 状态播放动作", link_card)
+        self.codex_link_enabled_input.setChecked(self._settings.codex_link_enabled)
+        link_layout.addWidget(self.codex_link_enabled_input)
+        self.codex_hook_status_label = QLabel(self._codex_hook_status.message, link_card)
+        self.codex_hook_status_label.setWordWrap(True)
+        self.codex_hook_status_label.setObjectName("mutedLabel")
+        link_layout.addWidget(self.codex_hook_status_label)
+        hook_buttons = QHBoxLayout()
+        self.codex_hook_install_button = QPushButton("安装/修复 Hook", link_card)
+        self.codex_hook_remove_button = QPushButton("移除 PetNest Hook", link_card)
+        self.codex_hook_install_button.setEnabled(self._on_install_codex_hook is not None)
+        self.codex_hook_remove_button.setEnabled(
+            self._on_remove_codex_hook is not None and self._codex_hook_status.installed
+        )
+        self.codex_hook_install_button.clicked.connect(self._install_codex_hook)
+        self.codex_hook_remove_button.clicked.connect(self._remove_codex_hook)
+        hook_buttons.addWidget(self.codex_hook_install_button)
+        hook_buttons.addWidget(self.codex_hook_remove_button)
+        hook_buttons.addStretch(1)
+        link_layout.addLayout(hook_buttons)
+        layout.addWidget(link_card)
+
+        action_card, action_layout = self._card(
+            "状态动作",
+            "动作缺失时安全回退到 idle；最终成功或失败无法由稳定版 Hooks 精确区分，Stop 统一进入 review。",
+            page,
+        )
+        self.codex_action_status_labels: dict[str, QLabel] = {}
+        action_names = (
+            ("working", "运行中 running"),
+            ("waiting", "等待处理 waiting"),
+            ("error", "工具失败 failed"),
+            ("review", "停止待查看 review"),
+        )
+        action_form = QFormLayout()
+        for action, title in action_names:
+            resolved = self._codex_action_availability.get(action, "idle（回退）")
+            label = QLabel(resolved, action_card)
+            label.setObjectName("mutedLabel")
+            self.codex_action_status_labels[action] = label
+            action_form.addRow(title, label)
+        action_layout.addLayout(action_form)
+        layout.addWidget(action_card)
+
+        notice_card, notice_layout = self._card(
+            "提醒方式",
+            "运行中只播放动画；需要处理和任务停止时可单独显示气泡。",
+            page,
+        )
+        self.codex_attention_bubbles_input = ToggleSwitch("等待或失败时显示气泡", notice_card)
+        self.codex_attention_bubbles_input.setChecked(self._settings.codex_link_show_attention_bubbles)
+        self.codex_review_bubbles_input = ToggleSwitch("任务停止时显示完成气泡", notice_card)
+        self.codex_review_bubbles_input.setChecked(self._settings.codex_link_show_review_bubbles)
+        notice_layout.addWidget(self.codex_attention_bubbles_input)
+        notice_layout.addWidget(self.codex_review_bubbles_input)
+        layout.addWidget(notice_card)
+        layout.addStretch(1)
+
+        self.codex_link_enabled_input.toggled.connect(self._update_codex_link_controls)
+        self._update_codex_link_controls()
+        return page
+
+    def _update_codex_link_controls(self) -> None:
+        enabled = self.codex_link_enabled_input.isChecked()
+        self.codex_attention_bubbles_input.setEnabled(enabled)
+        self.codex_review_bubbles_input.setEnabled(enabled)
+
+    def _install_codex_hook(self) -> None:
+        if self._on_install_codex_hook is None:
+            return
+        try:
+            status = self._on_install_codex_hook()
+        except Exception as error:  # noqa: BLE001 - 设置页必须就地报告文件错误。
+            status = CodexHookStatus("error", f"安装 Hook 失败：{error}", False)
+        self.set_codex_hook_status(status)
+
+    def _remove_codex_hook(self) -> None:
+        if self._on_remove_codex_hook is None:
+            return
+        try:
+            status = self._on_remove_codex_hook()
+        except Exception as error:  # noqa: BLE001 - 设置页必须就地报告文件错误。
+            status = CodexHookStatus("error", f"移除 Hook 失败：{error}", True)
+        self.set_codex_hook_status(status)
+
+    def set_codex_hook_status(self, status: CodexHookStatus) -> None:
+        self._codex_hook_status = status
+        self.codex_hook_status_label.setText(status.message)
+        self.codex_hook_remove_button.setEnabled(self._on_remove_codex_hook is not None and status.installed)
 
     def _build_countdown_page(self) -> QWidget:
         page, layout = self._page("工作倒计时", "工作日只选择一次，再选择固定时段或弹性打卡的计算方式。", self)
@@ -1212,6 +1330,9 @@ class SettingsCenterDialog(QDialog):
             system_idle_enabled=self.system_idle_input.isChecked(),
             system_bored_seconds=self.system_bored_input.value(),
             system_sleep_seconds=max(self.system_sleep_input.value(), self.system_bored_input.value() + 1),
+            codex_link_enabled=self.codex_link_enabled_input.isChecked(),
+            codex_link_show_attention_bubbles=self.codex_attention_bubbles_input.isChecked(),
+            codex_link_show_review_bubbles=self.codex_review_bubbles_input.isChecked(),
             work_countdown_enabled=self.work_countdown_input.isChecked(),
             work_start_time=self.work_start_input.time().toString("HH:mm"),
             work_end_time=legacy_end,

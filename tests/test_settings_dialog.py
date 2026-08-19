@@ -13,11 +13,12 @@ from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
+from petnest.core.codex_link import CodexHookStatus
 from petnest.models.settings import Settings
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
 
 
-def test_settings_dialog_is_the_shared_five_section_center(qtbot, tmp_path: Path) -> None:
+def test_settings_dialog_is_the_shared_six_section_center(qtbot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app
     dialog = SettingsDialog(Settings(cursor_style_enabled=False), initial_section="mouse_behavior")
@@ -30,6 +31,72 @@ def test_settings_dialog_is_the_shared_five_section_center(qtbot, tmp_path: Path
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "settingsSidebar") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "statusCard") is not None
+    assert dialog.section_list.count() == 6
+    assert dialog.section_list.item(3).text() == "Codex 联动"
+
+
+def test_codex_link_page_persists_preferences_and_disables_only_dependent_controls(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(
+            codex_link_enabled=False,
+            codex_link_show_attention_bubbles=False,
+            codex_link_show_review_bubbles=True,
+        ),
+        codex_hook_status=CodexHookStatus("missing", "尚未安装", False),
+        codex_action_availability={
+            "working": "working",
+            "waiting": "idle（回退）",
+            "error": "error",
+            "review": "review",
+        },
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.section_list.currentRow() == 3
+    assert dialog.page_title.text() == "Codex 联动"
+    assert not dialog.codex_attention_bubbles_input.isEnabled()
+    assert dialog.codex_review_bubbles_input.isChecked()
+    assert "idle（回退）" in dialog.codex_action_status_labels["waiting"].text()
+
+    dialog.codex_link_enabled_input.setChecked(True)
+    dialog.codex_attention_bubbles_input.setChecked(True)
+    dialog.codex_review_bubbles_input.setChecked(False)
+    updated = dialog.updated_settings()
+    assert updated.codex_link_enabled is True
+    assert updated.codex_link_show_attention_bubbles is True
+    assert updated.codex_link_show_review_bubbles is False
+
+
+def test_codex_hook_buttons_refresh_status_in_place(qtbot) -> None:
+    calls: list[str] = []
+
+    def install() -> CodexHookStatus:
+        calls.append("install")
+        return CodexHookStatus("installed", "Hook 已安装", True, "token")
+
+    def remove() -> CodexHookStatus:
+        calls.append("remove")
+        return CodexHookStatus("missing", "Hook 已移除", False)
+
+    dialog = SettingsDialog(
+        Settings(),
+        codex_hook_status=CodexHookStatus("missing", "尚未安装", False),
+        on_install_codex_hook=install,
+        on_remove_codex_hook=remove,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    qtbot.mouseClick(dialog.codex_hook_install_button, Qt.MouseButton.LeftButton)
+    assert calls == ["install"]
+    assert dialog.codex_hook_status_label.text() == "Hook 已安装"
+    assert dialog.codex_hook_remove_button.isEnabled()
+
+    qtbot.mouseClick(dialog.codex_hook_remove_button, Qt.MouseButton.LeftButton)
+    assert calls == ["install", "remove"]
+    assert dialog.codex_hook_status_label.text() == "Hook 已移除"
+    assert not dialog.codex_hook_remove_button.isEnabled()
 
 
 def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:
