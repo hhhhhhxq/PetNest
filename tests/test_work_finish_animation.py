@@ -34,7 +34,7 @@ def test_resolver_prefers_complete_fullscreen_pair(tmp_path: Path) -> None:
     assert resolved.is_specialized
 
 
-def test_resolver_uses_current_pet_idle_and_sleep_fallbacks(tmp_path: Path) -> None:
+def test_resolver_uses_current_pet_drag_and_sleep_fallbacks(tmp_path: Path) -> None:
     package = _package(tmp_path)
     sleep = replace(package.animations["idle"], name="sleep")
     package = replace(package, animations={**package.animations, "sleep": sleep})
@@ -42,10 +42,32 @@ def test_resolver_uses_current_pet_idle_and_sleep_fallbacks(tmp_path: Path) -> N
     resolved = resolve_work_finish_animation(package)
 
     assert resolved.walk is not None
-    assert resolved.walk.name == "idle"
+    assert resolved.walk.name == "drag"
     assert resolved.lie_down is not None
     assert resolved.lie_down.name == "sleep"
     assert not resolved.is_specialized
+
+
+def test_resolver_prefers_walk_over_drag(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    walk = replace(package.animations["idle"], name="walk")
+    package = replace(package, animations={**package.animations, "walk": walk})
+
+    resolved = resolve_work_finish_animation(package)
+
+    assert resolved.walk is not None
+    assert resolved.walk.name == "walk"
+
+
+def test_resolver_skips_fullscreen_drag_in_ordinary_fallback(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    fullscreen_drag = replace(package.animations["drag"], scope="fullscreen", canvas=Canvas(24, 18))
+    package = replace(package, animations={**package.animations, "drag": fullscreen_drag})
+
+    resolved = resolve_work_finish_animation(package)
+
+    assert resolved.walk is not None
+    assert resolved.walk.name == "idle"
 
 
 def test_incomplete_fullscreen_pair_never_leaks_another_pet_animation(tmp_path: Path) -> None:
@@ -54,7 +76,7 @@ def test_incomplete_fullscreen_pair_never_leaks_another_pet_animation(tmp_path: 
     resolved = resolve_work_finish_animation(package)
 
     assert resolved.walk is not None
-    assert resolved.walk.name == "idle"
+    assert resolved.walk.name == "drag"
     assert resolved.lie_down is not None
     assert resolved.lie_down.name == "idle"
     assert not resolved.is_specialized

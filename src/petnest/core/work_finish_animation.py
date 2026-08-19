@@ -30,7 +30,7 @@ def resolve_work_finish_animation(package: PetPackage) -> WorkFinishAnimationSet
 
     idle = _pet_action(package, "idle")
     return WorkFinishAnimationSet(
-        _pet_action(package, "walk") or idle,
+        _pet_action(package, "walk") or _pet_action(package, "drag") or idle,
         _pet_action(package, "sleep") or idle,
         False,
     )
