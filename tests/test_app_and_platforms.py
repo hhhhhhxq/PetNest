@@ -55,6 +55,8 @@ def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, t
     qtbot.addWidget(application.window)
 
     assert application.peer_registry.path == manager.path.parent / "known-lan-peers.json"
+    assert application.lan_pool_roster.path == manager.path.parent / "lan-alert-pool-roster.json"
+    assert application.lan_pool_sync.roster is application.lan_pool_roster
     assert application.danger_alert_action.text() == "⚠  发送危险预警"
     assert application.danger_alert_overlay is not None
     application.shutdown()

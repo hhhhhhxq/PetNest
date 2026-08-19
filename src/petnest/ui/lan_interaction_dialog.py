@@ -42,6 +42,7 @@ from petnest.models.lan_interaction import (
     LanChatMessage,
     LanPeer,
 )
+from petnest.models.lan_pool import PoolMemberView
 from petnest.models.settings import Settings
 
 
@@ -164,6 +165,7 @@ class LanInteractionDialog(QDialog):
         *,
         settings: Settings,
         peers: Sequence[LanPeer] = (),
+        pool_members: Sequence[PoolMemberView] = (),
         remote_peers: Sequence[LanPeer] = (),
         effects: Sequence[object] = (),
         on_send: Callable[[InteractionDraft], bool | None] | None = None,
@@ -188,6 +190,7 @@ class LanInteractionDialog(QDialog):
         self.resize(860, 560)
         self._settings = settings
         self._peers = tuple(peers)
+        self._pool_members = tuple(pool_members)
         self._remote_peers = tuple(remote_peers)
         self._effects = tuple(effects)
         self._on_send = on_send
@@ -292,6 +295,15 @@ class LanInteractionDialog(QDialog):
         self.peer_list.setCurrentRow(row)
         self._peer_changed(self.peer_list.item(row), None)
         self.mode_tabs.setCurrentIndex(selected_mode)
+
+    def set_pool_members(self, members: Sequence[PoolMemberView]) -> None:
+        self._pool_members = tuple(members)
+        selected_id = self._selected_peer.device_id if self._selected_peer is not None else None
+        self._populate_peers()
+        row = self._peer_row(selected_id)
+        self.peer_list.setCurrentRow(row if row >= 0 else 0)
+        self._refresh_alert_group_panel()
+        self._refresh_send_button()
 
     def update_peer(self, peer: LanPeer) -> None:
         """接收发现服务的单个更新。"""
@@ -597,19 +609,37 @@ class LanInteractionDialog(QDialog):
         layout.setSpacing(8)
         self.alert_group_panel = QFrame(page)
         self.alert_group_panel.setObjectName("alertGroupPanel")
-        alert_layout = QHBoxLayout(self.alert_group_panel)
+        alert_layout = QVBoxLayout(self.alert_group_panel)
         alert_layout.setContentsMargins(10, 8, 10, 8)
+        alert_header = QHBoxLayout()
         self.alert_group_label = QLabel(self.alert_group_panel)
         self.alert_group_label.setWordWrap(True)
-        alert_layout.addWidget(self.alert_group_label, 1)
+        alert_header.addWidget(self.alert_group_label, 1)
         self.alert_join_button = QPushButton("加入预警组", self.alert_group_panel)
         self.alert_join_button.setObjectName("primaryButton")
         self.alert_join_button.clicked.connect(lambda: self._set_alert_group_joined(True))
-        alert_layout.addWidget(self.alert_join_button)
+        alert_header.addWidget(self.alert_join_button)
         self.alert_leave_button = QPushButton("退出", self.alert_group_panel)
         self.alert_leave_button.setObjectName("secondaryButton")
         self.alert_leave_button.clicked.connect(self._request_leave_alert_group)
-        alert_layout.addWidget(self.alert_leave_button)
+        alert_header.addWidget(self.alert_leave_button)
+        alert_layout.addLayout(alert_header)
+        counts = QHBoxLayout()
+        self.alert_joined_count_label = QLabel(self.alert_group_panel)
+        self.alert_online_count_label = QLabel(self.alert_group_panel)
+        self.alert_sendable_count_label = QLabel(self.alert_group_panel)
+        for label in (
+            self.alert_joined_count_label,
+            self.alert_online_count_label,
+            self.alert_sendable_count_label,
+        ):
+            label.setObjectName("mutedLabel")
+            counts.addWidget(label)
+        counts.addStretch(1)
+        alert_layout.addLayout(counts)
+        self.alert_member_list = QListWidget(self.alert_group_panel)
+        self.alert_member_list.setMaximumHeight(126)
+        alert_layout.addWidget(self.alert_member_list)
         self.alert_group_panel.hide()
         layout.addWidget(self.alert_group_panel)
         self.chat_list = QListWidget(page)
@@ -656,9 +686,11 @@ class LanInteractionDialog(QDialog):
     def _populate_peers(self) -> None:
         self.peer_list.clear()
         online = tuple(peer for peer in self._peers if peer.online)
-        alert_members = tuple(
-            peer for peer in online if peer.alert_group_supported and peer.alert_group_joined
-        )
+        alert_members = tuple(member for member in self._pool_members if member.joined)
+        if not self._pool_members:
+            alert_members = tuple(
+                peer for peer in online if peer.alert_group_supported and peer.alert_group_joined
+            )
         alert_item = QListWidgetItem(
             self._peer_avatar("预警"),
             f"局域网预警组\n当前 {len(alert_members)} 人在线 · 自愿加入",
@@ -750,12 +782,39 @@ class LanInteractionDialog(QDialog):
         if not selected:
             return
         joined = self._settings.lan_alert_group_joined
-        count = len(self._alert_group_peers())
+        views = tuple(member for member in self._pool_members if member.joined)
+        if not self._pool_members:
+            views = tuple(
+                PoolMemberView(
+                    peer.device_id,
+                    peer.display_name,
+                    True,
+                    peer.online,
+                    peer.online,
+                    bool(peer.online and peer.ip_address and peer.port),
+                )
+                for peer in self._alert_group_peers()
+            )
+        joined_count = len(views)
+        online_count = sum(member.online for member in views)
+        sendable_count = sum(member.reachable and member.verified and member.online for member in views)
         self.alert_group_label.setText(
-            f"已加入 · 当前 {count} 人在线"
+            "预警池成员名单"
             if joined
             else "加入后可参与预警组聊天，并接收危险预警"
         )
+        self.alert_joined_count_label.setText(f"已加入 {joined_count} 人")
+        self.alert_online_count_label.setText(f"在线 {online_count} 人")
+        self.alert_sendable_count_label.setText(f"可发送 {sendable_count} 人")
+        self.alert_member_list.clear()
+        for member in views:
+            if member.reachable and member.verified and member.online:
+                status = "在线 · 可发送"
+            elif member.online:
+                status = "在线 · 正在验证"
+            else:
+                status = "离线"
+            self.alert_member_list.addItem(f"{member.display_name}    {status}")
         self.alert_join_button.setVisible(not joined)
         self.alert_leave_button.setVisible(joined)
 
