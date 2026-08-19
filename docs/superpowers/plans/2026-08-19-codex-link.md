@@ -205,7 +205,7 @@ assert transition.current_action == "idle"
 
 ### 任务 6：独立 Codex 状态气泡
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 在 `tests/test_codex_status_bubble.py` 验证 running 隐藏、waiting/failed 持续、review 启动 10 秒计时且保留未读点、点击发信号并清除未读、文本按任务数聚合、位置限制在当前屏幕可用区域。
 
@@ -216,19 +216,19 @@ assert "2 个" in bubble.text()
 assert not bubble.dismiss_timer.isActive()
 ```
 
-- [ ] **步骤 2：验证红灯**
+- [x] **步骤 2：验证红灯**
 
 运行：`python -m pytest tests/test_codex_status_bubble.py -q`
 
 预期：气泡模块不存在。
 
-- [ ] **步骤 3：最少实现**
+- [x] **步骤 3：最少实现**
 
 实现 `CodexStatusBubble(QWidget)`，内部使用标签、未读点和关闭按钮，信号为 `activated`、`dismissed`。`show_snapshot(snapshot, anchor_rect, avoid_rect=None)` 选择上/左/右位置并夹紧至屏幕可用区域；running/idle 隐藏；review 的正文 10 秒后隐藏但未读点保留为紧凑徽标；waiting/failed 不启动计时。
 
 PetWindow 创建该窗口，公开 `show_codex_status(snapshot)`、`clear_codex_status()` 和 `codex_status_activated`；移动、缩放和倒计时布局变化时重排气泡。
 
-- [ ] **步骤 4：验证绿灯**
+- [x] **步骤 4：验证绿灯**
 
 运行：`python -m pytest tests/test_codex_status_bubble.py tests/test_pet_window.py -q`
 

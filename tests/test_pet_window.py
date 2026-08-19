@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from petnest.core.animation_player import AnimationPlayer
+from petnest.core.codex_link import CodexLinkSnapshot
 from petnest.core.state_machine import PetStateMachine
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import (
@@ -159,6 +160,23 @@ def test_remote_interaction_bubble_paints_a_visible_background(qtbot: pytest.QtB
 
     background_pixel = image.pixelColor(image.width() // 2, max(0, image.height() - 3))
     assert background_pixel.alpha() > 0
+
+
+def test_codex_status_bubble_is_independent_from_remote_messages(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    window.show_interaction_bubble("局域网消息")
+
+    window.show_codex_status(CodexLinkSnapshot("waiting", 1, 0, "Codex 正在等待你处理"))
+
+    assert window.interaction_bubble_text == "局域网消息"
+    assert window.codex_status_text == "Codex 正在等待你处理"
+    assert window.codex_status_bubble.isVisible()
+
+    window.clear_codex_status()
+    assert window.interaction_bubble_text == "局域网消息"
+    assert window.codex_status_text is None
 
 
 def test_remote_effect_exposes_its_requested_layer_and_can_be_cleared(

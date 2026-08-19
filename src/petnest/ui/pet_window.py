@@ -13,9 +13,11 @@ from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QFont, QFontMe
 from PySide6.QtWidgets import QLabel, QWidget
 
 from petnest.core.animation_player import AnimationPlayer
+from petnest.core.codex_link import CodexLinkSnapshot
 from petnest.core.state_machine import PetStateMachine
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
+from petnest.ui.codex_status_bubble import CodexStatusBubble
 
 PositionSaved = Callable[[QPoint], object]
 
@@ -43,6 +45,7 @@ class PetWindow(QWidget):
     minimum_visible_pixels = 48
     context_menu_requested = Signal(QPoint)
     countdown_clicked = Signal()
+    codex_status_activated = Signal()
     position_changed = Signal()
 
     def __init__(
@@ -124,6 +127,8 @@ class PetWindow(QWidget):
         self._interaction_bubble_timer = QTimer(self)
         self._interaction_bubble_timer.setSingleShot(True)
         self._interaction_bubble_timer.timeout.connect(self.clear_interaction_bubble)
+        self.codex_status_bubble = CodexStatusBubble(None)
+        self.codex_status_bubble.activated.connect(self.codex_status_activated)
         self._active_effect_id: str | None = None
         self._active_effect_layer = "over"
         self._effect_pixmaps: tuple[QPixmap, ...] = ()
@@ -174,6 +179,12 @@ class PetWindow(QWidget):
     @property
     def interaction_bubble_text(self) -> str | None:
         return self._interaction_bubble_text
+
+    @property
+    def codex_status_text(self) -> str | None:
+        if not self.codex_status_bubble.isVisible():
+            return None
+        return self.codex_status_bubble.text()
 
     @property
     def active_effect_id(self) -> str | None:
@@ -383,6 +394,13 @@ class PetWindow(QWidget):
         self._interaction_bubble_text = None
         self.interaction_bubble.hide()
 
+    def show_codex_status(self, snapshot: CodexLinkSnapshot) -> None:
+        """显示独立 Codex 状态，不占用局域网消息气泡。"""
+        self.codex_status_bubble.show_snapshot(snapshot, self._global_window_rect())
+
+    def clear_codex_status(self) -> None:
+        self.codex_status_bubble.clear()
+
     def play_effect(self, effect: object, *, loop: bool = False) -> bool:
         """在宠物画布中播放本地动效；``layer`` 决定绘制顺序。"""
         frames = tuple(getattr(effect, "frames", ()))
@@ -542,13 +560,18 @@ class PetWindow(QWidget):
     def moveEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
         if self.interaction_bubble.isVisible():
             self.interaction_bubble.move(self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3))))
+        self.codex_status_bubble.reposition(self._global_window_rect())
         super().moveEvent(event)  # type: ignore[arg-type]
         self.position_changed.emit()
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
         self.clear_interaction_bubble()
+        self.clear_codex_status()
         self.clear_effect()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+    def _global_window_rect(self) -> QRect:
+        return QRect(self.mapToGlobal(QPoint(0, 0)), self.size())
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         if self._current_pixmap.isNull():
