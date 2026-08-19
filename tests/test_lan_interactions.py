@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from petnest.core.device_identity import display_name_for
 from petnest.models.lan_interaction import ChatScope, InteractionDraft, InteractionKind, LanPeer
+from petnest.models.lan_pool import PoolMemberView
 from petnest.models.settings import Settings
 from petnest.ui.lan_interaction_dialog import LanInteractionDialog, ManualPeerDialog, RemotePairDialog
 
@@ -109,6 +110,32 @@ def test_dialog_always_shows_alert_group_and_can_join_it(qtbot) -> None:
     assert changed == [True]
     assert dialog.settings.lan_alert_group_joined is True
     assert dialog.chat_input.isEnabled()
+
+
+def test_dialog_shows_joined_online_sendable_counts_and_pool_member_names(qtbot) -> None:
+    members = (
+        PoolMemberView("a", "甲", joined=True, online=True, verified=True, reachable=True),
+        PoolMemberView("b", "乙", joined=True, online=True, verified=False, reachable=False),
+        PoolMemberView("c", "丙", joined=True, online=False, verified=True, reachable=False),
+        PoolMemberView("d", "丁", joined=False, online=False, verified=False, reachable=False),
+    )
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local", lan_alert_group_joined=True),
+        peers=(),
+        pool_members=members,
+    )
+    qtbot.addWidget(dialog)
+    dialog.peer_list.setCurrentRow(0)
+
+    assert dialog.alert_joined_count_label.text() == "已加入 3 人"
+    assert dialog.alert_online_count_label.text() == "在线 2 人"
+    assert dialog.alert_sendable_count_label.text() == "可发送 1 人"
+    names = "\n".join(
+        dialog.alert_member_list.item(row).text()
+        for row in range(dialog.alert_member_list.count())
+    )
+    assert all(name in names for name in ("甲", "乙", "丙"))
+    assert "丁" not in names
 
 
 def test_dialog_confirms_before_leaving_alert_group(qtbot, monkeypatch) -> None:

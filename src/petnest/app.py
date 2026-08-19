@@ -41,6 +41,9 @@ from petnest.core.codex_usage import (
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
+from petnest.core.lan_discovery import qt_interface_ipv4
+from petnest.core.lan_pool_roster import PoolRosterStore
+from petnest.core.lan_pool_sync import LanPoolSyncService
 from petnest.core.lan_peer_registry import KnownLanPeerRegistry
 from petnest.core.lottie_effects import EffectCatalog
 from petnest.core.mouse_follow import MouseFollowController
@@ -287,6 +290,16 @@ class PetNest:
         self.lan_service.danger_alert_received.connect(self._handle_danger_alert)
         self.lan_service.danger_alert_delivery_completed.connect(self._handle_danger_alert_delivery)
         self.lan_service.error.connect(lambda message: LOGGER.warning("%s", message))
+        self.lan_pool_roster = PoolRosterStore(
+            self.settings_manager.path.parent / "lan-alert-pool-roster.json",
+            local_device_id=self.settings.device_id,
+        )
+        self.lan_pool_sync = LanPoolSyncService(
+            self.lan_service,
+            self.lan_pool_roster,
+            display_name=lambda: display_name_for(self.settings),
+            parent=self.window,
+        )
         self.codex_usage_sync = CodexUsageSyncCoordinator(
             self.lan_service,
             CodexDeviceUsageStore(codex_device_usage_path(self._codex_usage_history_path)),
@@ -816,6 +829,7 @@ class PetNest:
         dialog = LanInteractionDialog(
             settings=self.settings,
             peers=self.lan_service.peers(),
+            pool_members=self.lan_pool_sync.member_views(),
             remote_peers=self.remote_interaction_service.peers(),
             effects=effects,
             on_send=self.lan_service.send_interaction,
@@ -860,7 +874,10 @@ class PetNest:
         self.remote_interaction_service.error.connect(dialog.set_status_message)
         self.remote_interaction_service.interaction_send_succeeded.connect(dialog.remote_send_succeeded)
         self.remote_interaction_service.interaction_send_failed.connect(dialog.remote_send_failed)
+        pool_refresh = lambda: dialog.set_pool_members(self.lan_pool_sync.member_views())
+        self.lan_pool_sync.roster_changed.connect(pool_refresh)
         dialog.exec()
+        self.lan_pool_sync.roster_changed.disconnect(pool_refresh)
         updated = dialog.settings
         if (
             updated.nickname != self.settings.nickname
@@ -1171,6 +1188,7 @@ class PetNest:
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
+        self._run_shutdown_step("停止预警池名单同步", self.lan_pool_sync.stop)
         self._run_shutdown_step(
             "记录 Codex 账号观察结束",
             lambda: self._codex_account_observations.observe(None, datetime.now(UTC)),
@@ -1571,8 +1589,28 @@ class PetNest:
         if self.settings.lan_interaction_enabled:
             if not self.lan_service.start():
                 LOGGER.warning("局域网互动未启用，桌宠仍可正常使用")
+                return
+            self.lan_pool_sync.start()
+            self.lan_pool_sync.set_local_joined(
+                self.settings.lan_alert_group_joined,
+                ip_address=self._pool_local_ip_address(),
+                port=self.lan_service.port,
+            )
         else:
+            self.lan_pool_sync.stop()
             self.lan_service.stop()
+
+    @staticmethod
+    def _pool_local_ip_address() -> str:
+        for entry in qt_interface_ipv4():
+            if (
+                entry.is_up
+                and entry.is_running
+                and not entry.is_loopback
+                and not entry.address.startswith("169.254.")
+            ):
+                return entry.address
+        return "127.0.0.1"
 
     def _configure_remote_interaction_service(self) -> None:
         if self.settings.remote_interaction_enabled:
