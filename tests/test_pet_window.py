@@ -99,6 +99,19 @@ def _drag_move(window: PetWindow, x: int, y: int) -> None:
     QApplication.sendEvent(window, event)
 
 
+def _drag_move_global(window: PetWindow, point: QPoint) -> None:
+    local = QPointF(window.rect().center())
+    event = QMouseEvent(
+        QEvent.Type.MouseMove,
+        local,
+        QPointF(point),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    QApplication.sendEvent(window, event)
+
+
 def test_window_is_transparent_frameless_topmost_and_uses_scaled_canvas(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)
@@ -512,6 +525,163 @@ def test_drag_starts_only_after_threshold_moves_window_and_saves_position(qtbot:
     QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=center)
     assert window.current_action == "drop"
     assert positions[-1] == (window.x(), window.y())
+
+
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        (("drag_left", "walk_left", "drag", "walk"), "drag_left"),
+        (("walk_left", "drag", "walk"), "walk_left"),
+        (("drag", "walk"), "drag"),
+        (("walk",), "walk"),
+        ((), "idle"),
+    ],
+)
+def test_drag_action_uses_directional_then_generic_fallback_order(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    available: tuple[str, ...],
+    expected: str,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    animations = {"idle": package.animations["idle"]}
+    animations.update({name: replace(source, name=name) for name in available})
+    window = PetWindow(replace(package, animations=animations, bindings={}, fallbacks={}))
+    qtbot.addWidget(window)
+
+    assert window._drag_action("left") == expected
+
+
+def test_drag_motion_switches_between_directional_actions(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    animations = {
+        **package.animations,
+        "drag_left": replace(source, name="drag_left"),
+        "drag_right": replace(source, name="drag_right"),
+        "walk_left": replace(source, name="walk_left"),
+        "walk_right": replace(source, name="walk_right"),
+    }
+    window = PetWindow(replace(package, animations=animations))
+    qtbot.addWidget(window)
+    window.move(100, 100)
+    window.show()
+    center = window.rect().center()
+    start_global = window.mapToGlobal(center)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=center)
+    right_global = start_global + QPoint(window.drag_threshold + 2, 0)
+    _drag_move_global(window, right_global)
+    assert window.playing_action == "drag_right"
+
+    _drag_move_global(window, right_global - QPoint(4, 0))
+    assert window.playing_action == "drag_left"
+
+
+def test_directional_drag_fallback_restores_context_action_on_release(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    animations = {
+        "idle": package.animations["idle"],
+        "walk_left": replace(source, name="walk_left"),
+        "walk_right": replace(source, name="walk_right"),
+    }
+    package = replace(
+        package,
+        animations=animations,
+        fallbacks={"drag": ("idle",), "drop": ("idle",)},
+    )
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.move(100, 100)
+    window.show()
+    center = window.rect().center()
+    start_global = window.mapToGlobal(center)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=center)
+    _drag_move_global(window, start_global + QPoint(window.drag_threshold + 2, 0))
+    assert window.playing_action == "walk_right"
+
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=center)
+    assert window.playing_action == "idle"
+
+
+def test_directional_drag_does_not_bypass_non_interruptible_action(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    protected = replace(
+        package.animations["click"],
+        priority=100,
+        interruptible=False,
+    )
+    animations = {
+        **package.animations,
+        "click": protected,
+        "drag_right": replace(source, name="drag_right"),
+    }
+    window = PetWindow(replace(package, animations=animations))
+    qtbot.addWidget(window)
+    window.move(100, 100)
+    window.show()
+    center = window.rect().center()
+    window.handle_pet_event(PetEvent("mouse.click", source="test"))
+    assert window.playing_action == "click"
+    start_global = window.mapToGlobal(center)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=center)
+    _drag_move_global(window, start_global + QPoint(window.drag_threshold + 2, 0))
+
+    assert window.current_action == "click"
+    assert window.playing_action == "click"
+
+
+def test_directional_drag_stops_overriding_after_higher_priority_event(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    urgent = replace(
+        package.animations["click"],
+        name="urgent",
+        priority=100,
+        interruptible=False,
+    )
+    animations = {
+        **package.animations,
+        "drag_right": replace(source, name="drag_right"),
+        "urgent": urgent,
+    }
+    bindings = {**package.bindings, "agent.success": "urgent"}
+    window = PetWindow(replace(package, animations=animations, bindings=bindings))
+    qtbot.addWidget(window)
+    window.move(100, 100)
+    window.show()
+    center = window.rect().center()
+    start_global = window.mapToGlobal(center)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=center)
+    right_global = start_global + QPoint(window.drag_threshold + 2, 0)
+    _drag_move_global(window, right_global)
+    assert window.playing_action == "drag_right"
+
+    window.handle_pet_event(PetEvent("agent.success", source="test"))
+    assert window.current_action == "urgent"
+    assert window.playing_action == "urgent"
+    _drag_move_global(window, right_global + QPoint(2, 0))
+
+    assert window.current_action == "urgent"
+    assert window.playing_action == "urgent"
 
 
 def test_position_is_clamped_to_keep_part_of_pet_on_current_screen(qtbot: pytest.QtBot, tmp_path: Path) -> None:

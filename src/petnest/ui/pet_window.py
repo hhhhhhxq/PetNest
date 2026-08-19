@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QLabel, QWidget
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.codex_link import CodexLinkSnapshot
-from petnest.core.state_machine import PetStateMachine
+from petnest.core.state_machine import PetStateMachine, StateTransition
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
 from petnest.ui.codex_status_bubble import CodexStatusBubble
@@ -93,6 +93,10 @@ class PetWindow(QWidget):
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
         self._dragging = False
+        self._last_drag_global: QPoint | None = None
+        self._drag_direction: str | None = None
+        self._drag_action_override = False
+        self._drag_context_action: str | None = None
         self._countdown_pressed = False
         self._mouse_interaction_enabled = True
         self._countdown_text: str | None = None
@@ -497,6 +501,10 @@ class PetWindow(QWidget):
             self._press_global = event.globalPosition().toPoint()
             self._window_origin = self.pos()
             self._dragging = False
+            self._last_drag_global = self._press_global
+            self._drag_direction = None
+            self._drag_action_override = False
+            self._drag_context_action = None
             event.accept()
             return
         event.ignore()
@@ -508,15 +516,37 @@ class PetWindow(QWidget):
         if self._press_global is None or self._window_origin is None:
             event.ignore()
             return
-        delta = event.globalPosition().toPoint() - self._press_global
+        current_global = event.globalPosition().toPoint()
+        delta = current_global - self._press_global
+        if self._last_drag_global is not None:
+            horizontal_step = current_global.x() - self._last_drag_global.x()
+            if horizontal_step < 0:
+                self._drag_direction = "left"
+            elif horizontal_step > 0:
+                self._drag_direction = "right"
+        self._last_drag_global = current_global
+        started_dragging = False
         if not self._dragging and hypot(delta.x(), delta.y()) >= self.drag_threshold:
             self._dragging = True
-            self._handle_event("mouse.drag_start")
-            # Commit the new, differently shaped transparent frame before the
-            # native macOS window starts moving. Otherwise WindowServer can
-            # briefly composite the old idle surface behind the drag frame.
-            self.repaint()
+            transition = self._handle_event("mouse.drag_start")
+            current = self.package.animations[self.state_machine.current_action]
+            self._drag_action_override = transition.changed or (
+                transition.reason == "already-current" and current.interruptible
+            )
+            self._drag_context_action = self.state_machine.current_action if self._drag_action_override else None
+            started_dragging = True
         if self._dragging:
+            if self.state_machine.current_action != self._drag_context_action:
+                self._drag_action_override = False
+            if self._drag_action_override:
+                action = self._drag_action(self._drag_direction)
+                if action != self._playing_action:
+                    self._play_action(action)
+            if started_dragging:
+                # Commit the final direction-specific transparent frame before
+                # the native macOS window starts moving. Otherwise WindowServer
+                # can briefly composite the previous surface behind it.
+                self.repaint()
             self.move(self.clamp_position(self._window_origin + delta))
         event.accept()
 
@@ -540,8 +570,14 @@ class PetWindow(QWidget):
         self._press_global = None
         self._window_origin = None
         self._dragging = False
+        self._last_drag_global = None
+        self._drag_direction = None
+        self._drag_action_override = False
+        self._drag_context_action = None
         if was_dragging:
             self._handle_event("mouse.drag_end")
+            if self._playing_action != self.state_machine.current_action:
+                self._play_current_action()
             if self._position_saved is not None:
                 self._position_saved(self.pos())
         elif self._is_interactive(event):
@@ -631,10 +667,11 @@ class PetWindow(QWidget):
         )
         painter.drawPixmap(target, scaled)
 
-    def _handle_event(self, event_name: str) -> None:
+    def _handle_event(self, event_name: str) -> StateTransition:
         transition = self.state_machine.handle(PetEvent(event_name, source="mouse"))
         if transition.changed:
             self._play_current_action()
+        return transition
 
     def _play_current_action(self) -> None:
         action = self._follow_action() if self._follow_motion else self.state_machine.current_action
@@ -696,6 +733,14 @@ class PetWindow(QWidget):
 
     def _pet_width(self) -> int:
         return round(self.package.canvas.width * self.scale)
+
+    def _drag_action(self, direction: str | None) -> str:
+        """按当前水平拖动方向选择专用动作，并逐级回退到通用动作。"""
+        candidates: list[str] = []
+        if direction in {"left", "right"}:
+            candidates.extend((f"drag_{direction}", f"walk_{direction}"))
+        candidates.extend(("drag", "walk", "idle"))
+        return next(name for name in candidates if name in self.package.animations)
 
     def _follow_action(self) -> str:
         """优先方向专用帧；普通宠物包安全回退到 walk 或 drag。"""
