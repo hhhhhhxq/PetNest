@@ -23,6 +23,15 @@ from petnest.core.lan_interaction import (
     ReceivedInteraction,
 )
 from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
+from petnest.core.lan_pool_protocol import (
+    MAX_POOL_FRAME_BYTES,
+    MAX_POOL_UDP_BYTES,
+    LanPoolPacketCodec,
+    LanPoolProtocolError,
+    PoolHeartbeat,
+    PoolRecords,
+    PoolSummary,
+)
 from petnest.models.lan_interaction import (
     ChatDraft,
     ChatMessageKind,
@@ -48,6 +57,13 @@ class _PendingDangerAlert:
     acknowledged: set[str]
 
 
+@dataclass(frozen=True, slots=True)
+class ReceivedPoolMessage:
+    message: PoolHeartbeat | PoolSummary | PoolRecords
+    address: str
+    source_port: int
+
+
 class LanInteractionService(QObject):
     """不阻塞 GUI 的局域网发现、互动与聊天服务。"""
 
@@ -61,6 +77,8 @@ class LanInteractionService(QObject):
     chat_message_received = Signal(object)
     danger_alert_received = Signal(object)
     danger_alert_delivery_completed = Signal(object)
+    pool_heartbeat_received = Signal(object)
+    pool_frame_received = Signal(object)
     error = Signal(str)
     running_changed = Signal(bool)
 
@@ -345,8 +363,12 @@ class LanInteractionService(QObject):
             return False
         if expected_device_id is not None:
             expected_device_id = str(expected_device_id).strip()
-            if not expected_device_id or expected_device_id not in self._known_peers():
-                self.error.emit("要更新地址的伙伴不存在")
+            if (
+                not expected_device_id
+                or len(expected_device_id) > 64
+                or any(char in expected_device_id for char in "\\/\r\n\x00")
+            ):
+                self.error.emit("预期设备 ID 无效")
                 return False
 
         normalized_ip = str(parsed)
@@ -372,6 +394,9 @@ class LanInteractionService(QObject):
         ip_address: str,
         port: int = LAN_INTERACTION_PORT,
     ) -> bool:
+        if device_id not in self._known_peers():
+            self.error.emit("要更新地址的伙伴不存在")
+            return False
         return self.probe_peer(ip_address, port, expected_device_id=device_id)
 
     def send_interaction(self, draft: InteractionDraft) -> bool:
@@ -524,10 +549,62 @@ class LanInteractionService(QObject):
         self._start_chat_send(peer, frame, message)
         return True
 
+    def send_pool_heartbeat(
+        self,
+        packet: bytes,
+        targets: Iterable[tuple[str, int]] = (),
+    ) -> bool:
+        if not self._running or not isinstance(packet, bytes) or not packet or len(packet) > MAX_POOL_UDP_BYTES:
+            return False
+        try:
+            broadcasts = eligible_broadcast_addresses(self._interface_provider())
+        except Exception:
+            LOGGER.warning("无法枚举预警池心跳广播地址", exc_info=True)
+            broadcasts = ()
+        endpoints = {
+            *((address, self._port) for address in broadcasts),
+            ("255.255.255.255", self._port),
+            *((str(address), int(port)) for address, port in targets),
+            *((str(address), int(port)) for address, port in self._manual_peer_targets.values()),
+        }
+        results: list[bool] = []
+        for address, port in sorted(endpoints):
+            try:
+                results.append(self._socket.writeDatagram(packet, QHostAddress(address), port) == len(packet))
+            except (TypeError, ValueError):
+                results.append(False)
+        return any(results)
+
+    def send_pool_frame(self, target_device_id: str, frame: bytes) -> bool:
+        peer = self._peers.get(str(target_device_id))
+        if (
+            not self._running
+            or not self.chat_is_available
+            or peer is None
+            or not peer.online
+            or not peer.ip_address
+            or not peer.port
+            or not isinstance(frame, bytes)
+            or len(frame) < 5
+            or len(frame) > MAX_POOL_FRAME_BYTES + 4
+        ):
+            return False
+        self._start_frame_send(peer, frame, history_message=None)
+        return True
+
     def _start_chat_send(self, peer: LanPeer, frame: bytes, history_message: LanChatMessage) -> None:
+        self._start_frame_send(peer, frame, history_message=history_message)
+
+    def _start_frame_send(
+        self,
+        peer: LanPeer,
+        frame: bytes,
+        *,
+        history_message: LanChatMessage | None,
+    ) -> None:
         socket = QTcpSocket(self)
         self._outgoing_chat_sockets.add(socket)
-        socket.connected.connect(lambda: self._write_chat_frame(socket, frame, history_message))
+        socket.connected.connect(lambda: self._write_frame(socket, frame, history_message))
         socket.disconnected.connect(lambda: self._cleanup_chat_socket(socket))
         socket.errorOccurred.connect(lambda _error: self._chat_socket_failed(socket, peer.display_name))
         timeout = QTimer(socket)
@@ -536,7 +613,12 @@ class LanInteractionService(QObject):
         timeout.start(5_000)
         socket.connectToHost(str(peer.ip_address), int(peer.port or 0))
 
-    def _write_chat_frame(self, socket: QTcpSocket, frame: bytes, message: LanChatMessage) -> None:
+    def _write_frame(
+        self,
+        socket: QTcpSocket,
+        frame: bytes,
+        message: LanChatMessage | None,
+    ) -> None:
         if socket not in self._outgoing_chat_sockets:
             return
         written = socket.write(frame)
@@ -544,7 +626,8 @@ class LanInteractionService(QObject):
             self.error.emit(f"聊天消息发送失败：{socket.errorString()}")
             socket.abort()
             return
-        self._remember_chat_message(message)
+        if message is not None:
+            self._remember_chat_message(message)
         socket.disconnectFromHost()
 
     def _chat_socket_failed(self, socket: QTcpSocket, peer_name: str) -> None:
@@ -590,6 +673,25 @@ class LanInteractionService(QObject):
                 return
             payload = bytes(buffer[4 : 4 + payload_size])
             del buffer[: 4 + payload_size]
+            frame = payload_size.to_bytes(4, "big") + payload
+            try:
+                pool_message = LanPoolPacketCodec.decode_frame(frame)
+            except LanPoolProtocolError:
+                pool_message = None
+            if pool_message is not None:
+                sender = self._peers.get(pool_message.sender_device_id)
+                if sender is None or not sender.ip_address or socket.peerAddress().toString() != sender.ip_address:
+                    LOGGER.warning("忽略来自未握手设备的预警池名单帧")
+                    socket.abort()
+                    return
+                self.pool_frame_received.emit(
+                    ReceivedPoolMessage(
+                        pool_message,
+                        socket.peerAddress().toString(),
+                        int(sender.port or 0),
+                    )
+                )
+                continue
             try:
                 message = LanPacketCodec.decode_chat_message(payload, local_device_id=self.device_id)
             except LanProtocolError as error:
@@ -701,6 +803,21 @@ class LanInteractionService(QObject):
                 LOGGER.debug("忽略无效局域网消息：%s", error)
 
     def _handle_datagram(self, data: bytes, address: QHostAddress, source_port: int) -> None:
+        try:
+            pool_heartbeat = LanPoolPacketCodec.decode_heartbeat(data)
+        except LanPoolProtocolError:
+            pool_heartbeat = None
+        if pool_heartbeat is not None:
+            if pool_heartbeat.sender_device_id == self.device_id:
+                return
+            self.pool_heartbeat_received.emit(
+                ReceivedPoolMessage(
+                    pool_heartbeat,
+                    address.toString(),
+                    int(source_port),
+                )
+            )
+            return
         try:
             presence = LanPacketCodec.decode_presence(data)
         except LanProtocolError:

@@ -15,10 +15,79 @@ from PySide6.QtTest import QTest
 import petnest.core.lan_service as lan_service_module
 from petnest.core.lan_discovery import InterfaceIPv4
 from petnest.core.lan_interaction import LanPacketCodec
+from petnest.core.lan_pool_protocol import (
+    POOL_ID,
+    LanPoolPacketCodec,
+    PoolHeartbeat,
+    PoolSummary,
+)
 from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
 from petnest.core.lan_service import LanInteractionService
 from petnest.models.lan_interaction import ChatDraft, ChatScope, InteractionDraft, InteractionKind, LanPeer
 from petnest.models.lan_interaction import DangerAlert, DangerAlertAck
+from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState
+
+
+def _pool_record(device_id: str) -> PoolMemberRecord:
+    return PoolMemberRecord(
+        device_id,
+        f"用户-{device_id}",
+        PoolMemberState.JOINED,
+        1,
+        "192.168.1.20",
+        18487,
+        1,
+    )
+
+
+def test_service_dispatches_pool_heartbeat_without_treating_it_as_interaction(qtbot) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安", port=0)
+    pool_messages = []
+    interactions = []
+    service.pool_heartbeat_received.connect(pool_messages.append)
+    service.interaction_received.connect(interactions.append)
+    heartbeat = PoolHeartbeat(POOL_ID, "peer", _pool_record("peer"), "a" * 64, 1)
+
+    service._handle_datagram(
+        LanPoolPacketCodec.encode_heartbeat(heartbeat),
+        QHostAddress("192.168.1.20"),
+        18487,
+    )
+
+    assert pool_messages[0].message == heartbeat
+    assert pool_messages[0].address == "192.168.1.20"
+    assert interactions == []
+
+
+def test_tcp_stream_dispatches_pool_frame_and_keeps_chat_history_unchanged(qtbot) -> None:
+    sender = LanInteractionService(
+        device_id="sender", display_name="发送方", pet_name="平安", port=0,
+        interface_provider=lambda: (),
+    )
+    receiver = LanInteractionService(
+        device_id="receiver", display_name="接收方", pet_name="橘猫", port=0,
+        interface_provider=lambda: (),
+    )
+    frames = []
+    receiver.pool_frame_received.connect(frames.append)
+    try:
+        assert sender.start()
+        assert receiver.start()
+        assert sender.probe_peer("127.0.0.1", receiver.port)
+        qtbot.waitUntil(
+            lambda: any(peer.device_id == "receiver" for peer in sender.peers()),
+            timeout=2_000,
+        )
+        frame = LanPoolPacketCodec.encode_summary(PoolSummary("sender", (("sender", 1),)))
+
+        assert sender.send_pool_frame("receiver", frame)
+        qtbot.waitUntil(lambda: len(frames) == 1, timeout=2_000)
+
+        assert frames[0].message == PoolSummary("sender", (("sender", 1),))
+        assert receiver.chat_messages() == ()
+    finally:
+        sender.stop()
+        receiver.stop()
 
 
 def test_discovery_and_manual_refresh_advertise_alert_group_membership(qtbot) -> None:
@@ -674,6 +743,27 @@ def test_service_manual_probe_rejects_invalid_ip(qtbot) -> None:
     assert not service.probe_peer("not-an-ip")
     assert "IP" in errors[0]
     service.stop()
+
+
+def test_pool_probe_can_pin_an_unknown_roster_device_identity(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local",
+        display_name="本机",
+        pet_name="平安",
+        port=0,
+        interface_provider=lambda: (),
+    )
+    sent = []
+    try:
+        assert service.start()
+        service._send_packet = lambda packet, address, port: sent.append((address.toString(), port)) or True
+
+        assert service.probe_peer("192.168.20.12", 18487, expected_device_id="roster-peer")
+
+        assert service._manual_probe_expected_device_id == "roster-peer"
+        assert sent == [("192.168.20.12", 18487)]
+    finally:
+        service.stop()
 
 
 def test_manual_peer_is_refreshed_by_direct_hello_without_broadcast(qtbot) -> None:
