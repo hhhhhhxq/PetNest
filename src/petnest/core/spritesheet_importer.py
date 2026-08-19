@@ -85,14 +85,16 @@ class SpriteSheetImporter:
     layout = CODEX_STANDARD_LAYOUT
 
     def inspect(self, source: Path) -> SpriteSheetInspection:
-        """验证输入是原始 RGBA PNG 和受支持的固定网格尺寸。"""
+        """验证输入是静态 RGBA PNG/WebP 和受支持的固定网格尺寸。"""
         path = source.expanduser().resolve()
         if not path.is_file():
             raise SpriteSheetImportError(f"找不到精灵图文件：{source}")
         try:
             with Image.open(path) as image:
-                if image.format != "PNG":
-                    raise SpriteSheetImportError("仅支持 PNG 精灵图")
+                if image.format not in {"PNG", "WEBP"}:
+                    raise SpriteSheetImportError("仅支持 PNG 或 WebP 精灵图")
+                if image.format == "WEBP" and getattr(image, "is_animated", False):
+                    raise SpriteSheetImportError("不支持动画 WebP 精灵图，请选择静态 WebP 图集")
                 if image.size != self.layout.image_size:
                     expected = " × ".join(str(item) for item in self.layout.image_size)
                     actual = " × ".join(str(item) for item in image.size)
@@ -105,7 +107,7 @@ class SpriteSheetImporter:
                     for row in range(self.layout.rows)
                 )
         except (OSError, UnidentifiedImageError) as error:
-            raise SpriteSheetImportError(f"无法读取 PNG 精灵图：{error}") from error
+            raise SpriteSheetImportError(f"无法读取精灵图：{error}") from error
         return SpriteSheetInspection(source=path, size=self.layout.image_size, layout=self.layout, nonempty_columns_by_row=nonempty)
 
     def import_file(

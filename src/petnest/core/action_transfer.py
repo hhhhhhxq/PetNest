@@ -44,11 +44,11 @@ class TransferAction:
 
 
 def detect_source_kind(source: Path) -> SourceKind:
-    """探测目录、ZIP 解包后的目录或单张 PNG 的来源类型。"""
+    """探测目录、ZIP 解包后的目录或单张 PNG/WebP 的来源类型。"""
 
     path = Path(source).expanduser()
     if path.is_file():
-        if path.suffix.casefold() == ".png":
+        if path.suffix.casefold() in {".png", ".webp"}:
             return SourceKind.SPRITESHEET
         from .exchange_source import ExchangeSource
 
@@ -194,8 +194,11 @@ def _detect_directory_kind(root: Path) -> SourceKind:
         raise AmbiguousExchangeSourceError("来源同时包含多个格式清单，无法判断导入类型")
     if present:
         return present[0]
-    pngs = tuple(item for item in root.iterdir() if item.is_file() and item.suffix.casefold() == ".png")
-    if len(pngs) == 1:
+    spritesheets = tuple(
+        item for item in root.iterdir()
+        if item.is_file() and item.suffix.casefold() in {".png", ".webp"}
+    )
+    if len(spritesheets) == 1:
         return SourceKind.SPRITESHEET
     raise UnknownExchangeSourceError("来源不是完整宠物、动作包、旧版下班动画包或精灵图")
 

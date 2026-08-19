@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
 
 from petnest.core.action_transfer import SourceKind
 from petnest.core.package_loader import PackageLoader
@@ -26,9 +26,43 @@ def test_pet_import_page_auto_detects_png_and_keeps_one_window(qtbot: object, tm
     page.load_source(source)
 
     assert page.current_step() is PetImportStep.CONFIGURE
-    assert page.source_kind_label.text() == "PNG 精灵图"
+    assert page.source_kind_label.text() == "PNG / WebP 精灵图"
     assert isinstance(page.spritesheet_content, SpriteSheetImportContent)
     assert not page.findChildren(QDialog)
+
+
+def test_pet_import_page_auto_detects_static_webp(qtbot: object, tmp_path: Path) -> None:
+    source = _spritesheet(tmp_path / "cat.webp")
+    page = PetImportPage([], tmp_path / "pets")
+    qtbot.addWidget(page)
+
+    page.load_source(source)
+
+    assert page.current_step() is PetImportStep.CONFIGURE
+    assert page.source_kind_label.text() == "PNG / WebP 精灵图"
+    assert page.spritesheet_content._inspection is not None
+
+
+def test_pet_import_page_file_picker_offers_webp(
+    qtbot: object,
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    page = PetImportPage([], tmp_path / "pets")
+    qtbot.addWidget(page)
+    filters: list[str] = []
+
+    def fake_picker(*args: object) -> tuple[str, str]:
+        filters.append(str(args[-1]))
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", fake_picker)
+
+    page._choose_file()
+
+    assert filters == [
+        "支持的文件 (*.png *.webp *.zip);;PNG / WebP 精灵图 (*.png *.webp);;ZIP 宠物包 (*.zip)"
+    ]
 
 
 def test_pet_import_page_does_not_write_before_final_confirmation(qtbot: object, tmp_path: Path) -> None:
@@ -285,7 +319,7 @@ def test_non_pet_source_kinds_report_specific_destination(
     assert expected in page.footer_state().status
 
 
-def test_spritesheet_directory_reports_single_png_guidance(qtbot: object, tmp_path: Path) -> None:
+def test_spritesheet_directory_reports_single_image_guidance(qtbot: object, tmp_path: Path) -> None:
     source = tmp_path / "spritesheet-folder"
     source.mkdir()
     _spritesheet(source / "cat.png")
@@ -295,7 +329,7 @@ def test_spritesheet_directory_reports_single_png_guidance(qtbot: object, tmp_pa
     page.load_source(source)
 
     assert page.current_step() is PetImportStep.SOURCE
-    assert "导入宠物页面的 PNG 精灵图" in page.footer_state().status
+    assert "PNG / WebP 精灵图" in page.footer_state().status
 
 
 def test_late_spritesheet_commit_error_restores_existing_png_draft(

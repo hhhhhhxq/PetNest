@@ -93,7 +93,7 @@ python tools/validate_pet.py pets/sample_pet
 python tools/create_sample_pet.py pets/sample_pet
 python tools/preview_animation.py pets/sample_pet idle
 python tools/normalize_frames.py input_frames output_frames --width 256 --height 256 --align bottom --dry-run
-python tools/import_spritesheet.py path/to/spritesheet.png --pet-id my_codex_pet
+python tools/import_spritesheet.py path/to/spritesheet.webp --pet-id my_codex_pet
 ```
 
 `normalize_frames.py` 默认输出到新目录并连续编号，保留透明背景，不覆盖源帧。`preview_animation.py` 仅打开动作预览窗口，不启动完整桌宠。
@@ -162,8 +162,8 @@ PetNest 的运行时始终读取 PNG 序列帧。为了方便使用现有素材�
 
 ### 支持规则
 
-- 只读取本机通过文件选择器或命令行指定的 PNG，不会上传、联网或复制到包目录以外的位置。
-- 输入必须是原始透明 PNG，尺寸固定为 `1536 × 1872`，即 `8` 列 × `9` 行、每格 `192 × 208` 像素。
+- 只读取本机通过文件选择器或命令行指定的 PNG 或静态 WebP，不会上传、联网或复制到包目录以外的位置。
+- 输入必须是原始透明 PNG 或静态 WebP，尺寸固定为 `1536 × 1872`，即 `8` 列 × `9` 行、每格 `192 × 208` 像素；动画 WebP 会被明确拒绝。
 - 输入必须具有 alpha 通道。不要使用聊天截图、拼贴图、缩放后的图片或 JPG。
 - 导入默认不覆盖同 ID 的已有宠物包；请改用新 ID，或先手动备份并移除旧包。
 
@@ -185,7 +185,7 @@ PetNest 的运行时始终读取 PNG 序列帧。为了方便使用现有素材�
 
 ### 从桌面界面导入
 
-在系统托盘中右键 PetNest 图标，选择「导入精灵图…」。对话框会先显示上面的本地文件、尺寸和默认映射规则。选择 PNG、填写小写宠物 ID（例如 `codex_cat`）后，选择一种导入方式：
+在系统托盘中右键 PetNest 图标，选择「导入精灵图…」。对话框会先显示上面的本地文件、尺寸和默认映射规则。选择 PNG 或静态 WebP、填写小写宠物 ID（例如 `codex_cat`）后，选择一种导入方式：
 
 - **自动跳过无内容帧**（默认）：扫描每个格位的 alpha 像素，按从左到右的顺序导入所有非空格位；不会修改原图。
 - **手动选择所需帧**：选择左侧动作后显示该行缩略图；有内容的格位会预选，也可以手动保留透明格位作为停顿帧。
@@ -219,6 +219,7 @@ PetNest 会重新扫描并自动切换到这个宠物。
 
 ```powershell
 python tools/import_spritesheet.py "C:\\assets\\codex-cat.png" --pet-id codex_cat --name "Codex Cat"
+python tools/import_spritesheet.py "C:\\assets\\codex-cat.webp" --pet-id codex_webp_cat --name "Codex WebP Cat"
 python tools/validate_pet.py pets/codex_cat
 ```
 

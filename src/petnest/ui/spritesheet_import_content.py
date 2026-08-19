@@ -71,7 +71,7 @@ class SpriteGridHint(QFrame):
 
 
 class SourceDropZone(QFrame):
-    """接收本地 PNG 文件，并将路径交给导入表单。"""
+    """接收本地 PNG/WebP 文件，并将路径交给导入表单。"""
 
     file_dropped = Signal(str)
 
@@ -80,23 +80,23 @@ class SourceDropZone(QFrame):
         self.setAcceptDrops(True)
 
     @staticmethod
-    def _png_path(event: QDragEnterEvent | QDropEvent) -> str | None:
+    def _image_path(event: QDragEnterEvent | QDropEvent) -> str | None:
         urls = event.mimeData().urls()
         if not urls:
             return None
         path = urls[0].toLocalFile()
-        if not path or Path(path).suffix.lower() != ".png" or not Path(path).is_file():
+        if not path or Path(path).suffix.lower() not in {".png", ".webp"} or not Path(path).is_file():
             return None
         return path
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
-        if self._png_path(event) is not None:
+        if self._image_path(event) is not None:
             event.acceptProposedAction()
             return
         event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt 覆盖名。
-        path = self._png_path(event)
+        path = self._image_path(event)
         if path is None:
             event.ignore()
             return
@@ -156,7 +156,7 @@ class SpriteSheetImportContent(QWidget):
         source_title = QLabel("选择精灵图", self.source_card)
         source_title.setStyleSheet("font-size: 17px; font-weight: 700;")
         source_layout.addWidget(source_title)
-        source_description = QLabel("从本机选择一张透明 PNG 文件", self.source_card)
+        source_description = QLabel("从本机选择一张透明 PNG 或静态 WebP 文件", self.source_card)
         source_description.setObjectName("mutedLabel")
         source_layout.addWidget(source_description)
         self.source_dropzone = SourceDropZone(self.source_card)
@@ -164,7 +164,7 @@ class SpriteSheetImportContent(QWidget):
         dropzone_layout = QVBoxLayout(self.source_dropzone)
         dropzone_layout.setContentsMargins(16, 14, 16, 14)
         dropzone_layout.setSpacing(6)
-        drop_title = QLabel("拖放 PNG 到这里", self.source_dropzone)
+        drop_title = QLabel("拖放 PNG / WebP 到这里", self.source_dropzone)
         drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         drop_title.setStyleSheet("color: #B07962; font-size: 15px; font-weight: 700;")
         dropzone_layout.addWidget(drop_title)
@@ -174,7 +174,7 @@ class SpriteSheetImportContent(QWidget):
         drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         dropzone_layout.addWidget(drop_hint)
         self.source_input = QLineEdit(self.source_card)
-        self.source_input.setPlaceholderText("选择本地 PNG 精灵图")
+        self.source_input.setPlaceholderText("选择本地 PNG 或 WebP 精灵图")
         self.source_dropzone.file_dropped.connect(self.source_input.setText)
         self.source_input.textChanged.connect(self._suggest_pet_id)
         self.source_input.textChanged.connect(self._inspect_source)
@@ -184,7 +184,8 @@ class SpriteSheetImportContent(QWidget):
         dropzone_layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
         source_layout.addWidget(self.source_dropzone)
         self.rules_label = QLabel(
-            "仅读取本机文件，不上传或联网。透明 PNG：1536 × 1872 像素、8 列 × 9 行、每格 192 × 208。\n"
+            "仅读取本机文件，不上传或联网。透明 PNG 或静态 WebP：1536 × 1872 像素、"
+            "8 列 × 9 行、每格 192 × 208。\n"
             "默认映射：running-right → drag；waving → click；jumping → hover；failed → error；"
             "waiting → waiting；running → working；review → review。\n"
             "自动模式会跳过无内容格位。"
@@ -328,8 +329,13 @@ class SpriteSheetImportContent(QWidget):
         )
 
     def choose_source(self) -> None:
-        """只允许用户通过标准本地文件选择器选择 PNG。"""
-        selected, _ = QFileDialog.getOpenFileName(self, "选择 Codex 精灵图", str(Path.home()), "PNG 图像 (*.png)")
+        """允许用户通过标准本地文件选择器选择 PNG 或静态 WebP。"""
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择 Codex 精灵图",
+            str(Path.home()),
+            "精灵图 (*.png *.webp)",
+        )
         if selected:
             self.set_source(Path(selected))
 
@@ -338,7 +344,7 @@ class SpriteSheetImportContent(QWidget):
         source_text = self.source_input.text().strip()
         identifier = self.pet_id_input.text().strip()
         if not source_text or not identifier:
-            self._set_error("请选择 PNG 文件并填写宠物 ID。")
+            self._set_error("请选择 PNG 或 WebP 文件并填写宠物 ID。")
             return None
         try:
             result = self._importer.import_file(

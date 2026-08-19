@@ -252,7 +252,7 @@ class PetImportPage(ExchangePage):
         snapshot = self._snapshot_state()
         had_draft = self._has_source_or_draft()
         try:
-            if path.is_file() and path.suffix.casefold() == ".png":
+            if path.is_file() and path.suffix.casefold() in {".png", ".webp"}:
                 candidate = self._inspect_spritesheet(path)
             else:
                 candidate = self._inspect_package(path)
@@ -283,7 +283,7 @@ class PetImportPage(ExchangePage):
 
     def _inspect_spritesheet(self, path: Path) -> _SourceCandidate:
         if not path.is_file():
-            raise ValueError(f"PNG 文件不存在：{path}")
+            raise ValueError(f"精灵图文件不存在：{path}")
         SpriteSheetImporter().inspect(path)
         return _SourceCandidate(path, SourceKind.SPRITESHEET)
 
@@ -334,7 +334,7 @@ class PetImportPage(ExchangePage):
         self._source_kind = candidate.kind
         if candidate.kind is SourceKind.SPRITESHEET:
             self._set_spritesheet_source(candidate.path, inspection)
-            self.source_kind_label.setText("PNG 精灵图")
+            self.source_kind_label.setText("PNG / WebP 精灵图")
             self.configure_stack.setCurrentWidget(self.spritesheet_content)
             self._set_step(PetImportStep.CONFIGURE)
             return
@@ -492,7 +492,7 @@ class PetImportPage(ExchangePage):
             identifier = self.spritesheet_content.pet_id_input.text().strip()
             inspection = self.spritesheet_content._inspection
             if not source_text or not identifier or inspection is None:
-                self._show_current_error("请选择有效 PNG 文件并填写宠物 ID。")
+                self._show_current_error("请选择有效 PNG 或 WebP 文件并填写宠物 ID。")
                 return
             if not _PET_ID_PATTERN.fullmatch(identifier):
                 self._show_current_error("宠物 ID 必须以小写字母开头，只能包含小写字母、数字、- 或 _。")
@@ -510,7 +510,7 @@ class PetImportPage(ExchangePage):
                 mode = "自动跳过空帧"
             name = self.spritesheet_content.name_input.text().strip() or identifier
             self.review_summary_label.setText(
-                f"来源：{self._source_path}\n识别类型：PNG 精灵图\n目标：{name}（{identifier}）\n"
+                f"来源：{self._source_path}\n识别类型：PNG / WebP 精灵图\n目标：{name}（{identifier}）\n"
                 f"有效帧：{frame_count} · {mode}\n策略：新增宠物，不覆盖现有目录"
             )
         else:
@@ -624,7 +624,7 @@ class PetImportPage(ExchangePage):
             self,
             "选择宠物来源",
             str(Path.home()),
-            "支持的文件 (*.png *.zip);;PNG 精灵图 (*.png);;ZIP 宠物包 (*.zip)",
+            "支持的文件 (*.png *.webp *.zip);;PNG / WebP 精灵图 (*.png *.webp);;ZIP 宠物包 (*.zip)",
         )
         if selected:
             self.replace_source(Path(selected))
@@ -650,7 +650,7 @@ def _non_pet_source_guidance(kind: SourceKind) -> str:
     return {
         SourceKind.ACTION_PACK: "这是动作包，请使用动作导入页面。",
         SourceKind.LEGACY_WORK_FINISH: "这是旧版下班动画包，请使用动作导入页面（旧版下班动画）。",
-        SourceKind.SPRITESHEET: "这是 PNG 精灵图，请在导入宠物页面的 PNG 精灵图入口选择单个 PNG 文件。",
+        SourceKind.SPRITESHEET: "这是 PNG / WebP 精灵图，请在导入宠物页面选择单个 PNG 或 WebP 文件。",
     }[kind]
 
 

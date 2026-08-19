@@ -1,4 +1,4 @@
-"""将 Codex 标准 `1536 × 1872` 透明 PNG 图集导入为 PetNest 宠物包。"""
+"""将 Codex 标准 `1536 × 1872` 透明 PNG/WebP 图集导入为 PetNest 宠物包。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from petnest.core.spritesheet_importer import SpriteSheetImportError, SpriteShee
 
 def main(arguments: list[str] | None = None) -> int:
     """解析本地导入参数；失败时不创建不完整的目标宠物包。"""
-    parser = argparse.ArgumentParser(description="导入 Codex 8×9 透明 PNG 精灵图到 PetNest")
-    parser.add_argument("source", type=Path, help="1536×1872 RGBA PNG 精灵图")
+    parser = argparse.ArgumentParser(description="导入 Codex 8×9 透明 PNG/静态 WebP 精灵图到 PetNest")
+    parser.add_argument("source", type=Path, help="1536×1872 RGBA PNG 或静态 WebP 精灵图")
     parser.add_argument("--pets-root", type=Path, default=PROJECT_ROOT / "pets", help="宠物包输出目录")
     parser.add_argument("--pet-id", required=True, help="小写宠物 ID，例如 codex_cat")
     parser.add_argument("--name", help="显示名称；默认使用 pet-id")

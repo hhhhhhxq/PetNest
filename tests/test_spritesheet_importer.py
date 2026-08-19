@@ -24,7 +24,10 @@ def _spritesheet(path: Path) -> Path:
                 (column * CODEX_STANDARD_LAYOUT.cell_width, row * CODEX_STANDARD_LAYOUT.cell_height),
                 (row * 20, column * 20, 100, 255),
             )
-    image.save(path)
+    if path.suffix.lower() == ".webp":
+        image.save(path, format="WEBP", lossless=True)
+    else:
+        image.save(path)
     return path
 
 
@@ -58,6 +61,37 @@ def test_importer_splits_all_rows_and_generates_a_valid_configured_package(tmp_p
     assert package.fallbacks["review"] == ("idle",)
     assert package.fallbacks["sleep"] == ("idle",)
     assert (result.package_root / "animations" / "codex_running_left" / "008.png").is_file()
+
+
+def test_importer_accepts_a_static_webp_spritesheet(tmp_path: Path) -> None:
+    source = _spritesheet(tmp_path / "codex-cat.webp")
+
+    result = SpriteSheetImporter().import_file(source, tmp_path / "pets", "webp_cat")
+
+    package = PackageLoader().load(result.package_root)
+    assert result.inspection.source == source.resolve()
+    assert len(package.animations["idle"].frames) == 8
+    assert all(frame.suffix == ".png" for frame in package.animations["idle"].frames)
+
+
+def test_importer_rejects_an_animated_webp_spritesheet(tmp_path: Path) -> None:
+    source = tmp_path / "animated.webp"
+    frames = [
+        Image.new("RGBA", (16, 16), (255, 0, 0, 255)),
+        Image.new("RGBA", (16, 16), (0, 0, 255, 255)),
+    ]
+    frames[0].save(
+        source,
+        format="WEBP",
+        save_all=True,
+        append_images=frames[1:],
+        duration=100,
+        loop=0,
+        lossless=True,
+    )
+
+    with pytest.raises(SpriteSheetImportError, match="动画 WebP"):
+        SpriteSheetImporter().inspect(source)
 
 
 def test_importer_rejects_a_nonstandard_or_nontransparent_image(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QDialog, QWidget
+from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 
 from petnest.ui.spritesheet_import_content import SpriteSheetImportContent
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
@@ -77,3 +77,24 @@ def test_hidden_source_picker_keeps_programmatic_inspection_chain(qtbot: object,
     content.set_source(source)
 
     assert content.action_list.count() == 9
+
+
+def test_source_picker_offers_png_and_webp(
+    qtbot: object,
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    host = QWidget()
+    qtbot.addWidget(host)
+    content = SpriteSheetImportContent(tmp_path / "pets", show_source_picker=True, parent=host)
+    filters: list[str] = []
+
+    def fake_picker(*args: object) -> tuple[str, str]:
+        filters.append(str(args[-1]))
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", fake_picker)
+
+    content.choose_source()
+
+    assert filters == ["精灵图 (*.png *.webp)"]

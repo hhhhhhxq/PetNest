@@ -24,6 +24,7 @@ def test_dialog_explains_local_only_format_and_default_mapping(qtbot: object, tm
     rules = dialog.rules_label.text()
     assert "不上传" in rules
     assert "1536 × 1872" in rules
+    assert "WebP" in rules
     assert "running-right → drag" in rules
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "stepBar") is not None
@@ -134,6 +135,26 @@ def test_dialog_accepts_a_local_png_dropped_on_the_source_zone(qtbot: object, tm
     assert Path(dialog.source_input.text()).resolve() == source.resolve()
 
 
+def test_dialog_accepts_a_local_webp_dropped_on_the_source_zone(qtbot: object, tmp_path: Path) -> None:
+    source = _spritesheet(tmp_path / "dropped.webp")
+    dialog = SpriteSheetImportDialog(tmp_path / "pets")
+    qtbot.addWidget(dialog)
+
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(source))])
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    dialog.source_dropzone.show()
+    dialog.source_dropzone.dropEvent(event)
+
+    assert Path(dialog.source_input.text()).resolve() == source.resolve()
+
+
 def test_dialog_warns_without_accepting_when_required_fields_are_missing(
     qtbot: object, tmp_path: Path, monkeypatch: object
 ) -> None:
@@ -149,7 +170,7 @@ def test_dialog_warns_without_accepting_when_required_fields_are_missing(
 
     dialog.import_selected()
 
-    assert warnings == [("无法导入", "请选择 PNG 文件并填写宠物 ID。")]
+    assert warnings == [("无法导入", "请选择 PNG 或 WebP 文件并填写宠物 ID。")]
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.pet_id_input.text() == "draft_cat"
 
@@ -174,7 +195,7 @@ def test_dialog_warns_and_preserves_form_when_importer_rejects_png(
 
     assert len(warnings) == 1
     assert warnings[0][0] == "无法导入"
-    assert "无法读取 PNG 精灵图" in warnings[0][1]
+    assert "无法读取精灵图" in warnings[0][1]
     assert dialog.result() != QDialog.DialogCode.Accepted
     assert dialog.source_input.text() == str(source)
     assert dialog.pet_id_input.text() == "invalid_cat"

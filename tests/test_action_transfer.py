@@ -67,11 +67,20 @@ def test_detects_manifest_type(tmp_path: Path, marker: str, kind: SourceKind) ->
     assert detect_source_kind(root) is kind
 
 
-def test_detects_png_as_spritesheet(tmp_path: Path) -> None:
-    source = tmp_path / "pet.png"
+@pytest.mark.parametrize("suffix", [".png", ".webp"])
+def test_detects_supported_image_as_spritesheet(tmp_path: Path, suffix: str) -> None:
+    source = tmp_path / f"pet{suffix}"
     write_png(source)
 
     assert detect_source_kind(source) is SourceKind.SPRITESHEET
+
+
+def test_detects_directory_with_one_webp_as_spritesheet(tmp_path: Path) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    write_png(root / "pet.webp")
+
+    assert detect_source_kind(root) is SourceKind.SPRITESHEET
 
 
 def test_rejects_ambiguous_source(tmp_path: Path) -> None:
