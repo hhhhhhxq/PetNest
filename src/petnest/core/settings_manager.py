@@ -204,6 +204,12 @@ class SettingsManager:
             version = 22
         if version == 22:
             migrated.setdefault("lan_alert_group_joined", False)
+            migrated["schema_version"] = 23
+            version = 23
+        if version == 23:
+            migrated.setdefault("codex_link_enabled", False)
+            migrated.setdefault("codex_link_show_attention_bubbles", True)
+            migrated.setdefault("codex_link_show_review_bubbles", True)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

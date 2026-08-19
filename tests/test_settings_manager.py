@@ -220,7 +220,7 @@ def test_alert_group_membership_round_trips_and_migrates(tmp_path) -> None:
 
     path.write_text(json.dumps({"schema_version": 22}), encoding="utf-8")
     migrated = manager.load()
-    assert migrated.schema_version == 23
+    assert migrated.schema_version == Settings.SCHEMA_VERSION
     assert migrated.lan_alert_group_joined is False
 
     path.write_text(
@@ -229,8 +229,53 @@ def test_alert_group_membership_round_trips_and_migrates(tmp_path) -> None:
     )
     assert manager.load().lan_alert_group_joined is True
 
-    path.write_text(json.dumps({"schema_version": 24}), encoding="utf-8")
+    path.write_text(json.dumps({"schema_version": Settings.SCHEMA_VERSION + 1}), encoding="utf-8")
     assert manager.load() == Settings()
+
+
+def test_schema_23_adds_codex_link_preferences_with_safe_defaults(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 23, "scale": 1.25}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
+    assert loaded.scale == 1.25
+    assert loaded.codex_link_enabled is False
+    assert loaded.codex_link_show_attention_bubbles is True
+    assert loaded.codex_link_show_review_bubbles is True
+
+
+def test_codex_link_preferences_round_trip_and_reject_non_booleans(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    manager = SettingsManager(path)
+    manager.save(
+        Settings(
+            codex_link_enabled=True,
+            codex_link_show_attention_bubbles=False,
+            codex_link_show_review_bubbles=False,
+        )
+    )
+
+    loaded = manager.load()
+    assert (
+        loaded.codex_link_enabled,
+        loaded.codex_link_show_attention_bubbles,
+        loaded.codex_link_show_review_bubbles,
+    ) == (True, False, False)
+
+    malformed = Settings.from_dict(
+        {
+            "codex_link_enabled": "yes",
+            "codex_link_show_attention_bubbles": 1,
+            "codex_link_show_review_bubbles": None,
+        }
+    )
+    assert (
+        malformed.codex_link_enabled,
+        malformed.codex_link_show_attention_bubbles,
+        malformed.codex_link_show_review_bubbles,
+    ) == (False, True, True)
 
 
 def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:
