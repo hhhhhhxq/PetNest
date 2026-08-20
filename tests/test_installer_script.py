@@ -25,7 +25,6 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "PrivilegesRequired=admin" in contents
     assert "OutputBaseFilename=PetNest-Setup-{#AppVersion}" in contents
     assert "--set-pets-root" in contents
-    assert 'pets\\sample_pet;pets\\sample_pet' not in build_script
     assert "src\\petnest_launcher.py" in build_script
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
     assert "--name PetNestUpdateHost" in build_script
@@ -37,6 +36,12 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "Source: \"..\\dist\\PetNestUpdateHost.exe\"" in contents
     assert "Source: \"..\\dist\\PetNestUpdater.exe\"" not in contents
     assert "skipifsilent" in contents
+
+
+def test_windows_build_bundles_sample_pet_for_runtime_recovery() -> None:
+    build_script = Path("build_windows.bat").read_text(encoding="utf-8")
+
+    assert '--add-data pets\\sample_pet;pets\\sample_pet' in build_script
 
 
 def test_release_version_is_consistent_across_python_and_installer() -> None:

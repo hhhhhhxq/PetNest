@@ -5,7 +5,7 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 call .venv\Scripts\activate.bat
-set "RESOURCE_DATA=--add-data assets;assets"
+set "RESOURCE_DATA=--add-data assets;assets --add-data pets\sample_pet;pets\sample_pet"
 if exist "effects" set "RESOURCE_DATA=%RESOURCE_DATA% --add-data effects;effects"
 if defined PETNEST_FIREBASE_CONFIG if not exist "%PETNEST_FIREBASE_CONFIG%" (
   echo PETNEST_FIREBASE_CONFIG does not point to a readable file.
