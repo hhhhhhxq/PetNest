@@ -68,9 +68,9 @@ def test_new_file_maps_started_complete_and_aborted_without_content(tmp_path: Pa
     assert [event.payload["hook_event_name"] for event in events] == [
         "UserPromptSubmit",
         "Stop",
-        "PostToolUse",
+        "TurnAborted",
     ]
-    assert events[-1].payload["tool_failed"] is True
+    assert "tool_failed" not in events[-1].payload
     assert "prompt" not in events[0].payload
     assert "last_agent_message" not in events[1].payload
     assert "reason" not in events[2].payload

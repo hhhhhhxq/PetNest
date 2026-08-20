@@ -256,6 +256,30 @@ def test_duplicate_log_and_hook_stop_do_not_replay_review() -> None:
     assert len(snapshots) == 2
 
 
+def test_log_turn_aborted_clears_current_turn_without_failure_bubble() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_log("UserPromptSubmit", turn="turn-1"))
+
+    assert coordinator.consume(_log("TurnAborted", turn="turn-1"))
+
+    assert coordinator.snapshot.state == "idle"
+    assert [event.event_name for event in published] == ["agent.working", "agent.idle"]
+
+
+def test_new_turn_replaces_old_review_in_the_same_session() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator.consume(_log("UserPromptSubmit", turn="turn-1"))
+    coordinator.consume(_log("Stop", turn="turn-1"))
+    assert coordinator.snapshot.unread_review_count == 1
+
+    coordinator.consume(_log("UserPromptSubmit", turn="turn-2"))
+
+    assert coordinator.snapshot.state == "running"
+    assert coordinator.snapshot.count == 1
+    assert coordinator.snapshot.unread_review_count == 0
+
+
 def test_tool_failure_is_temporary_and_later_activity_restores_running() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)

@@ -177,8 +177,7 @@ class CodexSessionLogWatcher:
             sanitized["hook_event_name"] = "Stop"
             sanitized["stop_hook_active"] = False
         elif event_name == "turn_aborted":
-            sanitized["hook_event_name"] = "PostToolUse"
-            sanitized["tool_failed"] = True
+            sanitized["hook_event_name"] = "TurnAborted"
         else:
             return None
         return PetEvent("codex.hook", source="codex-log", payload=sanitized)

@@ -107,7 +107,17 @@ class CodexLinkCoordinator:
         hook_name = payload.get("hook_event_name")
         session_id = _bounded_identifier(payload.get("session_id"))
         turn_id = _bounded_identifier(payload.get("turn_id"))
-        if hook_name not in CODEX_HOOK_EVENTS or session_id is None:
+        if session_id is None:
+            return False
+        if hook_name == "TurnAborted" and event.source == "codex-log":
+            active_turn = turn_id or self._active_turns.get(session_id) or "__session__"
+            removed = self._tasks.pop((session_id, active_turn), None) is not None
+            if self._active_turns.get(session_id) == active_turn:
+                self._active_turns.pop(session_id, None)
+            if removed:
+                self._emit_snapshot()
+            return removed
+        if hook_name not in CODEX_HOOK_EVENTS:
             return False
         if hook_name == "SessionStart":
             return True
@@ -124,6 +134,10 @@ class CodexLinkCoordinator:
         provisional_key = (session_id, "__session__")
         if turn_id is not None:
             key = (session_id, turn_id)
+            if hook_name == "UserPromptSubmit":
+                for old_key in tuple(self._tasks):
+                    if old_key[0] == session_id and old_key not in {key, provisional_key}:
+                        del self._tasks[old_key]
             provisional = self._tasks.pop(provisional_key, None)
             if provisional is not None and key not in self._tasks:
                 self._tasks[key] = provisional

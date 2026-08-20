@@ -32,7 +32,7 @@
 | --- | --- | --- |
 | `event_msg.task_started` | `UserPromptSubmit` | working |
 | `event_msg.task_complete` | `Stop` | review |
-| `event_msg.turn_aborted` | `PostToolUse(tool_failed=true)` | failed（明确中断） |
+| `event_msg.turn_aborted` | `TurnAborted` | 清理当前 turn 并恢复上下文；中断不等同失败 |
 
 若未来版本更名但仍能识别基础事件，使用版本适配表；未知版本保守使用上述核心事件。连 `session_meta`、`event_msg` 或 turn ID 都无法识别时进入“不兼容”，不猜测。
 
@@ -43,7 +43,7 @@
 - JSONL task_started 可立即触发 working，不等待 Hook 超时；
 - 同 turn 后续 Hook 事件到达后标记为“官方 Hook”，并允许 waiting/failed 覆盖；
 - 只有 JSONL 事件时标记为“本地日志回退”；
-- task_complete/turn_aborted 结束对应 turn；
+- task_complete 进入 review；turn_aborted 只结束对应 turn，不显示失败气泡；
 - 应用关闭、联动关闭或日志源不可用时清空 watcher 状态并恢复上下文。
 
 因为 JSONL 与 Hook 都可能到达，协调器必须用 session/turn 去重，禁止产生两个并行任务或重复播放 review。
@@ -105,7 +105,7 @@ Hook 不再是主流程前置条件。折叠卡显示：
 ## 验收标准
 
 - 开启联动并保存后，无 Hook 也能在 500ms 内由新 task_started 驱动 working；
-- task_complete 驱动 review，turn_aborted 驱动明确失败状态；
+- task_complete 驱动 review，turn_aborted 清理当前状态并恢复 idle；
 - 启用时不重放历史会话；
 - 半行、损坏行、文件截断、跨午夜、多会话并发不会崩溃或重复动画；
 - Hook 与 JSONL 同时到达时每个 turn 只有一个聚合状态；

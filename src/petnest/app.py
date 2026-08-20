@@ -935,7 +935,6 @@ class PetNest:
     def _activate_codex_status(self) -> None:
         self.codex_link.mark_reviews_read()
         self.window.clear_codex_status()
-        _bring_codex_window_to_front()
 
     def _dismiss_codex_status(self) -> None:
         self.codex_link.mark_reviews_read()

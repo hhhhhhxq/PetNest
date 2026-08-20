@@ -1292,6 +1292,33 @@ def test_codex_log_fallback_does_not_scan_in_hook_only_mode(qtbot: pytest.QtBot,
     application.shutdown()
 
 
+def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activation(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr("petnest.app._bring_codex_window_to_front", lambda: calls.append(True) or True)
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.codex_link.consume(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"},
+        )
+    )
+
+    application._activate_codex_status()
+
+    assert application.codex_link.snapshot.unread_review_count == 0
+    assert calls == []
+    application.shutdown()
+
+
 def test_tray_quit_still_hides_window_when_cleanup_fails(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication([])
     del app
