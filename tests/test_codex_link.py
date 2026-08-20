@@ -181,6 +181,16 @@ def _hook(event_name: str, session: str = "s1", turn: str | None = "t1", **paylo
     return PetEvent("codex.hook", source="codex-hook", payload=values)
 
 
+def _log(event_name: str, session: str = "s1", turn: str = "t1", **payload: object) -> PetEvent:
+    values: dict[str, object] = {
+        "hook_event_name": event_name,
+        "session_id": session,
+        "turn_id": turn,
+        **payload,
+    }
+    return PetEvent("codex.hook", source="codex-log", payload=values)
+
+
 def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
     published: list[PetEvent] = []
     snapshots = []
@@ -217,6 +227,33 @@ def test_coordinator_uses_session_when_codex_omits_turn_id() -> None:
     assert coordinator.consume(_hook("Stop", turn=None))
     assert coordinator.snapshot.state == "review"
     assert published[-1].event_name == "agent.success"
+
+
+def test_log_turn_and_hook_without_turn_are_merged_into_one_task() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+
+    assert coordinator.consume(_log("UserPromptSubmit"))
+    assert coordinator.snapshot.state == "running"
+
+    assert coordinator.consume(_hook("PermissionRequest", turn=None))
+    assert coordinator.snapshot.state == "waiting"
+    assert coordinator.snapshot.count == 1
+    assert [event.event_name for event in published] == ["agent.working", "agent.waiting"]
+
+
+def test_duplicate_log_and_hook_stop_do_not_replay_review() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+    coordinator.consume(_log("UserPromptSubmit"))
+
+    coordinator.consume(_log("Stop"))
+    coordinator.consume(_hook("Stop", turn=None))
+
+    assert coordinator.snapshot.state == "review"
+    assert [event.event_name for event in published] == ["agent.working", "agent.success"]
+    assert len(snapshots) == 2
 
 
 def test_tool_failure_is_temporary_and_later_activity_restores_running() -> None:

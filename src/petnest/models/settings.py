@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 24
+    SCHEMA_VERSION = 25
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -54,6 +54,7 @@ class Settings:
     codex_link_enabled: bool = False
     codex_link_show_attention_bubbles: bool = True
     codex_link_show_review_bubbles: bool = True
+    codex_link_log_fallback_enabled: bool = True
     remote_interaction_enabled: bool = True
     system_idle_enabled: bool = True
     system_idle_seconds: int = 300
@@ -114,6 +115,7 @@ class Settings:
             ("codex_link_enabled", False),
             ("codex_link_show_attention_bubbles", True),
             ("codex_link_show_review_bubbles", True),
+            ("codex_link_log_fallback_enabled", True),
         ):
             if not isinstance(values.get(name, default), bool):
                 values[name] = default

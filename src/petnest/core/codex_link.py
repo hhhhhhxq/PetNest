@@ -92,6 +92,7 @@ class CodexLinkCoordinator:
         self._publish = publish
         self._snapshot_changed = snapshot_changed
         self._tasks: dict[tuple[str, str], _CodexTask] = {}
+        self._active_turns: dict[str, str] = {}
         self._snapshot = CodexLinkSnapshot()
 
     @property
@@ -100,7 +101,7 @@ class CodexLinkCoordinator:
 
     def consume(self, event: "PetEvent") -> bool:
         """处理一条已鉴权事件；无效来源和缺失标识不会改变状态。"""
-        if event.event_name != "codex.hook" or event.source != "codex-hook":
+        if event.event_name != "codex.hook" or event.source not in {"codex-hook", "codex-log"}:
             return False
         payload = event.payload
         hook_name = payload.get("hook_event_name")
@@ -117,12 +118,26 @@ class CodexLinkCoordinator:
                     removed = True
                     del self._tasks[key]
             if removed:
+                self._active_turns.pop(session_id, None)
                 self._emit_snapshot()
             return removed
-        # Codex Desktop 0.147 的 lifecycle Hook 负载只有 session_id，
-        # 不保证提供 turn_id。缺失时按会话聚合；下一轮 running 事件仍会
-        # 覆盖同一会话先前的 review/failed，不会产生永久脏状态。
-        key = (session_id, turn_id or "__session__")
+        provisional_key = (session_id, "__session__")
+        if turn_id is not None:
+            key = (session_id, turn_id)
+            provisional = self._tasks.pop(provisional_key, None)
+            if provisional is not None and key not in self._tasks:
+                self._tasks[key] = provisional
+            self._active_turns[session_id] = turn_id
+        else:
+            active_turn = self._active_turns.get(session_id)
+            active_task = self._tasks.get((session_id, active_turn)) if active_turn is not None else None
+            # 新一轮 UserPromptSubmit 可能早于 JSONL task_started。上一轮已
+            # review 时先放进 provisional，日志 turn 到达后再迁移；若日志
+            # 已先标记 running，则直接复用真实 turn，避免重复任务。
+            if hook_name == "UserPromptSubmit" and (active_task is None or active_task.state != "running"):
+                key = provisional_key
+            else:
+                key = (session_id, active_turn or "__session__")
         if hook_name == "Stop" and payload.get("stop_hook_active") is True:
             return False
         if hook_name == "Stop":
@@ -152,6 +167,7 @@ class CodexLinkCoordinator:
         if not self._tasks and self._snapshot.state == "idle":
             return
         self._tasks.clear()
+        self._active_turns.clear()
         self._emit_snapshot()
 
     def _emit_snapshot(self, *, publish_pet_event: bool = True) -> None:
@@ -213,7 +229,7 @@ class CodexHookManager:
         token = self._read_metadata().token if self.metadata_path.exists() else None
         return CodexHookStatus(
             "installed",
-            "Hook 已安装；首次使用请在 Codex /hooks 中确认信任",
+            "Hook 已安装；如需精确联动，请在 Codex 设置 → 钩子 → 用户配置中审核",
             True,
             token,
         )
@@ -239,7 +255,7 @@ class CodexHookManager:
         self._write_hooks(document)
         return CodexHookStatus(
             "installed",
-            "Hook 已安装；请在 Codex /hooks 中检查并信任 PetNest Hook",
+            "Hook 已安装；请在 Codex 设置 → 钩子 → 用户配置中检查并信任",
             True,
             metadata.token,
         )

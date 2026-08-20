@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from petnest.core.codex_link import CodexHookStatus
+from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
 
@@ -41,8 +42,11 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
             codex_link_enabled=False,
             codex_link_show_attention_bubbles=False,
             codex_link_show_review_bubbles=True,
+            codex_link_log_fallback_enabled=True,
         ),
         codex_hook_status=CodexHookStatus("missing", "尚未安装", False),
+        codex_link_source="log",
+        codex_log_status=CodexLogSourceStatus("active", "已联动 · 本地日志回退"),
         codex_action_availability={
             "working": "working",
             "waiting": "idle（回退）",
@@ -55,6 +59,8 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
 
     assert dialog.section_list.currentRow() == 3
     assert dialog.page_title.text() == "Codex 联动"
+    assert "开启并保存后即可使用" in dialog.codex_link_explanation_label.text()
+    assert "本地日志回退" in dialog.codex_link_runtime_label.text()
     assert not dialog.codex_attention_bubbles_input.isEnabled()
     assert dialog.codex_review_bubbles_input.isChecked()
     assert "idle（回退）" in dialog.codex_action_status_labels["waiting"].text()
@@ -62,10 +68,45 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
     dialog.codex_link_enabled_input.setChecked(True)
     dialog.codex_attention_bubbles_input.setChecked(True)
     dialog.codex_review_bubbles_input.setChecked(False)
+    dialog.codex_log_fallback_input.setChecked(False)
     updated = dialog.updated_settings()
     assert updated.codex_link_enabled is True
     assert updated.codex_link_show_attention_bubbles is True
     assert updated.codex_link_show_review_bubbles is False
+    assert updated.codex_link_log_fallback_enabled is False
+
+
+def test_codex_link_page_treats_hook_as_optional_advanced_enhancement(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="codex_link")
+    qtbot.addWidget(dialog)
+
+    all_text = "\n".join(label.text() for label in dialog.findChildren(__import__("PySide6").QtWidgets.QLabel))
+    assert "Codex 设置 → 钩子 → 用户配置" in all_text
+    assert "/hooks" not in all_text
+    assert "可选" in dialog.codex_hook_details_button.text()
+    assert dialog.codex_hook_details_panel.isHidden()
+
+    dialog.codex_hook_details_button.click()
+    assert not dialog.codex_hook_details_panel.isHidden()
+
+
+def test_codex_link_diagnostic_and_animation_buttons_use_explicit_callbacks(qtbot) -> None:
+    calls: list[str] = []
+    dialog = SettingsDialog(
+        Settings(),
+        on_test_codex_animation=lambda: calls.append("animation") or "已播放本地测试",
+        on_diagnose_codex_link=lambda: calls.append("diagnose") or "当前使用本地日志回退",
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    qtbot.mouseClick(dialog.codex_animation_test_button, Qt.MouseButton.LeftButton)
+    assert calls == ["animation"]
+    assert dialog.codex_diagnostic_result_label.text() == "已播放本地测试"
+
+    qtbot.mouseClick(dialog.codex_diagnose_button, Qt.MouseButton.LeftButton)
+    assert calls == ["animation", "diagnose"]
+    assert dialog.codex_diagnostic_result_label.text() == "当前使用本地日志回退"
 
 
 def test_codex_hook_buttons_refresh_status_in_place(qtbot) -> None:

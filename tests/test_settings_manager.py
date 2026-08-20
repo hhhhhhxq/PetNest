@@ -254,6 +254,7 @@ def test_codex_link_preferences_round_trip_and_reject_non_booleans(tmp_path) -> 
             codex_link_enabled=True,
             codex_link_show_attention_bubbles=False,
             codex_link_show_review_bubbles=False,
+            codex_link_log_fallback_enabled=False,
         )
     )
 
@@ -262,20 +263,34 @@ def test_codex_link_preferences_round_trip_and_reject_non_booleans(tmp_path) -> 
         loaded.codex_link_enabled,
         loaded.codex_link_show_attention_bubbles,
         loaded.codex_link_show_review_bubbles,
-    ) == (True, False, False)
+        loaded.codex_link_log_fallback_enabled,
+    ) == (True, False, False, False)
 
     malformed = Settings.from_dict(
         {
             "codex_link_enabled": "yes",
             "codex_link_show_attention_bubbles": 1,
             "codex_link_show_review_bubbles": None,
+            "codex_link_log_fallback_enabled": "yes",
         }
     )
     assert (
         malformed.codex_link_enabled,
         malformed.codex_link_show_attention_bubbles,
         malformed.codex_link_show_review_bubbles,
-    ) == (False, True, True)
+        malformed.codex_link_log_fallback_enabled,
+    ) == (False, True, True, True)
+
+
+def test_schema_24_adds_enabled_codex_log_fallback(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema_version": 24, "codex_link_enabled": True}), encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
+    assert loaded.codex_link_enabled is True
+    assert loaded.codex_link_log_fallback_enabled is True
 
 
 def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:

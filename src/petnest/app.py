@@ -45,6 +45,7 @@ from petnest.core.codex_link import (
     CodexLinkCoordinator,
     CodexLinkSnapshot,
 )
+from petnest.core.codex_session_log import CodexSessionLogWatcher
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
 from petnest.core.lan_discovery import qt_interface_ipv4
@@ -198,6 +199,7 @@ class PetNest:
         platform_adapter: PlatformEventAdapter | None = None,
         cursor_controller: CursorController | None = None,
         codex_hook_manager: CodexHookManager | None = None,
+        codex_log_watcher: CodexSessionLogWatcher | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
     ) -> None:
@@ -211,6 +213,10 @@ class PetNest:
             port=self.settings.external_event_port,
         )
         self.codex_hook_status = self.codex_hook_manager.inspect()
+        self.codex_log_watcher = codex_log_watcher or CodexSessionLogWatcher(
+            Path.home() / ".codex" / "sessions"
+        )
+        self.codex_link_source = "none"
         if not self.settings.device_id:
             self.settings = replace(self.settings, device_id=uuid.uuid4().hex)
             self.settings_manager.save(self.settings)
@@ -406,6 +412,9 @@ class PetNest:
         self.app_update_startup_timer.setSingleShot(True)
         self.app_update_startup_timer.setInterval(APP_UPDATE_STARTUP_DELAY_MS)
         self.app_update_startup_timer.timeout.connect(lambda: self._schedule_app_update_check(force=False))
+        self.codex_log_timer = QTimer(self.window)
+        self.codex_log_timer.setInterval(250)
+        self.codex_log_timer.timeout.connect(self._poll_codex_logs)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -461,6 +470,7 @@ class PetNest:
         """显示窗口并按设置启动可选本地事件服务。"""
         self.platform_adapter.start()
         self._configure_external_event_server()
+        self._configure_codex_log_watcher()
         self._configure_system_idle_timer()
         self._configure_lan_service()
         self._configure_remote_interaction_service()
@@ -651,6 +661,10 @@ class PetNest:
             settings.codex_link_show_attention_bubbles != self.settings.codex_link_show_attention_bubbles
             or settings.codex_link_show_review_bubbles != self.settings.codex_link_show_review_bubbles
         )
+        codex_log_configuration_changed = (
+            settings.codex_link_enabled != self.settings.codex_link_enabled
+            or settings.codex_link_log_fallback_enabled != self.settings.codex_link_log_fallback_enabled
+        )
         previous_cursor_pending = self.settings.cursor_restore_pending
         self.window.set_scale(settings.scale)
         self.window.set_paused(settings.animation_paused)
@@ -676,6 +690,8 @@ class PetNest:
             self._configure_external_event_server(restart=True)
         elif codex_bubble_configuration_changed:
             self._handle_codex_snapshot(self.codex_link.snapshot)
+        if codex_log_configuration_changed:
+            self._configure_codex_log_watcher()
         if self.tray is not None:
             self.tray.set_always_on_top_enabled(settings.always_on_top)
         if idle_configuration_changed:
@@ -854,15 +870,48 @@ class PetNest:
             return False
         consumed = self.codex_link.consume(event)
         if consumed and event.event_name == "codex.hook":
-            self.codex_hook_status = CodexHookStatus(
-                "connected",
-                "已连接，PetNest 正在接收 Codex 状态",
-                True,
-                self.codex_hook_status.token,
-            )
-            if self._settings_center_dialog is not None:
-                self._settings_center_dialog.set_codex_hook_status(self.codex_hook_status)
+            if event.source == "codex-hook":
+                self.codex_link_source = "hook"
+                self.codex_hook_status = CodexHookStatus(
+                    "connected",
+                    "完整联动 · 官方 Hook",
+                    True,
+                    self.codex_hook_status.token,
+                )
+                if self._settings_center_dialog is not None:
+                    self._settings_center_dialog.set_codex_hook_status(self.codex_hook_status)
+            elif event.source == "codex-log":
+                self.codex_link_source = "log"
+            self._refresh_codex_link_runtime_view()
         return consumed
+
+    def _configure_codex_log_watcher(self) -> None:
+        enabled = self.settings.codex_link_enabled and self.settings.codex_link_log_fallback_enabled
+        if enabled:
+            if not self.codex_log_watcher.is_running:
+                self.codex_log_watcher.start()
+            self.codex_log_timer.start()
+            if self.codex_link_source == "none":
+                self.codex_link_source = "waiting"
+        else:
+            self.codex_log_timer.stop()
+            if self.codex_log_watcher.is_running:
+                self.codex_log_watcher.stop()
+            if self.codex_link_source == "log" or not self.settings.codex_link_enabled:
+                self.codex_link_source = "none"
+        self._refresh_codex_link_runtime_view()
+
+    def _poll_codex_logs(self) -> None:
+        if self._shutdown or not self.settings.codex_link_enabled:
+            return
+        for event in self.codex_log_watcher.poll():
+            self.event_bus.publish(event)
+        self._refresh_codex_link_runtime_view()
+
+    def _refresh_codex_link_runtime_view(self) -> None:
+        dialog = self._settings_center_dialog
+        if dialog is not None and hasattr(dialog, "set_codex_link_runtime"):
+            dialog.set_codex_link_runtime(self.codex_link_source, self.codex_log_watcher.status)
 
     def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
         if not self.settings.codex_link_enabled or snapshot.state in {"idle", "running"}:
@@ -921,9 +970,13 @@ class PetNest:
             on_download_app_update=self._schedule_app_update_download if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_unlock_codex_usage=self._unlock_codex_usage,
             codex_hook_status=self.codex_hook_status,
+            codex_link_source=self.codex_link_source,
+            codex_log_status=self.codex_log_watcher.status,
             codex_action_availability=self._codex_action_availability(),
             on_install_codex_hook=self._install_codex_hook,
             on_remove_codex_hook=self._remove_codex_hook,
+            on_test_codex_animation=self._test_codex_link_animation,
+            on_diagnose_codex_link=self._diagnose_codex_link,
             cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
             pet_preview_path=preview_path,
@@ -939,6 +992,32 @@ class PetNest:
     def _clear_settings_center(self, dialog: SettingsDialog) -> None:
         if self._settings_center_dialog is dialog:
             self._settings_center_dialog = None
+
+    def _test_codex_link_animation(self) -> str:
+        self.window.handle_pet_event(PetEvent("agent.working", source="codex-test", priority=100))
+        QTimer.singleShot(
+            1_500,
+            lambda: self.window.handle_pet_event(PetEvent("agent.success", source="codex-test", priority=100)),
+        )
+        QTimer.singleShot(
+            3_000,
+            lambda: self.window.handle_pet_event(PetEvent("agent.idle", source="codex-test", priority=100)),
+        )
+        return "正在播放本地 working → review → idle；此测试只验证宠物动作素材。"
+
+    def _diagnose_codex_link(self) -> str:
+        if not self.settings.codex_link_enabled:
+            return "联动已关闭。开启并保存后即可自动使用本地日志回退。"
+        source = {
+            "hook": "完整联动 · 官方 Hook",
+            "log": "已联动 · 本地日志回退",
+            "waiting": "等待新的 Codex 任务",
+            "none": "尚未收到联动事件",
+        }.get(self.codex_link_source, self.codex_log_watcher.status.message)
+        hook = self.codex_hook_manager.inspect()
+        fallback = "已开启" if self.settings.codex_link_log_fallback_enabled else "已关闭（仅官方 Hook）"
+        listener = "监听正常" if self.external_server is not None and self.external_server.is_running else "监听未启动"
+        return f"{source}；日志回退{fallback}；Hook：{hook.message}；本机事件{listener}。"
 
     def _check_app_update_from_settings(self) -> None:
         """设置中心内联检查更新，不再打开独立更新窗口。"""
@@ -1313,6 +1392,8 @@ class PetNest:
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止程序启动更新计时器", self.app_update_startup_timer.stop)
+        self._run_shutdown_step("停止 Codex 日志轮询计时器", self.codex_log_timer.stop)
+        self._run_shutdown_step("停止 Codex 日志回退", self.codex_log_watcher.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
         self._run_shutdown_step("停止预警池名单同步", self.lan_pool_sync.stop)

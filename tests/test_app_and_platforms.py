@@ -22,6 +22,7 @@ from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.codex_link import CodexHookManager
+from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
@@ -44,6 +45,32 @@ class _IdleAdapter:
 
     def get_idle_seconds(self) -> float:
         return self.idle_seconds
+
+
+class _CodexLogWatcher:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+        self.events: list[PetEvent] = []
+        self.status = CodexLogSourceStatus("stopped", "未启动")
+
+    @property
+    def is_running(self) -> bool:
+        return self.started > self.stopped
+
+    def start(self) -> None:
+        self.started += 1
+        self.status = CodexLogSourceStatus("waiting", "等待新的 Codex 任务")
+
+    def stop(self) -> None:
+        self.stopped += 1
+        self.status = CodexLogSourceStatus("stopped", "未启动")
+
+    def poll(self) -> tuple[PetEvent, ...]:
+        events, self.events = tuple(self.events), []
+        if events:
+            self.status = CodexLogSourceStatus("active", "已联动 · 本地日志回退")
+        return events
 
 
 def _free_loopback_port() -> int:
@@ -1162,6 +1189,106 @@ def test_settings_center_installs_and_removes_only_petnest_codex_hooks(
     qtbot.mouseClick(dialog.codex_hook_remove_button, Qt.MouseButton.LeftButton)
     assert not hook_manager.inspect().installed
     dialog.reject()
+    application.shutdown()
+
+
+def test_codex_log_fallback_starts_with_link_and_stops_when_disabled(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    port = _free_loopback_port()
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(
+        Settings(
+            external_event_port=port,
+            codex_link_enabled=True,
+            codex_link_log_fallback_enabled=True,
+            work_countdown_enabled=False,
+        )
+    )
+    watcher = _CodexLogWatcher()
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+    assert watcher.started == 1
+    assert application.codex_log_timer.isActive()
+
+    application.apply_settings(replace(application.settings, codex_link_log_fallback_enabled=False))
+    assert watcher.stopped == 1
+    assert not application.codex_log_timer.isActive()
+    application.shutdown()
+
+
+def test_codex_log_events_drive_pet_and_hook_upgrades_runtime_source(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    port = _free_loopback_port()
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(
+        Settings(
+            external_event_port=port,
+            codex_link_enabled=True,
+            codex_link_log_fallback_enabled=True,
+            work_countdown_enabled=False,
+        )
+    )
+    watcher = _CodexLogWatcher()
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "UserPromptSubmit", "session_id": "s", "turn_id": "t"},
+        )
+    )
+
+    application._poll_codex_logs()
+    assert application.window.current_action == "working"
+    assert application.codex_link_source == "log"
+
+    application._handle_codex_hook_event(
+        PetEvent(
+            "codex.hook",
+            source="codex-hook",
+            payload={"hook_event_name": "PermissionRequest", "session_id": "s"},
+        )
+    )
+    assert application.window.current_action == "waiting"
+    assert application.codex_link_source == "hook"
+    application.shutdown()
+
+
+def test_codex_log_fallback_does_not_scan_in_hook_only_mode(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_link_enabled=True, codex_link_log_fallback_enabled=False))
+    watcher = _CodexLogWatcher()
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert watcher.started == 0
+    assert not application.codex_log_timer.isActive()
     application.shutdown()
 
 
