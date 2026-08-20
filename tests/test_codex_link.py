@@ -200,6 +200,23 @@ def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
     assert snapshots[-1] == coordinator.snapshot
 
 
+def test_coordinator_uses_session_when_codex_omits_turn_id() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+
+    assert coordinator.consume(_hook("UserPromptSubmit", turn=None))
+    assert coordinator.snapshot.state == "running"
+    assert published[-1].event_name == "agent.working"
+
+    assert coordinator.consume(_hook("PermissionRequest", turn=None))
+    assert coordinator.snapshot.state == "waiting"
+    assert published[-1].event_name == "agent.waiting"
+
+    assert coordinator.consume(_hook("Stop", turn=None))
+    assert coordinator.snapshot.state == "review"
+    assert published[-1].event_name == "agent.success"
+
+
 def test_tool_failure_is_temporary_and_later_activity_restores_running() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)

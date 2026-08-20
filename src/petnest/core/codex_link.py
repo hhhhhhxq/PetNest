@@ -120,9 +120,10 @@ class CodexLinkCoordinator:
             if removed:
                 self._emit_snapshot()
             return removed
-        if turn_id is None:
-            return False
-        key = (session_id, turn_id)
+        # Codex Desktop 0.147 的 lifecycle Hook 负载只有 session_id，
+        # 不保证提供 turn_id。缺失时按会话聚合；下一轮 running 事件仍会
+        # 覆盖同一会话先前的 review/failed，不会产生永久脏状态。
+        key = (session_id, turn_id or "__session__")
         if hook_name == "Stop" and payload.get("stop_hook_active") is True:
             return False
         if hook_name == "Stop":
