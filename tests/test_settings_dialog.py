@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from petnest.core.codex_link import CodexHookStatus
+from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
@@ -36,7 +36,7 @@ def test_settings_dialog_is_the_shared_six_section_center(qtbot, tmp_path: Path)
     assert dialog.section_list.item(3).text() == "Codex 联动"
 
 
-def test_codex_link_page_persists_preferences_and_disables_only_dependent_controls(qtbot) -> None:
+def test_codex_link_page_keeps_plain_controls_and_persists_preferences(qtbot) -> None:
     dialog = SettingsDialog(
         Settings(
             codex_link_enabled=False,
@@ -44,7 +44,7 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
             codex_link_show_review_bubbles=True,
             codex_link_log_fallback_enabled=True,
         ),
-        codex_hook_status=CodexHookStatus("missing", "尚未安装", False),
+        codex_plugin_status=CodexPluginStatus.missing(),
         codex_link_source="log",
         codex_log_status=CodexLogSourceStatus("active", "已联动 · 本地日志回退"),
         codex_action_availability={
@@ -59,11 +59,11 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
 
     assert dialog.section_list.currentRow() == 3
     assert dialog.page_title.text() == "Codex 联动"
-    assert "开启并保存后即可使用" in dialog.codex_link_explanation_label.text()
-    assert "本地日志回退" in dialog.codex_link_runtime_label.text()
+    assert "开启后保存即可使用" in dialog.codex_link_explanation_label.text()
+    assert dialog.codex_link_runtime_label.text() == "联动已关闭"
     assert not dialog.codex_attention_bubbles_input.isEnabled()
     assert dialog.codex_review_bubbles_input.isChecked()
-    assert "idle（回退）" in dialog.codex_action_status_labels["waiting"].text()
+    assert dialog.codex_action_warning_label.isHidden()
 
     dialog.codex_link_enabled_input.setChecked(True)
     dialog.codex_attention_bubbles_input.setChecked(True)
@@ -76,18 +76,59 @@ def test_codex_link_page_persists_preferences_and_disables_only_dependent_contro
     assert updated.codex_link_log_fallback_enabled is False
 
 
-def test_codex_link_page_treats_hook_as_optional_advanced_enhancement(qtbot) -> None:
-    dialog = SettingsDialog(Settings(), initial_section="codex_link")
+def test_codex_link_page_hides_technical_terms_but_explains_them_in_tips(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(),
+        codex_plugin_status=CodexPluginStatus.missing(),
+        initial_section="codex_link",
+    )
     qtbot.addWidget(dialog)
 
-    all_text = "\n".join(label.text() for label in dialog.findChildren(__import__("PySide6").QtWidgets.QLabel))
-    assert "Codex 设置 → 钩子 → 用户配置" in all_text
-    assert "/hooks" not in all_text
-    assert "可选" in dialog.codex_hook_details_button.text()
-    assert dialog.codex_hook_details_panel.isHidden()
+    ordinary_text = "\n".join(
+        (
+            dialog.codex_link_explanation_label.text(),
+            dialog.codex_link_runtime_label.text(),
+            dialog.codex_plugin_summary_label.text(),
+            dialog.codex_plugin_guide_label.text(),
+        )
+    )
+    for technical_term in ("JSONL", "Hook", "working", "review", "idle", "schema"):
+        assert technical_term not in ordinary_text
+    assert "Hook" in dialog.codex_link_info_button.toolTip()
+    assert "本机会话日志" in dialog.codex_link_info_button.toolTip()
+    assert "Codex 设置 → 插件" in dialog.codex_plugin_guide_label.text()
+    assert "PetNest 状态联动" in dialog.codex_plugin_guide_label.text()
+    assert "设置 → 钩子 → Plugin - PetNest" in dialog.codex_plugin_review_guide_label.text()
+    assert dialog.codex_advanced_details_panel.isHidden()
 
-    dialog.codex_hook_details_button.click()
-    assert not dialog.codex_hook_details_panel.isHidden()
+    dialog.codex_advanced_details_button.click()
+    assert not dialog.codex_advanced_details_panel.isHidden()
+
+
+def test_codex_link_page_warns_when_current_pet_lacks_required_actions(qtbot) -> None:
+    opened: list[str | bool] = []
+
+    def open_actions(page: str | bool = "宠物与动作") -> None:
+        opened.append(page)
+
+    dialog = SettingsDialog(
+        Settings(),
+        codex_action_availability={
+            "working": "idle（回退）",
+            "waiting": "idle（回退）",
+            "error": "idle（回退）",
+            "review": "idle（回退）",
+        },
+        on_open_pet_actions=open_actions,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.codex_action_warning_label.isHidden()
+    assert "当前宠物缺少“任务进行中”和“任务完成”动作" in dialog.codex_action_warning_label.text()
+    assert "联动仍会运行" in dialog.codex_action_warning_label.text()
+    qtbot.mouseClick(dialog.codex_open_pet_actions_button, Qt.MouseButton.LeftButton)
+    assert opened == ["宠物与动作"]
 
 
 def test_codex_link_diagnostic_and_animation_buttons_use_explicit_callbacks(qtbot) -> None:
@@ -109,35 +150,67 @@ def test_codex_link_diagnostic_and_animation_buttons_use_explicit_callbacks(qtbo
     assert dialog.codex_diagnostic_result_label.text() == "当前使用本地日志回退"
 
 
-def test_codex_hook_buttons_refresh_status_in_place(qtbot) -> None:
+def test_codex_plugin_card_uses_one_state_aware_primary_action(qtbot) -> None:
     calls: list[str] = []
+    button_labels_during_callback: list[str] = []
 
-    def install() -> CodexHookStatus:
-        calls.append("install")
-        return CodexHookStatus("installed", "Hook 已安装", True, "token")
+    def configure() -> CodexPluginStatus:
+        calls.append("configure")
+        button_labels_during_callback.append(dialog.codex_plugin_primary_button.text())
+        return CodexPluginStatus.enabled()
 
-    def remove() -> CodexHookStatus:
+    def remove() -> CodexPluginStatus:
         calls.append("remove")
-        return CodexHookStatus("missing", "Hook 已移除", False)
+        return CodexPluginStatus.missing()
 
     dialog = SettingsDialog(
         Settings(),
-        codex_hook_status=CodexHookStatus("missing", "尚未安装", False),
-        on_install_codex_hook=install,
-        on_remove_codex_hook=remove,
+        codex_plugin_status=CodexPluginStatus.missing(),
+        on_configure_codex_plugin=configure,
+        on_remove_codex_plugin=remove,
         initial_section="codex_link",
     )
     qtbot.addWidget(dialog)
 
-    qtbot.mouseClick(dialog.codex_hook_install_button, Qt.MouseButton.LeftButton)
-    assert calls == ["install"]
-    assert dialog.codex_hook_status_label.text() == "Hook 已安装"
-    assert dialog.codex_hook_remove_button.isEnabled()
+    assert dialog.codex_plugin_primary_button.text() == "启用精确连接"
+    qtbot.mouseClick(dialog.codex_plugin_primary_button, Qt.MouseButton.LeftButton)
+    assert calls == ["configure"]
+    assert button_labels_during_callback == ["正在启用…"]
+    assert dialog.codex_plugin_primary_button.text() == "已启用"
+    assert not dialog.codex_plugin_primary_button.isEnabled()
 
-    qtbot.mouseClick(dialog.codex_hook_remove_button, Qt.MouseButton.LeftButton)
-    assert calls == ["install", "remove"]
-    assert dialog.codex_hook_status_label.text() == "Hook 已移除"
-    assert not dialog.codex_hook_remove_button.isEnabled()
+    assert dialog.codex_plugin_remove_button.isHidden()
+    dialog.codex_advanced_details_button.click()
+    assert not dialog.codex_plugin_remove_button.isHidden()
+
+
+def test_codex_plugin_pending_state_rechecks_instead_of_reinstalling(qtbot) -> None:
+    calls: list[str] = []
+    dialog = SettingsDialog(
+        Settings(),
+        codex_plugin_status=CodexPluginStatus.pending(),
+        on_configure_codex_plugin=lambda: calls.append("configure") or CodexPluginStatus.pending(),
+        on_recheck_codex_plugin=lambda: calls.append("recheck") or CodexPluginStatus.pending(),
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.codex_plugin_primary_button.text() == "我已完成，重新检查"
+    qtbot.mouseClick(dialog.codex_plugin_primary_button, Qt.MouseButton.LeftButton)
+
+    assert calls == ["recheck"]
+
+
+def test_codex_link_page_shows_real_task_state_in_plain_language(qtbot) -> None:
+    dialog = SettingsDialog(Settings(codex_link_enabled=True), initial_section="codex_link")
+    qtbot.addWidget(dialog)
+
+    dialog.set_codex_task_state("running")
+    assert dialog.codex_link_runtime_label.text() == "Codex 正在工作"
+    dialog.set_codex_task_state("waiting")
+    assert dialog.codex_link_runtime_label.text() == "需要你处理"
+    dialog.set_codex_task_state("review")
+    assert dialog.codex_link_runtime_label.text() == "任务已完成"
 
 
 def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:

@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSignalBlocker, QTime, Qt, QRect, QSize, Signal
+from PySide6.QtCore import QEventLoop, QPoint, QSignalBlocker, QTime, Qt, QRect, QSize, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTimeEdit,
     QProgressBar,
+    QMessageBox,
     QRadioButton,
     QToolButton,
     QVBoxLayout,
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
 
 from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.core.codex_link import CodexHookStatus
+from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
 from petnest.ui.theme import dialog_stylesheet
@@ -271,8 +273,15 @@ class SettingsCenterDialog(QDialog):
         on_unlock_codex_usage: Callable[[], object] | None = None,
         codex_hook_status: CodexHookStatus | None = None,
         codex_link_source: str = "none",
+        codex_task_state: str = "idle",
         codex_log_status: CodexLogSourceStatus | None = None,
         codex_action_availability: Mapping[str, str] | None = None,
+        codex_plugin_status: CodexPluginStatus | None = None,
+        codex_home_path: Path | None = None,
+        on_configure_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
+        on_recheck_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
+        on_remove_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
+        on_open_pet_actions: Callable[[], object] | None = None,
         on_install_codex_hook: Callable[[], CodexHookStatus] | None = None,
         on_remove_codex_hook: Callable[[], CodexHookStatus] | None = None,
         on_test_codex_animation: Callable[[], str] | None = None,
@@ -293,8 +302,15 @@ class SettingsCenterDialog(QDialog):
             "missing", "尚未安装 PetNest Codex Hook", False
         )
         self._codex_link_source = codex_link_source
+        self._codex_task_state = codex_task_state
         self._codex_log_status = codex_log_status or CodexLogSourceStatus("stopped", "本地日志回退未启动")
         self._codex_action_availability = dict(codex_action_availability or {})
+        self._codex_plugin_status = codex_plugin_status or CodexPluginStatus.missing()
+        self._codex_home_path = (codex_home_path or Path.home() / ".codex").expanduser()
+        self._on_configure_codex_plugin = on_configure_codex_plugin
+        self._on_recheck_codex_plugin = on_recheck_codex_plugin
+        self._on_remove_codex_plugin = on_remove_codex_plugin
+        self._on_open_pet_actions = on_open_pet_actions
         self._on_install_codex_hook = on_install_codex_hook
         self._on_remove_codex_hook = on_remove_codex_hook
         self._on_test_codex_animation = on_test_codex_animation
@@ -781,129 +797,193 @@ class SettingsCenterDialog(QDialog):
     def _build_codex_link_page(self) -> QWidget:
         page, layout = self._page(
             "Codex 联动",
-            "开启后自动跟随 Codex 任务状态；官方 Hook 不可用时会安全使用本机会话日志回退。",
+            "让当前宠物跟随本机 Codex 的工作、等待和完成状态。",
             self,
         )
 
         link_card, link_layout = self._card(
-            "联动开关与当前状态",
-            "开启并保存后即可使用。PetNest 优先使用官方 Hook；不可用时自动使用本机会话日志，无需先安装或信任 Hook。",
+            "联动",
+            "开启后保存即可使用，PetNest 会自动选择当前设备可用的连接方式。",
             page,
         )
+        link_heading = QHBoxLayout()
+        self.codex_link_enabled_input = ToggleSwitch("跟随 Codex 播放宠物动作", link_card)
+        self.codex_link_enabled_input.setChecked(self._settings.codex_link_enabled)
+        link_heading.addWidget(self.codex_link_enabled_input, 1)
+        self.codex_link_info_button = QToolButton(link_card)
+        self.codex_link_info_button.setText("ⓘ")
+        self.codex_link_info_button.setToolTip(
+            "技术说明：PetNest 默认增量读取 Codex 的本机会话日志（JSONL）中的状态事件；"
+            "启用精确连接后使用 Codex Hook。两种方式都不会读取或保存提示词、回复、代码和工具参数。"
+        )
+        self.codex_link_info_button.setAccessibleName("联动技术说明")
+        link_heading.addWidget(self.codex_link_info_button, 0, Qt.AlignmentFlag.AlignTop)
+        link_layout.addLayout(link_heading)
         self.codex_link_explanation_label = QLabel(
-            "开启并保存后即可使用；日志回退只读取新增事件类型和任务 ID，不保存提示词、回复或代码。",
+            "开启后保存即可使用。之后在 Codex 中正常发送任务，无需输入额外命令。",
             link_card,
         )
         self.codex_link_explanation_label.setWordWrap(True)
         self.codex_link_explanation_label.setObjectName("mutedLabel")
         link_layout.addWidget(self.codex_link_explanation_label)
-        self.codex_link_enabled_input = ToggleSwitch("跟随 Codex 状态播放动作", link_card)
-        self.codex_link_enabled_input.setChecked(self._settings.codex_link_enabled)
-        link_layout.addWidget(self.codex_link_enabled_input)
-        self.codex_log_fallback_input = ToggleSwitch("官方 Hook 不可用时允许本地日志回退", link_card)
-        self.codex_log_fallback_input.setChecked(self._settings.codex_link_log_fallback_enabled)
-        link_layout.addWidget(self.codex_log_fallback_input)
         self.codex_link_runtime_label = QLabel(link_card)
         self.codex_link_runtime_label.setWordWrap(True)
         self.codex_link_runtime_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #6D7F65;")
         link_layout.addWidget(self.codex_link_runtime_label)
+
+        missing_actions = []
+        if self._codex_action_availability.get("working", "idle（回退）").startswith("idle"):
+            missing_actions.append("任务进行中")
+        if self._codex_action_availability.get("review", "idle（回退）").startswith("idle"):
+            missing_actions.append("任务完成")
+        self.codex_action_warning_label = QLabel(link_card)
+        self.codex_action_warning_label.setWordWrap(True)
+        self.codex_action_warning_label.setStyleSheet("color: #A0603E;")
+        if missing_actions:
+            quoted = "和".join(f"“{name}”" for name in missing_actions)
+            self.codex_action_warning_label.setText(
+                f"当前宠物缺少{quoted}动作。联动仍会运行，但这些状态会显示为普通待机动作。"
+            )
+            self.codex_action_warning_label.show()
+        else:
+            self.codex_action_warning_label.hide()
+        link_layout.addWidget(self.codex_action_warning_label)
+        self.codex_open_pet_actions_button = QPushButton("去添加宠物动作", link_card)
+        self.codex_open_pet_actions_button.setVisible(bool(missing_actions) and self._on_open_pet_actions is not None)
+        self.codex_open_pet_actions_button.setEnabled(self._on_open_pet_actions is not None)
+        if self._on_open_pet_actions is not None:
+            self.codex_open_pet_actions_button.clicked.connect(
+                lambda _checked=False: self._on_open_pet_actions() if self._on_open_pet_actions is not None else None
+            )
+        link_layout.addWidget(self.codex_open_pet_actions_button, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(link_card)
 
         notice_card, notice_layout = self._card(
-            "动作与提醒",
-            "日志回退稳定支持 working、review 和 idle；waiting/failed 只有在存在明确事件时才启用，不根据正文猜测。",
+            "提醒",
+            "按需显示宠物气泡，不影响动作播放。",
             page,
         )
-        self.codex_action_status_labels: dict[str, QLabel] = {}
-        action_names = (
-            ("working", "运行中 running"),
-            ("waiting", "等待处理 waiting"),
-            ("error", "工具失败 failed"),
-            ("review", "停止待查看 review"),
-        )
-        action_form = QFormLayout()
-        for action, title in action_names:
-            resolved = self._codex_action_availability.get(action, "idle（回退）")
-            label = QLabel(resolved, notice_card)
-            label.setObjectName("mutedLabel")
-            self.codex_action_status_labels[action] = label
-            action_form.addRow(title, label)
-        notice_layout.addLayout(action_form)
-        self.codex_attention_bubbles_input = ToggleSwitch("等待或失败时显示气泡", notice_card)
+        self.codex_attention_bubbles_input = ToggleSwitch("需要我处理时提醒", notice_card)
         self.codex_attention_bubbles_input.setChecked(self._settings.codex_link_show_attention_bubbles)
-        self.codex_review_bubbles_input = ToggleSwitch("任务停止时显示完成气泡", notice_card)
+        self.codex_review_bubbles_input = ToggleSwitch("任务完成时提醒", notice_card)
         self.codex_review_bubbles_input.setChecked(self._settings.codex_link_show_review_bubbles)
         notice_layout.addWidget(self.codex_attention_bubbles_input)
         notice_layout.addWidget(self.codex_review_bubbles_input)
         layout.addWidget(notice_card)
 
-        self.codex_hook_details_button = QToolButton(page)
-        self.codex_hook_details_button.setText("官方 Hook 精确增强（可选）")
-        self.codex_hook_details_button.setCheckable(True)
-        self.codex_hook_details_button.setChecked(False)
-        self.codex_hook_details_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.codex_hook_details_button.setArrowType(Qt.ArrowType.RightArrow)
-        layout.addWidget(self.codex_hook_details_button)
-
-        self.codex_hook_details_panel = QFrame(page)
-        self.codex_hook_details_panel.setObjectName("settingsCard")
-        hook_layout = QVBoxLayout(self.codex_hook_details_panel)
-        hook_layout.setContentsMargins(16, 14, 16, 14)
-        hook_layout.setSpacing(8)
-        hook_description = QLabel(
-            "Hook 可提升 waiting/failed 的识别精度，但不是开启联动的前置条件。配置路径：Codex 设置 → 钩子 → 用户配置。",
-            self.codex_hook_details_panel,
-        )
-        hook_description.setWordWrap(True)
-        hook_description.setObjectName("mutedLabel")
-        hook_layout.addWidget(hook_description)
-        self.codex_hook_status_label = QLabel(self._codex_hook_status.message, self.codex_hook_details_panel)
-        self.codex_hook_status_label.setWordWrap(True)
-        self.codex_hook_status_label.setObjectName("mutedLabel")
-        hook_layout.addWidget(self.codex_hook_status_label)
-        hook_buttons = QHBoxLayout()
-        self.codex_hook_install_button = QPushButton("安装/修复 Hook", self.codex_hook_details_panel)
-        self.codex_hook_remove_button = QPushButton("移除 PetNest Hook", self.codex_hook_details_panel)
-        self.codex_hook_install_button.setEnabled(self._on_install_codex_hook is not None)
-        self.codex_hook_remove_button.setEnabled(
-            self._on_remove_codex_hook is not None and self._codex_hook_status.installed
-        )
-        self.codex_hook_install_button.clicked.connect(self._install_codex_hook)
-        self.codex_hook_remove_button.clicked.connect(self._remove_codex_hook)
-        hook_buttons.addWidget(self.codex_hook_install_button)
-        hook_buttons.addWidget(self.codex_hook_remove_button)
-        hook_buttons.addStretch(1)
-        hook_layout.addLayout(hook_buttons)
-        self.codex_hook_details_panel.hide()
-        self.codex_hook_details_button.toggled.connect(self._toggle_codex_hook_details)
-        layout.addWidget(self.codex_hook_details_panel)
-
-        diagnostic_card, diagnostic_layout = self._card(
-            "测试与诊断",
-            "动画测试只验证当前宠物素材；联动检查会刷新日志源、Hook 和最近事件状态。",
+        plugin_card, plugin_layout = self._card(
+            "更准确地识别状态（推荐）",
+            "基础联动不生效，或希望及时识别“等待你处理”等状态时，再启用此项。",
             page,
         )
-        diagnostic_buttons = QHBoxLayout()
-        self.codex_animation_test_button = QPushButton("测试宠物动画", diagnostic_card)
-        self.codex_diagnose_button = QPushButton("检查联动状态", diagnostic_card)
+        self.codex_plugin_summary_label = QLabel(self._codex_plugin_status.message, plugin_card)
+        self.codex_plugin_summary_label.setWordWrap(True)
+        plugin_layout.addWidget(self.codex_plugin_summary_label)
+        self.codex_plugin_guide_label = QLabel(
+            "启用后，在 Codex 设置 → 插件 中找到“PetNest 状态联动”并确认已开启。",
+            plugin_card,
+        )
+        self.codex_plugin_guide_label.setWordWrap(True)
+        self.codex_plugin_guide_label.setObjectName("mutedLabel")
+        plugin_layout.addWidget(self.codex_plugin_guide_label)
+        self.codex_plugin_review_guide_label = QLabel(
+            "若 Codex 提示待审核：打开 Codex 设置 → 钩子 → Plugin - PetNest，确认“PetNest 状态联动”。",
+            plugin_card,
+        )
+        self.codex_plugin_review_guide_label.setWordWrap(True)
+        self.codex_plugin_review_guide_label.setObjectName("mutedLabel")
+        plugin_layout.addWidget(self.codex_plugin_review_guide_label)
+        self.codex_plugin_primary_button = QPushButton(plugin_card)
+        self.codex_plugin_primary_button.clicked.connect(self._handle_codex_plugin_primary)
+        plugin_layout.addWidget(self.codex_plugin_primary_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(plugin_card)
+
+        test_card, test_layout = self._card(
+            "测试",
+            "依次播放任务进行中和任务完成动作，确认当前宠物素材是否合适。",
+            page,
+        )
+        self.codex_animation_test_button = QPushButton("测试一下", test_card)
         self.codex_animation_test_button.setEnabled(self._on_test_codex_animation is not None)
-        self.codex_diagnose_button.setEnabled(self._on_diagnose_codex_link is not None)
         self.codex_animation_test_button.clicked.connect(self._test_codex_animation)
-        self.codex_diagnose_button.clicked.connect(self._diagnose_codex_link)
-        diagnostic_buttons.addWidget(self.codex_animation_test_button)
-        diagnostic_buttons.addWidget(self.codex_diagnose_button)
-        diagnostic_buttons.addStretch(1)
-        diagnostic_layout.addLayout(diagnostic_buttons)
-        self.codex_diagnostic_result_label = QLabel("尚未运行诊断。", diagnostic_card)
+        test_layout.addWidget(self.codex_animation_test_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.codex_diagnostic_result_label = QLabel("", test_card)
         self.codex_diagnostic_result_label.setWordWrap(True)
         self.codex_diagnostic_result_label.setObjectName("mutedLabel")
-        diagnostic_layout.addWidget(self.codex_diagnostic_result_label)
-        layout.addWidget(diagnostic_card)
+        test_layout.addWidget(self.codex_diagnostic_result_label)
+        layout.addWidget(test_card)
+
+        self.codex_advanced_details_button = QToolButton(page)
+        self.codex_advanced_details_button.setText("高级详情")
+        self.codex_advanced_details_button.setCheckable(True)
+        self.codex_advanced_details_button.setChecked(False)
+        self.codex_advanced_details_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.codex_advanced_details_button.setArrowType(Qt.ArrowType.RightArrow)
+        layout.addWidget(self.codex_advanced_details_button)
+
+        self.codex_advanced_details_panel = QFrame(page)
+        self.codex_advanced_details_panel.setObjectName("settingsCard")
+        advanced_layout = QVBoxLayout(self.codex_advanced_details_panel)
+        advanced_layout.setContentsMargins(16, 14, 16, 14)
+        advanced_layout.setSpacing(8)
+        self.codex_log_fallback_input = ToggleSwitch("允许读取本机会话日志作为基础连接", self.codex_advanced_details_panel)
+        self.codex_log_fallback_input.setChecked(self._settings.codex_link_log_fallback_enabled)
+        advanced_layout.addWidget(self.codex_log_fallback_input)
+        self.codex_technical_source_label = QLabel(self.codex_advanced_details_panel)
+        self.codex_technical_source_label.setWordWrap(True)
+        self.codex_technical_source_label.setObjectName("mutedLabel")
+        advanced_layout.addWidget(self.codex_technical_source_label)
+        paths_label = QLabel(
+            f"Codex Home：{self._codex_home_path}\n会话目录：{self._codex_home_path / 'sessions'}",
+            self.codex_advanced_details_panel,
+        )
+        paths_label.setWordWrap(True)
+        paths_label.setObjectName("mutedLabel")
+        advanced_layout.addWidget(paths_label)
+        self.codex_action_status_labels: dict[str, QLabel] = {}
+        action_form = QFormLayout()
+        for action, title in (
+            ("working", "任务进行中（working）"),
+            ("waiting", "等待处理（waiting）"),
+            ("error", "执行失败（failed）"),
+            ("review", "任务完成（review）"),
+        ):
+            label = QLabel(self._codex_action_availability.get(action, "idle（回退）"), self.codex_advanced_details_panel)
+            label.setObjectName("mutedLabel")
+            self.codex_action_status_labels[action] = label
+            action_form.addRow(title, label)
+        advanced_layout.addLayout(action_form)
+        self.codex_plugin_details_label = QLabel(self._codex_plugin_status.details, self.codex_advanced_details_panel)
+        self.codex_plugin_details_label.setWordWrap(True)
+        self.codex_plugin_details_label.setObjectName("mutedLabel")
+        advanced_layout.addWidget(self.codex_plugin_details_label)
+        advanced_buttons = QHBoxLayout()
+        self.codex_diagnose_button = QPushButton("检查详细状态", self.codex_advanced_details_panel)
+        self.codex_diagnose_button.setEnabled(self._on_diagnose_codex_link is not None)
+        self.codex_diagnose_button.clicked.connect(self._diagnose_codex_link)
+        advanced_buttons.addWidget(self.codex_diagnose_button)
+        self.codex_plugin_remove_button = QPushButton("停用精确连接…", self.codex_advanced_details_panel)
+        self.codex_plugin_remove_button.clicked.connect(self._confirm_remove_codex_plugin)
+        self.codex_plugin_remove_button.hide()
+        advanced_buttons.addWidget(self.codex_plugin_remove_button)
+        advanced_buttons.addStretch(1)
+        advanced_layout.addLayout(advanced_buttons)
+        self.codex_advanced_details_panel.hide()
+        self.codex_advanced_details_button.toggled.connect(self._toggle_codex_advanced_details)
+        layout.addWidget(self.codex_advanced_details_panel)
         layout.addStretch(1)
 
         self.codex_link_enabled_input.toggled.connect(self._update_codex_link_controls)
         self.set_codex_link_runtime(self._codex_link_source, self._codex_log_status)
+        self.set_codex_plugin_status(self._codex_plugin_status)
         self._update_codex_link_controls()
+
+        # 兼容旧测试与调用方；这些属性现在指向新的单一状态操作。
+        self.codex_hook_details_button = self.codex_advanced_details_button
+        self.codex_hook_details_panel = self.codex_advanced_details_panel
+        self.codex_hook_status_label = self.codex_plugin_summary_label
+        self.codex_hook_install_button = self.codex_plugin_primary_button
+        self.codex_hook_remove_button = self.codex_plugin_remove_button
         return page
 
     def _update_codex_link_controls(self) -> None:
@@ -911,12 +991,17 @@ class SettingsCenterDialog(QDialog):
         self.codex_log_fallback_input.setEnabled(enabled)
         self.codex_attention_bubbles_input.setEnabled(enabled)
         self.codex_review_bubbles_input.setEnabled(enabled)
+        self.set_codex_link_runtime(self._codex_link_source, self._codex_log_status)
 
-    def _toggle_codex_hook_details(self, expanded: bool) -> None:
-        self.codex_hook_details_button.setArrowType(
+    def _toggle_codex_advanced_details(self, expanded: bool) -> None:
+        self.codex_advanced_details_button.setArrowType(
             Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
         )
-        self.codex_hook_details_panel.setVisible(expanded)
+        self.codex_advanced_details_panel.setVisible(expanded)
+        self.codex_plugin_remove_button.setVisible(expanded)
+
+    def _toggle_codex_hook_details(self, expanded: bool) -> None:
+        self._toggle_codex_advanced_details(expanded)
 
     def _test_codex_animation(self) -> None:
         if self._on_test_codex_animation is not None:
@@ -929,16 +1014,94 @@ class SettingsCenterDialog(QDialog):
     def set_codex_link_runtime(self, source: str, log_status: CodexLogSourceStatus) -> None:
         self._codex_link_source = source
         self._codex_log_status = log_status
-        messages = {
-            "hook": "完整联动 · 官方 Hook（working / waiting / failed / review）",
-            "log": "已联动 · 本地日志回退（稳定支持 working / review / idle）",
-            "waiting": "等待新的 Codex 任务；开启并保存后无需额外配置。",
-            "none": "联动尚未产生状态；保存设置后会自动连接。",
+        self._refresh_codex_runtime_label()
+        technical_sources = {
+            "hook": "Codex 插件 Hook",
+            "log": "本机会话日志（JSONL 增量监听）",
+            "waiting": "本机会话日志（等待新增事件）",
+            "none": "尚未收到事件",
         }
-        message = messages.get(source, log_status.message)
-        if log_status.state == "incompatible":
-            message = "当前 Codex 版本不兼容，本地日志回退已停止。"
+        self.codex_technical_source_label.setText(
+            f"当前技术来源：{technical_sources.get(source, source)}\n"
+            f"基础监听状态：{log_status.state} · {log_status.message}"
+        )
+
+    def set_codex_task_state(self, state: str) -> None:
+        self._codex_task_state = state if state in {"idle", "running", "waiting", "failed", "review"} else "idle"
+        self._refresh_codex_runtime_label()
+
+    def _refresh_codex_runtime_label(self) -> None:
+        if not self.codex_link_enabled_input.isChecked():
+            message = "联动已关闭"
+        elif self._codex_task_state == "running":
+            message = "Codex 正在工作"
+        elif self._codex_task_state == "waiting":
+            message = "需要你处理"
+        elif self._codex_task_state == "failed":
+            message = "执行遇到问题"
+        elif self._codex_task_state == "review":
+            message = "任务已完成"
+        elif self._codex_log_status.state == "incompatible" and self._codex_link_source not in {"hook", "log"}:
+            message = "暂不可用"
+        elif self._codex_link_source in {"hook", "log", "waiting"} or self._codex_log_status.state == "active":
+            message = "联动正常"
+        else:
+            message = "等待新的 Codex 任务"
         self.codex_link_runtime_label.setText(message)
+
+    def _handle_codex_plugin_primary(self) -> None:
+        callback = (
+            self._on_recheck_codex_plugin
+            if self._codex_plugin_status.state in {"pending", "unavailable"}
+            and self._on_recheck_codex_plugin is not None
+            else self._on_configure_codex_plugin
+        )
+        if callback is None:
+            return
+        busy_text = {
+            "unavailable": "正在检查…",
+            "pending": "正在检查…",
+            "repair": "正在修复…",
+        }.get(self._codex_plugin_status.state, "正在启用…")
+        self.codex_plugin_primary_button.setText(busy_text)
+        self.codex_plugin_primary_button.setEnabled(False)
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        try:
+            status = callback()
+        except Exception as error:  # noqa: BLE001 - 设置页必须就地报告安装错误。
+            status = CodexPluginStatus.error(str(error), installed=self._codex_plugin_status.installed)
+        self.set_codex_plugin_status(status)
+
+    def _confirm_remove_codex_plugin(self) -> None:
+        if self._on_remove_codex_plugin is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "停用精确连接",
+            "确定要从 Codex 停用“PetNest 状态联动”吗？基础联动仍可继续使用。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            status = self._on_remove_codex_plugin()
+        except Exception as error:  # noqa: BLE001 - 设置页必须就地报告停用错误。
+            status = CodexPluginStatus.error(str(error), installed=True)
+        self.set_codex_plugin_status(status)
+
+    def set_codex_plugin_status(self, status: CodexPluginStatus) -> None:
+        self._codex_plugin_status = status
+        self.codex_plugin_summary_label.setText(status.message)
+        self.codex_plugin_details_label.setText(status.details)
+        self.codex_plugin_primary_button.setText(status.action_label)
+        callback_available = (
+            self._on_recheck_codex_plugin is not None
+            if status.state in {"pending", "unavailable"}
+            else self._on_configure_codex_plugin is not None
+        )
+        self.codex_plugin_primary_button.setEnabled(status.state != "enabled" and callback_available)
+        self.codex_plugin_remove_button.setEnabled(status.installed and self._on_remove_codex_plugin is not None)
 
     def _install_codex_hook(self) -> None:
         if self._on_install_codex_hook is None:
@@ -960,8 +1123,14 @@ class SettingsCenterDialog(QDialog):
 
     def set_codex_hook_status(self, status: CodexHookStatus) -> None:
         self._codex_hook_status = status
-        self.codex_hook_status_label.setText(status.message)
-        self.codex_hook_remove_button.setEnabled(self._on_remove_codex_hook is not None and status.installed)
+        mapped = (
+            CodexPluginStatus.enabled()
+            if status.installed
+            else CodexPluginStatus.error(status.message)
+            if status.state == "error"
+            else CodexPluginStatus.missing()
+        )
+        self.set_codex_plugin_status(mapped)
 
     def _build_countdown_page(self) -> QWidget:
         page, layout = self._page("工作倒计时", "工作日只选择一次，再选择固定时段或弹性打卡的计算方式。", self)

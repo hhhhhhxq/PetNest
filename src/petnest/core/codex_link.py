@@ -376,6 +376,12 @@ class CodexHookManager:
             "statusMessage": "同步 PetNest 宠物状态",
         }
 
+    def handler_for(self, event_name: str) -> dict[str, object]:
+        """为用户 Hook 或插件生成相同的本机桥接命令。"""
+        if event_name not in CODEX_HOOK_EVENTS:
+            raise CodexLinkError(f"不支持的 Codex Hook 事件：{event_name}")
+        return self._handler(event_name)
+
     def _write_hooks(self, document: dict[str, Any]) -> None:
         self.hooks_path.parent.mkdir(parents=True, exist_ok=True)
         if self.hooks_path.exists():

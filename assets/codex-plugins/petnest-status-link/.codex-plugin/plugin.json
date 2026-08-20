@@ -1,0 +1,21 @@
+{
+  "name": "petnest-status-link",
+  "version": "0.1.0",
+  "description": "让 PetNest 桌宠跟随 Codex 的任务状态",
+  "author": {
+    "name": "PetNest"
+  },
+  "license": "MIT",
+  "keywords": ["petnest", "status", "desktop-pet"],
+  "interface": {
+    "displayName": "PetNest 状态联动",
+    "shortDescription": "让桌宠跟随 Codex 任务状态",
+    "longDescription": "向本机 PetNest 发送任务开始、等待处理、工具结果和完成状态；不读取或保存提示词、回复、代码和工具参数。",
+    "developerName": "PetNest",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "帮我检查 PetNest 状态联动是否正常"
+    ]
+  }
+}

@@ -46,6 +46,7 @@ from petnest.core.codex_link import (
     CodexLinkCoordinator,
     CodexLinkSnapshot,
 )
+from petnest.core.codex_plugin import CodexPluginManager, CodexPluginStatus
 from petnest.core.codex_session_log import CodexSessionLogWatcher
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
@@ -140,6 +141,14 @@ def bundled_cursor_styles_directory() -> Path:
     return Path(__file__).resolve().parents[2] / "assets" / "cursors"
 
 
+def bundled_codex_plugin_directory() -> Path:
+    """定位开发环境或安装包中的 PetNest Codex 插件模板。"""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is not None:
+        return Path(frozen_root) / "assets" / "codex-plugins" / "petnest-status-link"
+    return Path(__file__).resolve().parents[2] / "assets" / "codex-plugins" / "petnest-status-link"
+
+
 def bundled_resource_seed_root() -> Path:
     """定位安装包内可直接复用的默认资源根目录。"""
     frozen_root = getattr(sys, "_MEIPASS", None)
@@ -200,6 +209,7 @@ class PetNest:
         platform_adapter: PlatformEventAdapter | None = None,
         cursor_controller: CursorController | None = None,
         codex_hook_manager: CodexHookManager | None = None,
+        codex_plugin_manager: CodexPluginManager | None = None,
         codex_log_watcher: CodexSessionLogWatcher | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
@@ -208,14 +218,22 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
+        located_codex_home = locate_codex_home()
         self.codex_hook_manager = codex_hook_manager or CodexHookManager(
-            None,
+            located_codex_home,
             self.settings_manager.path.parent,
             port=self.settings.external_event_port,
         )
         self.codex_hook_status = self.codex_hook_manager.inspect()
+        self.codex_plugin_manager = codex_plugin_manager or CodexPluginManager(
+            bundled_codex_plugin_directory(),
+            self.settings_manager.path.parent,
+            codex_home=self.codex_hook_manager.codex_home,
+            hook_manager=self.codex_hook_manager,
+        )
+        self.codex_plugin_status = CodexPluginStatus.missing()
         self.codex_log_watcher = codex_log_watcher or CodexSessionLogWatcher(
-            locate_codex_home() / "sessions"
+            self.codex_hook_manager.codex_home / "sessions"
         )
         self.codex_link_source = "none"
         if not self.settings.device_id:
@@ -846,6 +864,21 @@ class PetNest:
         self.codex_hook_status = self.codex_hook_manager.remove()
         return self.codex_hook_status
 
+    def _configure_codex_plugin(self) -> CodexPluginStatus:
+        """启用或修复可识别的 PetNest 状态插件。"""
+        self.codex_hook_manager.set_port(self.settings.external_event_port)
+        self.codex_plugin_status = self.codex_plugin_manager.install_or_repair()
+        return self.codex_plugin_status
+
+    def _recheck_codex_plugin(self) -> CodexPluginStatus:
+        """刷新 Codex 实际报告的插件安装与启用状态。"""
+        self.codex_plugin_status = self.codex_plugin_manager.inspect()
+        return self.codex_plugin_status
+
+    def _remove_codex_plugin(self) -> CodexPluginStatus:
+        self.codex_plugin_status = self.codex_plugin_manager.remove()
+        return self.codex_plugin_status
+
     def _codex_action_availability(self) -> dict[str, str]:
         requested = {
             "working": self.package.bindings.get("agent.working", "working"),
@@ -876,6 +909,13 @@ class PetNest:
         if consumed and event.event_name == "codex.hook":
             if event.source == "codex-hook":
                 self.codex_link_source = "hook"
+                self.codex_plugin_status = CodexPluginStatus.enabled()
+                mark_confirmed = getattr(self.codex_plugin_manager, "mark_confirmed", None)
+                if callable(mark_confirmed):
+                    try:
+                        mark_confirmed()
+                    except Exception:  # noqa: BLE001 - 状态事件不能因收据写入失败而丢失。
+                        LOGGER.warning("无法记录 Codex 插件确认状态", exc_info=True)
                 self.codex_hook_status = CodexHookStatus(
                     "connected",
                     "完整联动 · 官方 Hook",
@@ -883,7 +923,7 @@ class PetNest:
                     self.codex_hook_status.token,
                 )
                 if self._settings_center_dialog is not None:
-                    self._settings_center_dialog.set_codex_hook_status(self.codex_hook_status)
+                    self._settings_center_dialog.set_codex_plugin_status(self.codex_plugin_status)
             elif event.source == "codex-log":
                 self.codex_link_source = "log"
             self._refresh_codex_link_runtime_view()
@@ -918,6 +958,8 @@ class PetNest:
             dialog.set_codex_link_runtime(self.codex_link_source, self.codex_log_watcher.status)
 
     def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.set_codex_task_state(snapshot.state)
         if not self.settings.codex_link_enabled or snapshot.state in {"idle", "running"}:
             self.codex_review_animation_timer.stop()
             self.window.clear_codex_status()
@@ -995,6 +1037,8 @@ class PetNest:
             ),
             None,
         )
+        self.codex_plugin_status = self.codex_plugin_manager.inspect()
+        codex_home = self.codex_hook_manager.codex_home
         dialog = SettingsDialog(
             self.settings,
             self.window,
@@ -1003,8 +1047,15 @@ class PetNest:
             on_unlock_codex_usage=self._unlock_codex_usage,
             codex_hook_status=self.codex_hook_status,
             codex_link_source=self.codex_link_source,
+            codex_task_state=self.codex_link.snapshot.state,
             codex_log_status=self.codex_log_watcher.status,
             codex_action_availability=self._codex_action_availability(),
+            codex_plugin_status=self.codex_plugin_status,
+            codex_home_path=codex_home,
+            on_configure_codex_plugin=self._configure_codex_plugin,
+            on_recheck_codex_plugin=self._recheck_codex_plugin,
+            on_remove_codex_plugin=self._remove_codex_plugin,
+            on_open_pet_actions=lambda: self.show_pet_action_exchange_dialog("导入动作"),
             on_install_codex_hook=self._install_codex_hook,
             on_remove_codex_hook=self._remove_codex_hook,
             on_test_codex_animation=self._test_codex_link_animation,
@@ -1035,7 +1086,7 @@ class PetNest:
             3_000,
             lambda: self.window.handle_pet_event(PetEvent("agent.idle", source="codex-test", priority=100)),
         )
-        return "正在播放本地 working → review → idle；此测试只验证宠物动作素材。"
+        return "正在播放“任务进行中 → 任务完成 → 待机”；此测试只验证当前宠物动作。"
 
     def _diagnose_codex_link(self) -> str:
         if not self.settings.codex_link_enabled:
@@ -1046,10 +1097,10 @@ class PetNest:
             "waiting": "等待新的 Codex 任务",
             "none": "尚未收到联动事件",
         }.get(self.codex_link_source, self.codex_log_watcher.status.message)
-        hook = self.codex_hook_manager.inspect()
-        fallback = "已开启" if self.settings.codex_link_log_fallback_enabled else "已关闭（仅官方 Hook）"
+        plugin = self.codex_plugin_manager.inspect()
+        fallback = "已开启" if self.settings.codex_link_log_fallback_enabled else "已关闭（仅精确连接）"
         listener = "监听正常" if self.external_server is not None and self.external_server.is_running else "监听未启动"
-        return f"{source}；日志回退{fallback}；Hook：{hook.message}；本机事件{listener}。"
+        return f"{source}；基础日志监听{fallback}；精确连接：{plugin.state}（{plugin.details}）；本机事件{listener}。"
 
     def _check_app_update_from_settings(self) -> None:
         """设置中心内联检查更新，不再打开独立更新窗口。"""

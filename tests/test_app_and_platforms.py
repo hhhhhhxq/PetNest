@@ -22,6 +22,7 @@ from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.codex_link import CodexHookManager
+from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
@@ -71,6 +72,28 @@ class _CodexLogWatcher:
         if events:
             self.status = CodexLogSourceStatus("active", "已联动 · 本地日志回退")
         return events
+
+
+class _CodexPluginManager:
+    def __init__(self, status: CodexPluginStatus | None = None) -> None:
+        self.status = status or CodexPluginStatus.missing()
+        self.inspected = 0
+        self.configured = 0
+        self.removed = 0
+
+    def inspect(self) -> CodexPluginStatus:
+        self.inspected += 1
+        return self.status
+
+    def install_or_repair(self) -> CodexPluginStatus:
+        self.configured += 1
+        self.status = CodexPluginStatus.pending()
+        return self.status
+
+    def remove(self) -> CodexPluginStatus:
+        self.removed += 1
+        self.status = CodexPluginStatus.missing()
+        return self.status
 
 
 def _free_loopback_port() -> int:
@@ -1161,8 +1184,8 @@ def test_disabling_codex_link_clears_state_and_stops_unneeded_server(qtbot: pyte
     application.shutdown()
 
 
-def test_settings_center_installs_and_removes_only_petnest_codex_hooks(
-    qtbot: pytest.QtBot, tmp_path: Path
+def test_settings_center_detects_configures_and_removes_petnest_codex_plugin(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings_manager = SettingsManager(tmp_path / "settings.json")
     port = _free_loopback_port()
@@ -1173,10 +1196,12 @@ def test_settings_center_installs_and_removes_only_petnest_codex_hooks(
         command_prefix=("PetNest.exe",),
     )
     create_sample_pet(tmp_path / "pets" / "sample_pet")
+    plugin_manager = _CodexPluginManager()
     application = PetNest(
         pets_root=tmp_path / "pets",
         settings_manager=settings_manager,
         codex_hook_manager=hook_manager,
+        codex_plugin_manager=plugin_manager,
         enable_tray=False,
     )
     qtbot.addWidget(application.window)
@@ -1184,11 +1209,57 @@ def test_settings_center_installs_and_removes_only_petnest_codex_hooks(
     application._show_settings_center("codex_link")
     dialog = application._settings_center_dialog
     assert dialog is not None
-    qtbot.mouseClick(dialog.codex_hook_install_button, Qt.MouseButton.LeftButton)
-    assert hook_manager.inspect().installed
-    qtbot.mouseClick(dialog.codex_hook_remove_button, Qt.MouseButton.LeftButton)
-    assert not hook_manager.inspect().installed
+    assert plugin_manager.inspected == 1
+    assert dialog.codex_plugin_primary_button.text() == "启用精确连接"
+    qtbot.mouseClick(dialog.codex_plugin_primary_button, Qt.MouseButton.LeftButton)
+    assert plugin_manager.configured == 1
+    assert dialog.codex_plugin_primary_button.text() == "我已完成，重新检查"
+    monkeypatch.setattr(
+        "petnest.ui.settings_center_dialog.QMessageBox.question",
+        lambda *_args, **_kwargs: __import__("PySide6").QtWidgets.QMessageBox.StandardButton.Yes,
+    )
+    dialog.codex_advanced_details_button.click()
+    qtbot.mouseClick(dialog.codex_plugin_remove_button, Qt.MouseButton.LeftButton)
+    assert plugin_manager.removed == 1
+    assert dialog.codex_plugin_primary_button.text() == "启用精确连接"
     dialog.reject()
+    application.shutdown()
+
+
+def test_failed_precise_connection_does_not_stop_basic_codex_log_link(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    watcher = _CodexLogWatcher()
+    plugin = _CodexPluginManager(CodexPluginStatus.error("CET 不兼容"))
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_link_enabled=True, codex_link_log_fallback_enabled=True))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        codex_log_watcher=watcher,
+        codex_plugin_manager=plugin,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+    application._show_settings_center("codex_link")
+
+    assert watcher.is_running
+    assert application.codex_log_timer.isActive()
+    assert application._settings_center_dialog is not None
+    assert "基础联动仍可使用" in application._settings_center_dialog.codex_plugin_summary_label.text()
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "UserPromptSubmit", "session_id": "s", "turn_id": "t"},
+        )
+    )
+    application._poll_codex_logs()
+    assert application._settings_center_dialog.codex_link_runtime_label.text() == "Codex 正在工作"
+    application._settings_center_dialog.reject()
     application.shutdown()
 
 
@@ -1309,6 +1380,8 @@ def test_default_codex_log_watcher_honors_codex_home_override(
     assert application.codex_log_watcher.global_state_path == (
         configured_home / ".codex-global-state.json"
     ).resolve()
+    assert application.codex_hook_manager.codex_home == configured_home.resolve()
+    assert application.codex_plugin_manager.codex_home == configured_home.resolve()
     application.shutdown()
 
 

@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PETNEST_COMMAND__",
+            "commandWindows": "__PETNEST_COMMAND__",
+            "timeout": 5,
+            "async": false,
+            "statusMessage": "同步 PetNest 宠物状态"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PETNEST_COMMAND__",
+            "commandWindows": "__PETNEST_COMMAND__",
+            "timeout": 5,
+            "async": false,
+            "statusMessage": "同步 PetNest 宠物状态"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PETNEST_COMMAND__",
+            "commandWindows": "__PETNEST_COMMAND__",
+            "timeout": 5,
+            "async": false,
+            "statusMessage": "同步 PetNest 宠物状态"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__PETNEST_COMMAND__",
+            "commandWindows": "__PETNEST_COMMAND__",
+            "timeout": 5,
+            "async": false,
+            "statusMessage": "同步 PetNest 宠物状态"
+          }
+        ]
+      }
+    ]
+  }
+}
