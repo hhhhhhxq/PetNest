@@ -1226,6 +1226,45 @@ def test_settings_center_detects_configures_and_removes_petnest_codex_plugin(
     application.shutdown()
 
 
+def test_settings_pet_action_entry_opens_interactive_child_dialog(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        codex_plugin_manager=_CodexPluginManager(),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._show_settings_center("codex_link")
+    settings_dialog = application._settings_center_dialog
+    assert settings_dialog is not None
+    assert settings_dialog.windowModality() == Qt.WindowModality.WindowModal
+
+    settings_dialog.codex_open_pet_actions_button.click()
+
+    action_dialog = application._pet_action_exchange_dialog
+    assert action_dialog is not None
+    assert action_dialog.parentWidget() is settings_dialog
+    assert action_dialog.isVisible()
+    assert action_dialog.isEnabled()
+    destroyed: list[bool] = []
+    action_dialog.destroyed.connect(lambda *_args: destroyed.append(True))
+    action_dialog.reject()
+    qtbot.waitUntil(lambda: bool(destroyed))
+    assert application._pet_action_exchange_dialog is None
+
+    application.show_pet_action_exchange_dialog("导入动作")
+    tray_dialog = application._pet_action_exchange_dialog
+    assert tray_dialog is not None
+    assert tray_dialog.parentWidget() is application.window
+    assert tray_dialog.windowModality() == Qt.WindowModality.NonModal
+    tray_dialog.reject()
+    settings_dialog.reject()
+    application.shutdown()
+
+
 def test_failed_precise_connection_does_not_stop_basic_codex_log_link(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

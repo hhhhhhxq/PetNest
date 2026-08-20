@@ -19,7 +19,7 @@ import uuid
 
 from PySide6.QtCore import QObject, QPoint, QRect, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMenuBar, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QMenuBar, QMessageBox, QWidget
 
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError, AnimationActionSynchronizer
 from petnest import __version__
@@ -1055,7 +1055,10 @@ class PetNest:
             on_configure_codex_plugin=self._configure_codex_plugin,
             on_recheck_codex_plugin=self._recheck_codex_plugin,
             on_remove_codex_plugin=self._remove_codex_plugin,
-            on_open_pet_actions=lambda: self.show_pet_action_exchange_dialog("导入动作"),
+            on_open_pet_actions=lambda: self.show_pet_action_exchange_dialog(
+                "导入动作",
+                parent=self._settings_center_dialog,
+            ),
             on_install_codex_hook=self._install_codex_hook,
             on_remove_codex_hook=self._remove_codex_hook,
             on_test_codex_animation=self._test_codex_link_animation,
@@ -1211,8 +1214,14 @@ class PetNest:
         """兼容旧托盘调用，定位到统一窗口的动作导入页。"""
         self.show_pet_action_exchange_dialog("导入动作")
 
-    def show_pet_action_exchange_dialog(self, page: str = "导入宠物") -> None:
+    def show_pet_action_exchange_dialog(
+        self,
+        page: str = "导入宠物",
+        *,
+        parent: QWidget | None = None,
+    ) -> None:
         """打开统一宠物/动作交换中心，并连接安装后的运行时重载。"""
+        dialog_parent = parent or self.window
         if self._pet_action_exchange_dialog is None:
             dialog = PetActionExchangeDialog(
                 self.packages,
@@ -1221,19 +1230,26 @@ class PetNest:
                 save_animation_timelines=self._save_animation_timelines,
                 is_pet_locked=self._is_pet_locked_for_exchange,
                 pet_store_service=self.pet_store_service,
-                parent=self.window,
+                parent=dialog_parent,
             )
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
             dialog.pet_installed.connect(self._handle_pet_exchange_installed)
             dialog.store_pet_installed.connect(self._handle_store_pet_installed)
             dialog.actions_installed.connect(self._handle_actions_exchange_installed)
             dialog.finished.connect(lambda _result: self._clear_exchange_dialog(dialog))
+            dialog.destroyed.connect(lambda *_args: self._clear_exchange_dialog(dialog))
             self._pet_action_exchange_dialog = dialog
         dialog = self._pet_action_exchange_dialog
+        if dialog.parentWidget() is not dialog_parent:
+            dialog.setParent(dialog_parent, dialog.windowFlags())
         try:
             dialog.select_page(page)
         except ValueError:
             dialog.select_page("导入宠物")
-        dialog.show()
+        if parent is not None:
+            dialog.open()
+        else:
+            dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
