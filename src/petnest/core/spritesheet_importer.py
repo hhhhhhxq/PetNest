@@ -29,7 +29,11 @@ class SpriteSheetLayout:
 
 
 CODEX_STANDARD_LAYOUT = SpriteSheetLayout(columns=8, rows=9, cell_width=192, cell_height=208)
+CODEX_V2_LAYOUT = SpriteSheetLayout(columns=8, rows=11, cell_width=192, cell_height=208)
+SUPPORTED_CODEX_LAYOUTS = (CODEX_STANDARD_LAYOUT, CODEX_V2_LAYOUT)
 _PET_ID_PATTERN = re.compile(r"[a-z][a-z0-9_-]*\Z")
+_LOOK_ROW_ACTIONS = ("look_directions_a", "look_directions_b")
+_LOOK_ACTION = "look_directions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,14 +68,16 @@ class _RowMapping:
 
 _ROW_MAPPINGS: tuple[_RowMapping, ...] = (
     _RowMapping("idle", True, 8, 10, True, frame_durations_ms=(280, 110, 110, 140, 140, 320)),
-    _RowMapping("drag", True, 10, 80, False, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
-    _RowMapping("codex_running_left", True, 10, 20, True, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
+    _RowMapping("drag_right", True, 10, 80, False, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
+    _RowMapping("drag_left", True, 10, 80, False, frame_durations_ms=(120, 120, 120, 120, 120, 120, 120, 220)),
     _RowMapping("click", False, 10, 50, False, "context", (140, 140, 140, 280)),
     _RowMapping("hover", True, 10, 30, True, frame_durations_ms=(140, 140, 140, 140, 280)),
     _RowMapping("error", False, 10, 100, False, "context", (140, 140, 140, 140, 140, 140, 140, 240)),
     _RowMapping("waiting", True, 8, 60, True, frame_durations_ms=(150, 150, 150, 150, 150, 260)),
     _RowMapping("working", True, 10, 60, True, frame_durations_ms=(120, 120, 120, 120, 120, 220)),
     _RowMapping("review", True, 8, 90, True, frame_durations_ms=(150, 150, 150, 150, 150, 280)),
+    _RowMapping("look_directions_a", True, 8, 20, True),
+    _RowMapping("look_directions_b", True, 8, 20, True),
 )
 
 
@@ -80,7 +86,7 @@ class SpriteSheetImportError(ValueError):
 
 
 class SpriteSheetImporter:
-    """以确定性网格裁切将本地 Codex `8 × 9` 图集导入 PetNest。"""
+    """以确定性网格裁切将本地 Codex `8 × 9` / `8 × 11` 图集导入 PetNest。"""
 
     layout = CODEX_STANDARD_LAYOUT
 
@@ -95,20 +101,31 @@ class SpriteSheetImporter:
                     raise SpriteSheetImportError("仅支持 PNG 或 WebP 精灵图")
                 if image.format == "WEBP" and getattr(image, "is_animated", False):
                     raise SpriteSheetImportError("不支持动画 WebP 精灵图，请选择静态 WebP 图集")
-                if image.size != self.layout.image_size:
-                    expected = " × ".join(str(item) for item in self.layout.image_size)
+                layout = next(
+                    (candidate for candidate in SUPPORTED_CODEX_LAYOUTS if image.size == candidate.image_size),
+                    None,
+                )
+                if layout is None:
+                    expected = " 或 ".join(
+                        " × ".join(str(item) for item in candidate.image_size)
+                        for candidate in SUPPORTED_CODEX_LAYOUTS
+                    )
                     actual = " × ".join(str(item) for item in image.size)
                     raise SpriteSheetImportError(f"精灵图尺寸必须为 {expected}，当前为 {actual}")
                 if "A" not in image.getbands():
                     raise SpriteSheetImportError("精灵图必须包含透明 alpha 通道")
                 rgba = image.convert("RGBA")
                 nonempty = tuple(
-                    tuple(column for column in range(self.layout.columns) if self._cell_has_pixels(rgba, row, column))
-                    for row in range(self.layout.rows)
+                    tuple(
+                        column
+                        for column in range(layout.columns)
+                        if self._cell_has_pixels(rgba, row, column, layout)
+                    )
+                    for row in range(layout.rows)
                 )
         except (OSError, UnidentifiedImageError) as error:
             raise SpriteSheetImportError(f"无法读取精灵图：{error}") from error
-        return SpriteSheetInspection(source=path, size=self.layout.image_size, layout=self.layout, nonempty_columns_by_row=nonempty)
+        return SpriteSheetInspection(source=path, size=layout.image_size, layout=layout, nonempty_columns_by_row=nonempty)
 
     def import_file(
         self, source: Path, pets_root: Path, pet_id: str, *, name: str | None = None,
@@ -156,29 +173,53 @@ class SpriteSheetImporter:
             raise SpriteSheetImportError("idle 动作至少要选择一张帧")
         with Image.open(inspection.source) as raw_image:
             image = raw_image.convert("RGBA")
-            for row, mapping in enumerate(_ROW_MAPPINGS):
-                columns = selected_by_action[mapping.action]
+            look_frame_index = 1
+            for row, mapping in enumerate(_ROW_MAPPINGS[: inspection.layout.rows]):
+                columns = selected_by_action.get(mapping.action, ())
                 if not columns:
                     continue
-                action_root = animations_root / mapping.action
-                action_root.mkdir()
+                is_look_row = mapping.action in _LOOK_ROW_ACTIONS
+                action_root = animations_root / (_LOOK_ACTION if is_look_row else mapping.action)
+                action_root.mkdir(exist_ok=is_look_row)
                 for index, column in enumerate(columns, start=1):
-                    left = column * self.layout.cell_width
-                    top = row * self.layout.cell_height
-                    frame = image.crop((left, top, left + self.layout.cell_width, top + self.layout.cell_height))
-                    frame.save(action_root / f"{index:03d}.png")
+                    left = column * inspection.layout.cell_width
+                    top = row * inspection.layout.cell_height
+                    frame = image.crop(
+                        (
+                            left,
+                            top,
+                            left + inspection.layout.cell_width,
+                            top + inspection.layout.cell_height,
+                        )
+                    )
+                    output_index = look_frame_index if is_look_row else index
+                    frame.save(action_root / f"{output_index:03d}.png")
+                    if is_look_row:
+                        look_frame_index += 1
         with Image.open(animations_root / "idle" / "001.png") as preview:
             preview.save(destination / "preview.png")
         (destination / "pet.json").write_text(
-            json.dumps(self._config(identifier, name, selected_by_action), ensure_ascii=False, indent=2) + "\n",
+            json.dumps(
+                self._config(identifier, name, selected_by_action, inspection.layout),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
 
     @staticmethod
-    def _config(identifier: str, name: str, selected_by_action: dict[str, tuple[int, ...]]) -> dict[str, object]:
+    def _config(
+        identifier: str,
+        name: str,
+        selected_by_action: dict[str, tuple[int, ...]],
+        layout: SpriteSheetLayout,
+    ) -> dict[str, object]:
         animations: dict[str, dict[str, object]] = {}
         for mapping in _ROW_MAPPINGS:
-            columns = selected_by_action[mapping.action]
+            if mapping.action in _LOOK_ROW_ACTIONS:
+                continue
+            columns = selected_by_action.get(mapping.action, ())
             if not columns:
                 continue
             definition: dict[str, object] = {
@@ -189,9 +230,22 @@ class SpriteSheetImporter:
             if mapping.next_animation is not None:
                 definition["next"] = mapping.next_animation
             animations[mapping.action] = definition
+        look_frame_count = sum(
+            len(selected_by_action.get(action, ())) for action in _LOOK_ROW_ACTIONS
+        )
+        if look_frame_count:
+            animations[_LOOK_ACTION] = {
+                "path": f"animations/{_LOOK_ACTION}",
+                "fps": 8,
+                "loop": False,
+                "priority": 20,
+                "interruptible": True,
+                "next": "context",
+                "frame_durations_ms": [125] * look_frame_count,
+            }
         return {
             "schema_version": 1, "id": identifier, "name": name, "version": "1.0.0",
-            "description": "由 Codex 8×9 精灵图导入",
+            "description": f"由 Codex 8×{layout.rows} 精灵图导入",
             "canvas": {"width": CODEX_STANDARD_LAYOUT.cell_width, "height": CODEX_STANDARD_LAYOUT.cell_height},
             "display": {"default_scale": 0.8, "min_scale": 0.25, "max_scale": 2.0, "alpha_hit_test_threshold": 10},
             "animations": animations,
@@ -200,25 +254,52 @@ class SpriteSheetImporter:
                 "agent.working": "working", "agent.waiting": "waiting", "agent.success": "review", "agent.error": "error",
                 "system.bored": "bored", "system.sleep": "sleep", "system.wake": "wake",
             },
-            "fallbacks": {"review": ["idle"], "bored": ["idle"], "sleep": ["idle"], "wake": ["idle"]},
-            "import_metadata": {"source_format": "codex_8x9", "selected_columns_by_action": selected_by_action},
+            "fallbacks": {
+                "drag": ["drag_right", "drag_left", "idle"],
+                "review": ["idle"],
+                "bored": ["idle"],
+                "sleep": ["idle"],
+                "wake": ["idle"],
+            },
+            "import_metadata": {
+                "source_format": f"codex_8x{layout.rows}",
+                "selected_columns_by_action": selected_by_action,
+            },
         }
 
     def _selected_columns(
         self, inspection: SpriteSheetInspection, selected_columns_by_action: dict[str, tuple[int, ...]] | None,
     ) -> dict[str, tuple[int, ...]]:
         selected: dict[str, tuple[int, ...]] = {}
-        for row, mapping in enumerate(_ROW_MAPPINGS):
+        for row, mapping in enumerate(_ROW_MAPPINGS[: inspection.layout.rows]):
             columns = inspection.nonempty_columns_by_row[row] if selected_columns_by_action is None else selected_columns_by_action.get(mapping.action, ())
-            if any(isinstance(column, bool) or not isinstance(column, int) or not 0 <= column < self.layout.columns for column in columns):
-                raise SpriteSheetImportError(f"动作 {mapping.action} 的格位必须在 0 到 {self.layout.columns - 1} 之间")
+            if any(
+                isinstance(column, bool)
+                or not isinstance(column, int)
+                or not 0 <= column < inspection.layout.columns
+                for column in columns
+            ):
+                raise SpriteSheetImportError(
+                    f"动作 {mapping.action} 的格位必须在 0 到 {inspection.layout.columns - 1} 之间"
+                )
             selected[mapping.action] = tuple(sorted(set(columns)))
         return selected
 
-    def _cell_has_pixels(self, image: Image.Image, row: int, column: int) -> bool:
-        left = column * self.layout.cell_width
-        top = row * self.layout.cell_height
-        return image.crop((left, top, left + self.layout.cell_width, top + self.layout.cell_height)).getchannel("A").getbbox() is not None
+    def _cell_has_pixels(
+        self,
+        image: Image.Image,
+        row: int,
+        column: int,
+        layout: SpriteSheetLayout,
+    ) -> bool:
+        left = column * layout.cell_width
+        top = row * layout.cell_height
+        return (
+            image.crop((left, top, left + layout.cell_width, top + layout.cell_height))
+            .getchannel("A")
+            .getbbox()
+            is not None
+        )
 
 
 def _duration_for_column(mapping: _RowMapping, column: int) -> int:

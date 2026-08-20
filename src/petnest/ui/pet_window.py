@@ -739,6 +739,8 @@ class PetWindow(QWidget):
         candidates: list[str] = []
         if direction in {"left", "right"}:
             candidates.extend((f"drag_{direction}", f"walk_{direction}"))
+            if direction == "left":
+                candidates.append("codex_running_left")
         candidates.extend(("drag", "walk", "idle"))
         return next(name for name in candidates if name in self.package.animations)
 

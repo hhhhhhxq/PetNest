@@ -38,19 +38,21 @@ from petnest.core.spritesheet_importer import (
 
 _TRIGGER_TEXT = {
     "idle": "默认待机",
-    "drag": "拖动宠物时",
-    "codex_running_left": "可由外部事件触发",
+    "drag_right": "向右拖动宠物时",
+    "drag_left": "向左拖动宠物时",
     "click": "鼠标点击时",
     "hover": "鼠标移入时",
     "error": "任务报错时",
     "waiting": "任务等待时",
     "working": "任务工作时",
     "review": "任务停止待查看时",
+    "look_directions_a": "V2 环视方向 000°–157.5°（合并到 look_directions）",
+    "look_directions_b": "V2 环视方向 180°–337.5°（合并到 look_directions）",
 }
 
 
 class SpriteGridHint(QFrame):
-    """导入区的 8×9 图集示意，不依赖额外切图资源。"""
+    """导入区的 8×11 兼容图集示意，不依赖额外切图资源。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -64,8 +66,8 @@ class SpriteGridHint(QFrame):
         painter.setBrush(QColor("#FBF5F0"))
         painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
         cell_w = max(1, (self.width() - 12) // 8)
-        cell_h = max(1, (self.height() - 12) // 9)
-        for row in range(9):
+        cell_h = max(1, (self.height() - 12) // 11)
+        for row in range(11):
             for col in range(8):
                 painter.drawRect(6 + col * cell_w, 6 + row * cell_h, cell_w, cell_h)
 
@@ -184,10 +186,12 @@ class SpriteSheetImportContent(QWidget):
         dropzone_layout.addWidget(self.browse_button, 0, Qt.AlignmentFlag.AlignHCenter)
         source_layout.addWidget(self.source_dropzone)
         self.rules_label = QLabel(
-            "仅读取本机文件，不上传或联网。透明 PNG 或静态 WebP：1536 × 1872 像素、"
-            "8 列 × 9 行、每格 192 × 208。\n"
-            "默认映射：running-right → drag；waving → click；jumping → hover；failed → error；"
+            "仅读取本机文件，不上传或联网。透明 PNG 或静态 WebP 支持 1536 × 1872（8×9）"
+            "和 1536 × 2288（8×11），每格 192 × 208。\n"
+            "默认映射：running-right → drag_right；running-left → drag_left；waving → click；"
+            "jumping → hover；failed → error；"
             "waiting → waiting；running → working；review → review。\n"
+            "8×11 的最后两行会按顺时针顺序合并为 16 帧 look_directions；"
             "自动模式会跳过无内容格位。"
         )
         self.rules_label.setWordWrap(True)
@@ -388,7 +392,7 @@ class SpriteSheetImportContent(QWidget):
         except SpriteSheetImportError as error:
             self._set_status(f"无法使用此图片：{error}")
             return
-        for row, mapping in enumerate(_ROW_MAPPINGS):
+        for row, mapping in enumerate(_ROW_MAPPINGS[: self._inspection.layout.rows]):
             self._selected_columns[mapping.action] = set(self._inspection.nonempty_columns_by_row[row])
             item = QListWidgetItem(
                 f"{mapping.action}\n{_TRIGGER_TEXT[mapping.action]} · 已选 "

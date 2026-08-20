@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,18 +11,20 @@ from PIL import Image
 from petnest.core.package_loader import PackageLoader
 from petnest.core.spritesheet_importer import (
     CODEX_STANDARD_LAYOUT,
+    CODEX_V2_LAYOUT,
     SpriteSheetImportError,
     SpriteSheetImporter,
+    SpriteSheetLayout,
 )
 
 
-def _spritesheet(path: Path) -> Path:
+def _spritesheet(path: Path, layout: SpriteSheetLayout = CODEX_STANDARD_LAYOUT) -> Path:
     """创建每一格都有可识别像素的最小标准 RGBA 图集。"""
-    image = Image.new("RGBA", CODEX_STANDARD_LAYOUT.image_size, (0, 0, 0, 0))
-    for row in range(CODEX_STANDARD_LAYOUT.rows):
-        for column in range(CODEX_STANDARD_LAYOUT.columns):
+    image = Image.new("RGBA", layout.image_size, (0, 0, 0, 0))
+    for row in range(layout.rows):
+        for column in range(layout.columns):
             image.putpixel(
-                (column * CODEX_STANDARD_LAYOUT.cell_width, row * CODEX_STANDARD_LAYOUT.cell_height),
+                (column * layout.cell_width, row * layout.cell_height),
                 (row * 20, column * 20, 100, 255),
             )
     if path.suffix.lower() == ".webp":
@@ -47,20 +50,28 @@ def test_importer_splits_all_rows_and_generates_a_valid_configured_package(tmp_p
 
     package = PackageLoader().load(result.package_root)
     assert result.package_id == "codex_cat"
+    assert len(package.animations) == 9
     assert package.canvas.width == 192
     assert package.canvas.height == 208
     assert len(package.animations["idle"].frames) == 8
     assert len(package.animations["working"].frames) == 8
     assert package.bindings["agent.success"] == "review"
     assert package.bindings["mouse.enter"] == "hover"
+    assert package.bindings["mouse.drag_start"] == "drag"
     assert "mouse.drag_end" not in package.bindings
     assert "drop" not in package.animations
+    assert "drag" not in package.animations
+    assert "codex_running_left" not in package.animations
+    assert len(package.animations["drag_right"].frames) == 8
+    assert len(package.animations["drag_left"].frames) == 8
     assert len(package.animations["hover"].frames) == 8
     assert len(package.animations["review"].frames) == 8
     assert package.bindings["system.bored"] == "bored"
     assert package.fallbacks["review"] == ("idle",)
+    assert package.fallbacks["drag"] == ("drag_right", "drag_left", "idle")
     assert package.fallbacks["sleep"] == ("idle",)
-    assert (result.package_root / "animations" / "codex_running_left" / "008.png").is_file()
+    assert (result.package_root / "animations" / "drag_right" / "008.png").is_file()
+    assert (result.package_root / "animations" / "drag_left" / "008.png").is_file()
 
 
 def test_importer_accepts_a_static_webp_spritesheet(tmp_path: Path) -> None:
@@ -72,6 +83,49 @@ def test_importer_accepts_a_static_webp_spritesheet(tmp_path: Path) -> None:
     assert result.inspection.source == source.resolve()
     assert len(package.animations["idle"].frames) == 8
     assert all(frame.suffix == ".png" for frame in package.animations["idle"].frames)
+
+
+@pytest.mark.parametrize("suffix", [".png", ".webp"])
+def test_importer_accepts_v2_and_preserves_look_rows(tmp_path: Path, suffix: str) -> None:
+    source = _spritesheet(tmp_path / f"codex-v2{suffix}", CODEX_V2_LAYOUT)
+
+    result = SpriteSheetImporter().import_file(source, tmp_path / "pets", "webp_v2")
+
+    package = PackageLoader().load(result.package_root)
+    config = json.loads((result.package_root / "pet.json").read_text(encoding="utf-8"))
+    assert result.inspection.layout == CODEX_V2_LAYOUT
+    assert len(package.animations) == 10
+    assert "look_directions_a" not in package.animations
+    assert "look_directions_b" not in package.animations
+    assert len(package.animations["look_directions"].frames) == 16
+    assert not package.animations["look_directions"].loop
+    assert package.animations["look_directions"].next_animation == "context"
+    assert (result.package_root / "animations" / "look_directions" / "016.png").is_file()
+    assert {"drag_right", "drag_left"} <= set(package.animations)
+    assert "codex_running_left" not in package.animations
+    assert config["import_metadata"]["source_format"] == "codex_8x11"
+
+
+def test_v2_manual_look_rows_merge_in_clockwise_source_order(tmp_path: Path) -> None:
+    source = _spritesheet(tmp_path / "codex-v2.png", CODEX_V2_LAYOUT)
+
+    result = SpriteSheetImporter().import_file(
+        source,
+        tmp_path / "pets",
+        "manual_v2",
+        selected_columns_by_action={
+            "idle": (0,),
+            "look_directions_a": (0, 4),
+            "look_directions_b": (0, 4),
+        },
+    )
+
+    package = PackageLoader().load(result.package_root)
+    look = package.animations["look_directions"]
+    assert len(look.frames) == 4
+    with Image.open(look.frames[0]) as first, Image.open(look.frames[2]) as third:
+        assert first.getpixel((0, 0)) == (180, 0, 100, 255)
+        assert third.getpixel((0, 0)) == (200, 0, 100, 255)
 
 
 def test_importer_rejects_an_animated_webp_spritesheet(tmp_path: Path) -> None:

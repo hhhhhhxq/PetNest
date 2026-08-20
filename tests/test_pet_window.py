@@ -531,6 +531,7 @@ def test_drag_starts_only_after_threshold_moves_window_and_saves_position(qtbot:
     ("available", "expected"),
     [
         (("drag_left", "walk_left", "drag", "walk"), "drag_left"),
+        (("codex_running_left", "drag", "walk"), "codex_running_left"),
         (("walk_left", "drag", "walk"), "walk_left"),
         (("drag", "walk"), "drag"),
         (("walk",), "walk"),

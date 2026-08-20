@@ -59,6 +59,22 @@ def test_resolver_prefers_walk_over_drag(tmp_path: Path) -> None:
     assert resolved.walk.name == "walk"
 
 
+def test_resolver_uses_directional_drag_when_generic_drag_is_absent(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    animations = {
+        name: definition for name, definition in package.animations.items() if name != "drag"
+    }
+    animations["drag_right"] = replace(source, name="drag_right")
+    animations["drag_left"] = replace(source, name="drag_left")
+    package = replace(package, animations=animations)
+
+    resolved = resolve_work_finish_animation(package)
+
+    assert resolved.walk is not None
+    assert resolved.walk.name == "drag_right"
+
+
 def test_resolver_skips_fullscreen_drag_in_ordinary_fallback(tmp_path: Path) -> None:
     package = _package(tmp_path)
     fullscreen_drag = replace(package.animations["drag"], scope="fullscreen", canvas=Canvas(24, 18))

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QDialog, QFileDialog, QWidget
 
 from petnest.ui.spritesheet_import_content import SpriteSheetImportContent
 from petnest.ui.spritesheet_import_dialog import SpriteSheetImportDialog
+from petnest.core.spritesheet_importer import CODEX_V2_LAYOUT
 from tests.test_spritesheet_importer import _spritesheet
 
 
@@ -77,6 +78,23 @@ def test_hidden_source_picker_keeps_programmatic_inspection_chain(qtbot: object,
     content.set_source(source)
 
     assert content.action_list.count() == 9
+
+
+def test_v2_source_exposes_all_eleven_rows(qtbot: object, tmp_path: Path) -> None:
+    source = _spritesheet(tmp_path / "cat-v2.webp", CODEX_V2_LAYOUT)
+    host = QWidget()
+    qtbot.addWidget(host)
+    content = SpriteSheetImportContent(tmp_path / "pets", show_source_picker=False, parent=host)
+
+    content.set_source(source)
+
+    assert content.action_list.count() == 11
+    assert "look_directions_a" in content.action_list.item(9).text()
+    assert "look_directions_b" in content.action_list.item(10).text()
+    content.manual_select_radio.click()
+    content.action_list.setCurrentRow(10)
+    assert content.manual_frame_title.text().startswith("look_directions_b")
+    assert content.thumbnail_grid.count() == 8
 
 
 def test_source_picker_offers_png_and_webp(

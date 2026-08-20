@@ -24,8 +24,10 @@ def test_dialog_explains_local_only_format_and_default_mapping(qtbot: object, tm
     rules = dialog.rules_label.text()
     assert "不上传" in rules
     assert "1536 × 1872" in rules
+    assert "1536 × 2288" in rules
     assert "WebP" in rules
-    assert "running-right → drag" in rules
+    assert "running-right → drag_right" in rules
+    assert "running-left → drag_left" in rules
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "stepBar") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "sourceCard") is not None
