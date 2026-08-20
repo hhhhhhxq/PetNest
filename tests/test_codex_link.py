@@ -280,6 +280,19 @@ def test_new_turn_replaces_old_review_in_the_same_session() -> None:
     assert coordinator.snapshot.unread_review_count == 0
 
 
+def test_thread_read_removes_only_that_sessions_review() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator.consume(_log("Stop", session="read", turn="t1"))
+    coordinator.consume(_log("Stop", session="unread", turn="t2"))
+    assert coordinator.snapshot.unread_review_count == 2
+
+    assert coordinator.consume(_log("ThreadRead", session="read", turn="ignored"))
+
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.count == 1
+    assert coordinator.snapshot.unread_review_count == 1
+
+
 def test_tool_failure_is_temporary_and_later_activity_restores_running() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)
@@ -338,3 +351,15 @@ def test_marking_reviews_read_keeps_review_state_but_clears_unread_count() -> No
 
     assert coordinator.snapshot.state == "review"
     assert coordinator.snapshot.unread_review_count == 0
+
+
+def test_dismissing_reviews_removes_review_tasks_and_restores_idle() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_hook("Stop"))
+
+    coordinator.dismiss_reviews()
+
+    assert coordinator.snapshot.state == "idle"
+    assert coordinator.snapshot.unread_review_count == 0
+    assert [event.event_name for event in published] == ["agent.success", "agent.idle"]

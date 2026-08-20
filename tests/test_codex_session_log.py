@@ -30,6 +30,19 @@ def _event(name: str, turn_id: str, **extra: object) -> bytes:
     return _line("event_msg", {"type": name, "turn_id": turn_id, **extra})
 
 
+def _write_unread(path: Path, *session_ids: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "electron-persisted-atom-state": {
+                    "unread-thread-ids-by-host-v1": {"local": list(session_ids)}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_start_baselines_existing_file_without_replaying_history(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     path = _day(root) / "rollout-existing.jsonl"
@@ -162,3 +175,31 @@ def test_unrecognized_session_metadata_degrades_to_incompatible(tmp_path: Path) 
 
     assert watcher.poll() == ()
     assert watcher.status.state == "incompatible"
+
+
+def test_unread_thread_removal_emits_thread_read_without_content(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    state_path = tmp_path / ".codex-global-state.json"
+    _write_unread(state_path, "session-read", "session-still-unread")
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY, global_state_path=state_path)
+    watcher.start()
+    _write_unread(state_path, "session-still-unread")
+
+    events = watcher.poll()
+
+    assert len(events) == 1
+    assert events[0].payload == {
+        "hook_event_name": "ThreadRead",
+        "session_id": "session-read",
+    }
+
+
+def test_new_unread_thread_does_not_emit_a_read_event(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    state_path = tmp_path / ".codex-global-state.json"
+    _write_unread(state_path)
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY, global_state_path=state_path)
+    watcher.start()
+    _write_unread(state_path, "session-new")
+
+    assert watcher.poll() == ()

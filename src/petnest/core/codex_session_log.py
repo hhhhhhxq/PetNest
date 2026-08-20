@@ -44,17 +44,24 @@ class CodexSessionLogWatcher:
         root: Path,
         *,
         today: Callable[[], date] = date.today,
+        global_state_path: Path | None = None,
         max_files: int = 64,
         max_read_bytes: int = 2 * 1024 * 1024,
         max_line_bytes: int = 1024 * 1024,
     ) -> None:
         self.root = root.expanduser().resolve()
         self._today = today
+        self.global_state_path = (
+            global_state_path.expanduser().resolve()
+            if global_state_path is not None
+            else self.root.parent / ".codex-global-state.json"
+        )
         self._max_files = max(1, int(max_files))
         self._max_read_bytes = max(1024, int(max_read_bytes))
         self._max_line_bytes = max(1024, int(max_line_bytes))
         self._running = False
         self._cursors: dict[Path, _FileCursor] = {}
+        self._unread_ids: set[str] = set()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
 
     @property
@@ -69,6 +76,7 @@ class CodexSessionLogWatcher:
         """从当前 EOF 建立基线，绝不把历史 turn 当成新状态。"""
         self._running = True
         self._cursors.clear()
+        self._unread_ids = self._read_unread_ids() or set()
         for path in self._candidate_files():
             try:
                 stat = path.stat()
@@ -85,13 +93,14 @@ class CodexSessionLogWatcher:
     def stop(self) -> None:
         self._running = False
         self._cursors.clear()
+        self._unread_ids.clear()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
 
     def poll(self) -> tuple[PetEvent, ...]:
         """读取本轮新增完整行并返回脱敏状态事件。"""
         if not self._running:
             return ()
-        emitted: list[PetEvent] = []
+        emitted: list[PetEvent] = list(self._poll_unread_events())
         for path in self._candidate_files():
             try:
                 stat = path.stat()
@@ -138,6 +147,39 @@ class CodexSessionLogWatcher:
         elif self.root.exists() and self._status.state not in {"active", "incompatible"}:
             self._status = CodexLogSourceStatus("waiting", "等待新的 Codex 任务")
         return tuple(emitted)
+
+    def _poll_unread_events(self) -> tuple[PetEvent, ...]:
+        current = self._read_unread_ids()
+        if current is None:
+            return ()
+        read_ids = self._unread_ids - current
+        self._unread_ids = current
+        return tuple(
+            PetEvent(
+                "codex.hook",
+                source="codex-log",
+                payload={"hook_event_name": "ThreadRead", "session_id": session_id},
+            )
+            for session_id in sorted(read_ids)
+        )
+
+    def _read_unread_ids(self) -> set[str] | None:
+        path = self.global_state_path
+        try:
+            stat = path.stat()
+            if not path.is_file() or path.is_symlink() or stat.st_size > 2 * 1024 * 1024:
+                return None
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(document, dict):
+            return None
+        atoms = document.get("electron-persisted-atom-state")
+        unread_by_host = atoms.get("unread-thread-ids-by-host-v1") if isinstance(atoms, dict) else None
+        values = unread_by_host.get("local") if isinstance(unread_by_host, dict) else None
+        if not isinstance(values, list):
+            return None
+        return {str(value) for value in values[:4096] if _bounded_id(value)}
 
     def _parse_line(self, path: Path, cursor: _FileCursor, raw_line: bytes) -> PetEvent | None:
         try:

@@ -109,6 +109,17 @@ class CodexLinkCoordinator:
         turn_id = _bounded_identifier(payload.get("turn_id"))
         if session_id is None:
             return False
+        if hook_name == "ThreadRead" and event.source == "codex-log":
+            removed = False
+            for key, task in tuple(self._tasks.items()):
+                if key[0] == session_id and task.state == "review":
+                    removed = True
+                    del self._tasks[key]
+                    if self._active_turns.get(session_id) == key[1]:
+                        self._active_turns.pop(session_id, None)
+            if removed:
+                self._emit_snapshot()
+            return removed
         if hook_name == "TurnAborted" and event.source == "codex-log":
             active_turn = turn_id or self._active_turns.get(session_id) or "__session__"
             removed = self._tasks.pop((session_id, active_turn), None) is not None
@@ -175,6 +186,18 @@ class CodexLinkCoordinator:
                 self._tasks[key] = _CodexTask(task.state, False)
         if changed:
             self._emit_snapshot(publish_pet_event=False)
+
+    def dismiss_reviews(self) -> None:
+        """确认并移除 review 任务，恢复剩余任务或输入上下文。"""
+        removed = False
+        for key, task in tuple(self._tasks.items()):
+            if task.state == "review":
+                removed = True
+                del self._tasks[key]
+                if self._active_turns.get(key[0]) == key[1]:
+                    self._active_turns.pop(key[0], None)
+        if removed:
+            self._emit_snapshot()
 
     def clear(self) -> None:
         """关闭联动时清空所有任务并恢复宠物上下文。"""

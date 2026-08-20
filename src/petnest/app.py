@@ -415,6 +415,9 @@ class PetNest:
         self.codex_log_timer = QTimer(self.window)
         self.codex_log_timer.setInterval(250)
         self.codex_log_timer.timeout.connect(self._poll_codex_logs)
+        self.codex_review_animation_timer = QTimer(self.window)
+        self.codex_review_animation_timer.setSingleShot(True)
+        self.codex_review_animation_timer.timeout.connect(self._finish_codex_review_animation)
         self.external_server: ExternalEventServer | None = None
         self._shutdown = False
         self.tray: PetTrayIcon | None = (
@@ -915,8 +918,14 @@ class PetNest:
 
     def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
         if not self.settings.codex_link_enabled or snapshot.state in {"idle", "running"}:
+            self.codex_review_animation_timer.stop()
             self.window.clear_codex_status()
             return
+        if snapshot.state == "review":
+            if not self.codex_review_animation_timer.isActive():
+                self.codex_review_animation_timer.start(self._codex_review_animation_duration_ms())
+        else:
+            self.codex_review_animation_timer.stop()
         if snapshot.state in {"waiting", "failed"}:
             if self.settings.codex_link_show_attention_bubbles:
                 self.window.show_codex_status(snapshot)
@@ -933,12 +942,35 @@ class PetNest:
             self.window.clear_codex_status()
 
     def _activate_codex_status(self) -> None:
-        self.codex_link.mark_reviews_read()
+        self.codex_review_animation_timer.stop()
+        self.codex_link.dismiss_reviews()
         self.window.clear_codex_status()
 
     def _dismiss_codex_status(self) -> None:
-        self.codex_link.mark_reviews_read()
+        self.codex_review_animation_timer.stop()
+        self.codex_link.dismiss_reviews()
         self.window.clear_codex_status()
+
+    def _codex_review_animation_duration_ms(self) -> int:
+        action = self.package.bindings.get("agent.success", "review")
+        definition = self.package.animations.get(action)
+        if definition is None:
+            action = next(
+                (candidate for candidate in self.package.fallbacks.get(action, ()) if candidate in self.package.animations),
+                "idle",
+            )
+            definition = self.package.animations.get(action)
+        if definition is None or action == "idle":
+            return 500
+        if definition.frame_durations_ms:
+            duration = sum(definition.frame_durations_ms)
+        else:
+            duration = round(max(1, len(definition.frames)) * 1000 / max(1, definition.fps))
+        return max(500, min(duration, 10_000))
+
+    def _finish_codex_review_animation(self) -> None:
+        if self.codex_link.snapshot.state == "review":
+            self.window.handle_pet_event(PetEvent("agent.idle", source="codex-link", priority=100))
 
     def show_cursor_style_dialog(self) -> None:
         """保留托盘独立入口，但定位到设置中心的鼠标分类。"""
@@ -1392,6 +1424,7 @@ class PetNest:
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止程序启动更新计时器", self.app_update_startup_timer.stop)
         self._run_shutdown_step("停止 Codex 日志轮询计时器", self.codex_log_timer.stop)
+        self._run_shutdown_step("停止 Codex review 动画计时器", self.codex_review_animation_timer.stop)
         self._run_shutdown_step("停止 Codex 日志回退", self.codex_log_watcher.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)

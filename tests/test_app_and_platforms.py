@@ -1298,9 +1298,11 @@ def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activa
     calls: list[bool] = []
     monkeypatch.setattr("petnest.app._bring_codex_window_to_front", lambda: calls.append(True) or True)
     create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_link_enabled=True))
     application = PetNest(
         pets_root=tmp_path / "pets",
-        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        settings_manager=settings_manager,
         enable_tray=False,
     )
     qtbot.addWidget(application.window)
@@ -1314,8 +1316,38 @@ def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activa
 
     application._activate_codex_status()
 
+    assert application.codex_link.snapshot.state == "idle"
     assert application.codex_link.snapshot.unread_review_count == 0
     assert calls == []
+    application.shutdown()
+
+
+def test_review_animation_returns_to_context_after_one_cycle_while_unread_remains(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_link_enabled=True))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr(application, "_codex_review_animation_duration_ms", lambda: 20)
+
+    application.codex_link.consume(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"},
+        )
+    )
+    assert application.codex_review_animation_timer.isActive()
+    qtbot.waitUntil(lambda: application.window.current_action == "idle", timeout=500)
+
+    assert application.codex_link.snapshot.state == "review"
+    assert application.codex_link.snapshot.unread_review_count == 1
     application.shutdown()
 
 

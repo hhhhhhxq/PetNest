@@ -44,6 +44,8 @@
 - 同 turn 后续 Hook 事件到达后标记为“官方 Hook”，并允许 waiting/failed 覆盖；
 - 只有 JSONL 事件时标记为“本地日志回退”；
 - task_complete 进入 review；turn_aborted 只结束对应 turn，不显示失败气泡；
+- 同时监听 `.codex-global-state.json` 的本机未读会话 ID；review 会话从未读集合移除时，仅清除该会话的 review 气泡；
+- review 动画只播放当前宠物该动作的一个时间线周期，随后恢复 idle，未读徽标与动画生命周期分离；
 - 应用关闭、联动关闭或日志源不可用时清空 watcher 状态并恢复上下文。
 
 因为 JSONL 与 Hook 都可能到达，协调器必须用 session/turn 去重，禁止产生两个并行任务或重复播放 review。
@@ -106,6 +108,8 @@ Hook 不再是主流程前置条件。折叠卡显示：
 
 - 开启联动并保存后，无 Hook 也能在 500ms 内由新 task_started 驱动 working；
 - task_complete 驱动 review，turn_aborted 清理当前状态并恢复 idle；
+- 在 Codex 中打开未读会话后，对应 review 气泡自动消失；
+- review 动画播放一个周期后恢复 idle，不因未读徽标持续循环；
 - 启用时不重放历史会话；
 - 半行、损坏行、文件截断、跨午夜、多会话并发不会崩溃或重复动画；
 - Hook 与 JSONL 同时到达时每个 turn 只有一个聚合状态；

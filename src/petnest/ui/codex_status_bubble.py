@@ -9,6 +9,17 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 from petnest.core.codex_link import CodexLinkSnapshot
 
 
+class _BubbleMessageLabel(QLabel):
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class CodexStatusBubble(QWidget):
     """持续展示注意状态，并把完成提示折叠为未读徽标。"""
 
@@ -36,10 +47,10 @@ class CodexStatusBubble(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(11, 7, 7, 7)
         layout.setSpacing(7)
-        self.message_label = QLabel(self)
+        self.message_label = _BubbleMessageLabel(self)
         self.message_label.setWordWrap(True)
         self.message_label.setMaximumWidth(260)
-        self.message_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.message_label.clicked.connect(self._activate)
         layout.addWidget(self.message_label, 1)
         self.close_button = QPushButton("×", self)
         self.close_button.setFixedSize(20, 20)
@@ -106,12 +117,15 @@ class CodexStatusBubble(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
-            self.dismiss_timer.stop()
-            self.hide()
-            self.activated.emit()
+            self._activate()
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def _activate(self) -> None:
+        self.dismiss_timer.stop()
+        self.hide()
+        self.activated.emit()
 
     def _dismiss(self) -> None:
         self.clear()

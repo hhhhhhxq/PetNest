@@ -62,6 +62,24 @@ def test_review_collapses_to_unread_badge_then_click_marks_it_read(qtbot) -> Non
     assert not bubble.isVisible()
 
 
+def test_clicking_compact_message_label_activates_and_hides_bubble(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=20)
+    qtbot.addWidget(bubble)
+    activated: list[bool] = []
+    bubble.activated.connect(lambda: activated.append(True))
+    bubble.show_snapshot(
+        CodexLinkSnapshot("review", 1, 1, "Codex 任务已停止，等待查看"),
+        QRect(100, 100, 80, 80),
+    )
+    qtbot.waitUntil(lambda: bubble.is_compact, timeout=500)
+    assert not bubble.message_label.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    qtbot.mouseClick(bubble.message_label, Qt.MouseButton.LeftButton)
+
+    assert activated == [True]
+    assert not bubble.isVisible()
+
+
 def test_bubble_geometry_is_clamped_to_available_screen(qtbot) -> None:
     bubble = CodexStatusBubble(review_duration_ms=30)
     qtbot.addWidget(bubble)
