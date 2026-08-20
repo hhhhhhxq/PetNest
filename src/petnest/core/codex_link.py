@@ -490,7 +490,7 @@ def _snapshot_message(state: str, count: int) -> str:
     if state == "failed":
         return "Codex 执行遇到问题" if count == 1 else f"{count} 个 Codex 任务执行遇到问题"
     if state == "review":
-        return "Codex 任务已停止，等待查看" if count == 1 else f"{count} 个 Codex 任务等待查看"
+        return "Codex 任务已完成，等待查看" if count == 1 else f"{count} 个 Codex 任务已完成，等待查看"
     if state == "running":
         return "Codex 正在运行" if count == 1 else f"{count} 个 Codex 任务正在运行"
     return ""

@@ -354,6 +354,36 @@ class CodexUsageClient:
             )
         return account
 
+    def fetch_codex_home(self) -> Path:
+        """只初始化 app-server，读取当前实际生效的 codexHome。"""
+        failures: list[str] = []
+        for executable in self._executables:
+            try:
+                responses = self._transport(
+                    executable,
+                    [
+                        {
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "clientInfo": {"name": "petnest", "version": "0.1.0"},
+                                "capabilities": {"experimentalApi": True},
+                            },
+                        },
+                        {"method": "initialized"},
+                    ],
+                    frozenset({1}),
+                    min(self.timeout, 5.0),
+                )
+                raw_home = responses[1].get("codexHome")
+                if isinstance(raw_home, str) and raw_home.strip():
+                    self.executable = executable
+                    return Path(raw_home).expanduser().resolve()
+                failures.append("app-server 未返回 codexHome")
+            except (CodexUsageError, OSError, ValueError) as error:
+                failures.append(str(error))
+        raise CodexUsageError(failures[-1] if failures else "无法读取 codexHome")
+
     def fetch_report(self) -> CodexUsageReport:
         failures: list[tuple[Path, str]] = []
         candidates = (self.executable,) + tuple(
@@ -497,6 +527,26 @@ def discover_codex_executables() -> tuple[Path, ...]:
     if discovered:
         return tuple(discovered)
     raise CodexUsageError("未找到 Codex。请先安装或更新 ChatGPT/Codex 桌面应用。")
+
+
+def locate_codex_home(
+    *,
+    environment: dict[str, str] | None = None,
+    user_home: Path | None = None,
+    client_factory: Callable[[], CodexUsageClient] = CodexUsageClient,
+) -> Path:
+    """定位当前 Codex 数据根目录，失败时保守回退到用户默认目录。"""
+    values = os.environ if environment is None else environment
+    configured = values.get("CODEX_HOME")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser().resolve()
+    default = ((user_home or Path.home()) / ".codex").expanduser().resolve()
+    if default.is_dir():
+        return default
+    try:
+        return client_factory().fetch_codex_home().expanduser().resolve()
+    except (CodexUsageError, OSError, ValueError):
+        return default
 
 
 def _inferred_account_start(
@@ -1885,6 +1935,7 @@ __all__ = [
     "LocalCodexUsage",
     "discover_codex_executable",
     "discover_codex_executables",
+    "locate_codex_home",
     "scan_local_codex_usage",
     "codex_account_observation_path",
     "codex_device_usage_path",

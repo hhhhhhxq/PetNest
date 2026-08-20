@@ -1292,6 +1292,26 @@ def test_codex_log_fallback_does_not_scan_in_hook_only_mode(qtbot: pytest.QtBot,
     application.shutdown()
 
 
+def test_default_codex_log_watcher_honors_codex_home_override(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configured_home = tmp_path / "portable-codex"
+    monkeypatch.setenv("CODEX_HOME", str(configured_home))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    assert application.codex_log_watcher.root == (configured_home / "sessions").resolve()
+    assert application.codex_log_watcher.global_state_path == (
+        configured_home / ".codex-global-state.json"
+    ).resolve()
+    application.shutdown()
+
+
 def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activation(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -24,8 +24,50 @@ from petnest.core.codex_usage import (
     CodexUsageHistoryStore,
     LocalCodexUsage,
     discover_codex_executable,
+    locate_codex_home,
     scan_local_codex_usage,
 )
+
+
+def test_codex_home_locator_prefers_environment_override(tmp_path: Path) -> None:
+    configured = tmp_path / "portable-codex"
+
+    resolved = locate_codex_home(
+        environment={"CODEX_HOME": str(configured)},
+        user_home=tmp_path / "user",
+        client_factory=lambda: (_ for _ in ()).throw(AssertionError("不应启动 app-server")),
+    )
+
+    assert resolved == configured.resolve()
+
+
+def test_codex_home_locator_uses_existing_default_without_starting_server(tmp_path: Path) -> None:
+    default = tmp_path / "user" / ".codex"
+    (default / "sessions").mkdir(parents=True)
+
+    resolved = locate_codex_home(
+        environment={},
+        user_home=tmp_path / "user",
+        client_factory=lambda: (_ for _ in ()).throw(AssertionError("不应启动 app-server")),
+    )
+
+    assert resolved == default.resolve()
+
+
+def test_codex_home_locator_uses_app_server_when_default_is_missing(tmp_path: Path) -> None:
+    discovered = tmp_path / "managed-codex-home"
+
+    class Client:
+        def fetch_codex_home(self) -> Path:
+            return discovered
+
+    resolved = locate_codex_home(
+        environment={},
+        user_home=tmp_path / "user",
+        client_factory=Client,
+    )
+
+    assert resolved == discovered.resolve()
 
 
 def _responses(codex_home: Path, *, email: str = "person@example.com") -> tuple[dict[int, dict[str, Any]], datetime]:

@@ -37,6 +37,7 @@ from petnest.core.codex_usage import (
     CodexUsageClient,
     codex_account_observation_path,
     codex_device_usage_path,
+    locate_codex_home,
 )
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.codex_link import (
@@ -214,7 +215,7 @@ class PetNest:
         )
         self.codex_hook_status = self.codex_hook_manager.inspect()
         self.codex_log_watcher = codex_log_watcher or CodexSessionLogWatcher(
-            Path.home() / ".codex" / "sessions"
+            locate_codex_home() / "sessions"
         )
         self.codex_link_source = "none"
         if not self.settings.device_id:

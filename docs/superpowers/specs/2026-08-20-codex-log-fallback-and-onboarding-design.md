@@ -18,7 +18,8 @@
 
 新增纯核心 `CodexSessionLogWatcher`：
 
-- 默认目录为 `~/.codex/sessions/YYYY/MM/DD`，同时检查今天与前一天以覆盖跨午夜任务；
+- Codex Home 按 `CODEX_HOME` 环境覆盖 → 已存在的默认 `~/.codex` → app-server `codexHome` → 默认目录兜底定位；
+- 会话目录为 `<codexHome>/sessions/YYYY/MM/DD`，同时检查今天与前一天以覆盖跨午夜任务；
 - 开启时把已有文件偏移设为 EOF，不重放历史任务；
 - 新文件从头读取，现有文件只读取上次偏移后的字节；
 - 不完整的最后一行保留到下次 poll，单行过大或格式错误时安全跳过；
@@ -46,6 +47,7 @@
 - task_complete 进入 review；turn_aborted 只结束对应 turn，不显示失败气泡；
 - 同时监听 `.codex-global-state.json` 的本机未读会话 ID；review 会话从未读集合移除时，仅清除该会话的 review 气泡；
 - review 动画只播放当前宠物该动作的一个时间线周期，随后恢复 idle，未读徽标与动画生命周期分离；
+- review 完整文案使用“任务已完成，等待查看”，随后折叠为“1 个待查看”；两者是同一条提醒的完整/紧凑形态；
 - 应用关闭、联动关闭或日志源不可用时清空 watcher 状态并恢复上下文。
 
 因为 JSONL 与 Hook 都可能到达，协调器必须用 session/turn 去重，禁止产生两个并行任务或重复播放 review。

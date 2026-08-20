@@ -207,6 +207,7 @@ def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
 
     assert coordinator.consume(_hook("Stop"))
     assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.message == "Codex 任务已完成，等待查看"
     assert coordinator.snapshot.unread_review_count == 1
     assert published[-1].event_name == "agent.success"
     assert snapshots[-1] == coordinator.snapshot
