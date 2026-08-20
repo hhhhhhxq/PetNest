@@ -38,6 +38,7 @@ class WorkFinishBundleSummary:
     canvas: tuple[int, int]
     walk_frames: int
     lie_down_frames: int
+    lie_loop_frames: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +61,16 @@ class _Bundle:
     canvas: tuple[int, int]
     walk: _Phase
     lie_down: _Phase
+    lie_loop: _Phase | None = None
 
     def summary(self) -> WorkFinishBundleSummary:
-        return WorkFinishBundleSummary(self.name, self.canvas, len(self.walk.frames), len(self.lie_down.frames))
+        return WorkFinishBundleSummary(
+            self.name,
+            self.canvas,
+            len(self.walk.frames),
+            len(self.lie_down.frames),
+            len(self.lie_loop.frames) if self.lie_loop is not None else 0,
+        )
 
 
 class WorkFinishImporter:
@@ -84,19 +92,21 @@ class WorkFinishImporter:
         try:
             with self.open_action_pack(source) as pack:
                 summary = _summary_from_action_pack(pack)
-                install_actions(
+                install_result = install_actions(
                     pet,
                     pack,
-                    decisions={
-                        "work_finish_walk": ConflictDecision.replace(),
-                        "work_finish_lie_down": ConflictDecision.replace(),
-                    },
+                    decisions={name: ConflictDecision.replace() for name in pack.actions},
+                    remove_actions=("work_finish_lie_loop",)
+                    if "work_finish_lie_loop" not in pack.actions
+                    else (),
                 )
+                install_result.finalize()
                 return WorkFinishImportResult(
                     summary.name,
                     summary.canvas,
                     summary.walk_frames,
                     summary.lie_down_frames,
+                    summary.lie_loop_frames,
                     pet,
                 )
         except WorkFinishImportError:
@@ -185,7 +195,8 @@ class WorkFinishImporter:
         canvas = _canvas(raw.get("canvas"))
         walk = self._phase(root, raw.get("walk"), canvas, "walk")
         lie_down = self._phase(root, raw.get("lie_down"), canvas, "lie_down")
-        return _Bundle(root, name.strip(), canvas, walk, lie_down)
+        lie_loop = self._phase(root, raw.get("lie_loop"), canvas, "lie_loop") if "lie_loop" in raw else None
+        return _Bundle(root, name.strip(), canvas, walk, lie_down, lie_loop)
 
     @staticmethod
     def _phase(root: Path, value: object, canvas: tuple[int, int], label: str) -> _Phase:
@@ -291,6 +302,9 @@ def _summary_from_action_pack(pack: ActionPack) -> WorkFinishBundleSummary:
         (width, height),
         len(walk.asset_paths),
         len(lie_down.asset_paths),
+        len(pack.actions["work_finish_lie_loop"].asset_paths)
+        if "work_finish_lie_loop" in pack.actions
+        else 0,
     )
 
 

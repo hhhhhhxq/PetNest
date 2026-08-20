@@ -31,7 +31,29 @@ def test_resolver_prefers_complete_fullscreen_pair(tmp_path: Path) -> None:
     assert resolved.walk.name == "work_finish_walk"
     assert resolved.lie_down is not None
     assert resolved.lie_down.name == "work_finish_lie_down"
+    assert resolved.lie_loop is None
     assert resolved.is_specialized
+
+
+def test_resolver_includes_optional_fullscreen_lie_loop(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    package = _with_fullscreen_action(package, "idle", "work_finish_walk")
+    package = _with_fullscreen_action(package, "click", "work_finish_lie_down")
+    package = _with_fullscreen_action(package, "hover", "work_finish_lie_loop")
+
+    resolved = resolve_work_finish_animation(package)
+
+    assert resolved.lie_loop is not None
+    assert resolved.lie_loop.name == "work_finish_lie_loop"
+
+
+def test_resolver_ignores_isolated_lie_loop_without_complete_pair(tmp_path: Path) -> None:
+    package = _with_fullscreen_action(_package(tmp_path), "idle", "work_finish_lie_loop")
+
+    resolved = resolve_work_finish_animation(package)
+
+    assert resolved.lie_loop is None
+    assert not resolved.is_specialized
 
 
 def test_resolver_uses_current_pet_drag_and_sleep_fallbacks(tmp_path: Path) -> None:

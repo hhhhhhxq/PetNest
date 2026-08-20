@@ -29,8 +29,10 @@ class WorkFinishAnimationWindow(QWidget):
         self._started_at = 0.0
         self._walk_frames: tuple[QPixmap, ...] = ()
         self._lie_frames: tuple[QPixmap, ...] = ()
+        self._lie_loop_frames: tuple[QPixmap, ...] = ()
         self._walk_durations: tuple[int, ...] = ()
         self._lie_durations: tuple[int, ...] = ()
+        self._lie_loop_durations: tuple[int, ...] = ()
         self._entrance_direction = "right"
         self.current_phase = "hidden"
         self.current_frame_index = 0
@@ -52,8 +54,10 @@ class WorkFinishAnimationWindow(QWidget):
         animation = resolve_work_finish_animation(package)
         self._walk_frames = _pixmaps(animation.walk)
         self._lie_frames = _pixmaps(animation.lie_down)
+        self._lie_loop_frames = _pixmaps(animation.lie_loop)
         self._walk_durations = _durations(animation.walk, len(self._walk_frames))
         self._lie_durations = _durations(animation.lie_down, len(self._lie_frames))
+        self._lie_loop_durations = _durations(animation.lie_loop, len(self._lie_loop_frames))
         self._entrance_direction = getattr(animation.walk, "entrance_direction", "right")
         if self._entrance_direction not in {"left", "right", "none"}:
             self._entrance_direction = "right"
@@ -62,7 +66,7 @@ class WorkFinishAnimationWindow(QWidget):
         self._started_at = self._clock()
         self.current_phase = "walking"
         self.current_frame_index = 0
-        if not self._walk_frames and not self._lie_frames:
+        if not self._walk_frames and not self._lie_frames and not self._lie_loop_frames:
             self.hide()
             self.timer.stop()
             return
@@ -89,8 +93,16 @@ class WorkFinishAnimationWindow(QWidget):
             lie_elapsed_ms = max(0, int((elapsed - self.WALK_SECONDS) * 1000))
             lie_total = sum(self._lie_durations)
             if lie_elapsed_ms >= lie_total:
-                self.current_phase = "holding"
-                self.current_frame_index = len(self._lie_frames) - 1
+                if self._lie_loop_frames:
+                    self.current_phase = "lying_loop"
+                    self.current_frame_index = _timeline_index(
+                        lie_elapsed_ms - lie_total,
+                        self._lie_loop_durations,
+                        loop=True,
+                    )
+                else:
+                    self.current_phase = "holding"
+                    self.current_frame_index = len(self._lie_frames) - 1
             else:
                 self.current_phase = "lying"
                 self.current_frame_index = _timeline_index(
@@ -133,7 +145,12 @@ class WorkFinishAnimationWindow(QWidget):
         painter.drawPixmap(self.current_frame_rect(), pixmap)
 
     def _current_pixmap(self) -> QPixmap | None:
-        frames = self._walk_frames if self.current_phase == "walking" else self._lie_frames or self._walk_frames
+        if self.current_phase == "walking":
+            frames = self._walk_frames
+        elif self.current_phase == "lying_loop":
+            frames = self._lie_loop_frames
+        else:
+            frames = self._lie_frames or self._walk_frames
         if not frames:
             return None
         return frames[min(self.current_frame_index, len(frames) - 1)]

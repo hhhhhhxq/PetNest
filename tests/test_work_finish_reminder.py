@@ -13,7 +13,7 @@ from petnest.ui.work_finish_reminder import WorkFinishReminder
 from tests.test_pet_window import _package
 
 
-def _with_fullscreen_pair(package, direction: str):
+def _with_fullscreen_pair(package, direction: str, *, include_loop: bool = False):
     walk = replace(
         package.animations["idle"],
         name="work_finish_walk",
@@ -27,10 +27,16 @@ def _with_fullscreen_pair(package, direction: str):
         scope="fullscreen",
         canvas=Canvas(24, 18),
     )
-    return replace(
-        package,
-        animations={**package.animations, "work_finish_walk": walk, "work_finish_lie_down": lie_down},
-    )
+    animations = {**package.animations, "work_finish_walk": walk, "work_finish_lie_down": lie_down}
+    if include_loop:
+        animations["work_finish_lie_loop"] = replace(
+            package.animations["hover"],
+            name="work_finish_lie_loop",
+            scope="fullscreen",
+            canvas=Canvas(24, 18),
+            loop=True,
+        )
+    return replace(package, animations=animations)
 
 
 def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp_path: Path) -> None:
@@ -77,6 +83,29 @@ def test_animation_moves_from_offscreen_right_to_center_and_holds_last_lie_frame
     reminder.animation_window._refresh_frame()
     assert reminder.animation_window.current_phase == "holding"
     assert reminder.animation_window.current_frame_index == 1
+    reminder.hide()
+
+
+def test_animation_starts_optional_lie_loop_at_zero_then_repeats(qtbot, tmp_path: Path) -> None:
+    now = [0.0]
+    reminder = WorkFinishReminder(clock=lambda: now[0])
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    package = _with_fullscreen_pair(_package(tmp_path), "right", include_loop=True)
+    reminder.show_for(package, QRect(0, 0, 1000, 800), datetime(2026, 8, 14, 18, 0))
+
+    now[0] = 4.201
+    reminder.animation_window._refresh_frame()
+    assert reminder.animation_window.current_phase == "lying_loop"
+    assert reminder.animation_window.current_frame_index == 0
+
+    now[0] = 4.301
+    reminder.animation_window._refresh_frame()
+    assert reminder.animation_window.current_frame_index == 1
+
+    now[0] = 4.401
+    reminder.animation_window._refresh_frame()
+    assert reminder.animation_window.current_frame_index == 0
     reminder.hide()
 
 

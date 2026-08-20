@@ -119,29 +119,45 @@ def test_extract_actions_rejects_path_escape(tmp_path: Path) -> None:
         extract_pet_actions(root)
 
 
-def test_legacy_work_finish_pack_adapts_to_transfer_actions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("include_loop", [False, True])
+def test_legacy_work_finish_pack_adapts_optional_loop_to_transfer_actions(
+    tmp_path: Path, include_loop: bool
+) -> None:
     root = tmp_path / "legacy"
     root.mkdir()
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "name": "平安下班",
-                "canvas": {"width": 8, "height": 8},
-                "walk": {"path": "walk", "fps": 10},
-                "lie_down": {"path": "lie-down", "fps": 8, "frame_durations_ms": [100, 200]},
-            }
-        ),
-        encoding="utf-8",
-    )
+    manifest = {
+        "name": "平安下班",
+        "canvas": {"width": 8, "height": 8},
+        "walk": {"path": "walk", "fps": 10},
+        "lie_down": {"path": "lie-down", "fps": 8, "frame_durations_ms": [100, 200]},
+    }
+    if include_loop:
+        manifest["lie_loop"] = {
+            "path": "lie-loop",
+            "fps": 6,
+            "frame_durations_ms": [120, 180, 240],
+        }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     write_png(root / "walk" / "001.png")
     write_png(root / "lie-down" / "001.png")
     write_png(root / "lie-down" / "002.png")
+    if include_loop:
+        for index in range(1, 4):
+            write_png(root / "lie-loop" / f"{index:03d}.png")
 
     pack = load_legacy_work_finish_pack(root)
 
-    assert set(pack.actions) == {"work_finish_walk", "work_finish_lie_down"}
+    expected = {"work_finish_walk", "work_finish_lie_down"}
+    if include_loop:
+        expected.add("work_finish_lie_loop")
+    assert set(pack.actions) == expected
     assert pack.actions["work_finish_lie_down"].definition["scope"] == "fullscreen"
     assert pack.actions["work_finish_lie_down"].definition["frame_durations_ms"] == [100, 200]
+    if include_loop:
+        loop = pack.actions["work_finish_lie_loop"]
+        assert loop.definition["scope"] == "fullscreen"
+        assert loop.definition["loop"] is True
+        assert loop.definition["frame_durations_ms"] == [120, 180, 240]
     pack.close()
 
 

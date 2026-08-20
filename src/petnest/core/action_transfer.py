@@ -124,7 +124,8 @@ def load_legacy_work_finish_pack(root: Path):
     if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in (width, height)):
         raise ActionTransferError("manifest.canvas 尺寸必须是正整数")
     phases: dict[str, tuple[Path, float, tuple[Path, ...], list[int] | None]] = {}
-    for label in ("walk", "lie_down"):
+    phase_labels = ("walk", "lie_down") + (("lie_loop",) if "lie_loop" in manifest else ())
+    for label in phase_labels:
         value = manifest.get(label)
         if not isinstance(value, Mapping):
             raise ActionTransferError(f"manifest.{label} 必须是对象")
@@ -156,7 +157,10 @@ def load_legacy_work_finish_pack(root: Path):
     for label, action_name, loop in (
         ("walk", "work_finish_walk", True),
         ("lie_down", "work_finish_lie_down", False),
+        ("lie_loop", "work_finish_lie_loop", True),
     ):
+        if label not in phases:
+            continue
         phase_path, fps, frames, durations = phases[label]
         definition: dict[str, object] = {
             "path": phase_path.relative_to(package_root).as_posix(),

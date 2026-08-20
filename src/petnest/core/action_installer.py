@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 import json
@@ -117,6 +117,7 @@ def install_actions(
     decisions: Mapping[str, ConflictDecision] | None = None,
     *,
     import_bindings: bool = False,
+    remove_actions: Sequence[str] = (),
 ) -> InstallResult:
     """安装到不可变动作修订目录，仅以 ``pet.json`` 作为提交点。"""
 
@@ -136,7 +137,11 @@ def install_actions(
         raise ActionInstallError("目标宠物的 animations 必须是对象")
     decisions = decisions or {}
     plans, skipped, renamed = _build_plans(pack, animations, decisions)
-    if not plans:
+    removal_names = _removal_names(animations, remove_actions)
+    planned_keys = {_action_key(plan.target_name) for plan in plans}
+    if any(_action_key(name) in planned_keys for name in removal_names):
+        raise ActionInstallError("同一个动作不能在一次事务中同时安装和删除")
+    if not plans and not removal_names:
         return InstallResult(target, (), tuple(skipped), dict(renamed), original_config, original_config, (), ())
 
     candidate_config = json.loads(json.dumps(config, ensure_ascii=False))
@@ -147,6 +152,11 @@ def install_actions(
     superseded: list[Path] = []
     try:
         revisions_root = _prepare_revisions_root(target)
+        for name in removal_names:
+            old_definition = candidate_animations.pop(name, None)
+            if isinstance(old_definition, Mapping):
+                superseded.append(_managed_animation_directory(target, old_definition.get("path")))
+        _remove_action_references(candidate_config, set(removal_names))
         for plan in plans:
             if plan.replace_existing:
                 old_definition = candidate_animations.get(plan.target_name)
@@ -184,6 +194,39 @@ def install_actions(
         created_revision_dirs=tuple(created),
         superseded_dirs=tuple(dict.fromkeys(superseded)),
     )
+
+
+def _removal_names(
+    existing: Mapping[object, object],
+    requested: Sequence[str],
+) -> tuple[str, ...]:
+    by_key: dict[str, str] = {}
+    for name in existing:
+        if isinstance(name, str):
+            safe = _safe_name(name)
+            by_key[_action_key(safe)] = safe
+    result: list[str] = []
+    for name in requested:
+        safe = _safe_name(name)
+        existing_name = by_key.get(_action_key(safe))
+        if existing_name is not None and existing_name not in result:
+            result.append(existing_name)
+    return tuple(result)
+
+
+def _remove_action_references(config: dict[str, object], removed: set[str]) -> None:
+    bindings = config.get("bindings")
+    if isinstance(bindings, dict):
+        for event, target in tuple(bindings.items()):
+            if target in removed:
+                del bindings[event]
+    fallbacks = config.get("fallbacks")
+    if isinstance(fallbacks, dict):
+        for action, candidates in tuple(fallbacks.items()):
+            if action in removed:
+                del fallbacks[action]
+            elif isinstance(candidates, list):
+                fallbacks[action] = [candidate for candidate in candidates if candidate not in removed]
 
 
 def _build_plans(

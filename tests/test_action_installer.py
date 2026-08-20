@@ -131,6 +131,34 @@ def test_install_result_rollback_restores_config_and_removes_new_revisions(tmp_p
     assert (target / "animations" / "walk" / "001.png").is_file()
 
 
+def test_install_can_atomically_remove_an_action_and_rollback_its_config(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target, actions=("idle", "walk", "obsolete_loop"))
+    before = (target / "pet.json").read_bytes()
+
+    result = install_actions(
+        target,
+        build_pack(tmp_path),
+        remove_actions=("obsolete_loop",),
+    )
+
+    installed = json.loads((target / "pet.json").read_text(encoding="utf-8"))
+    assert "obsolete_loop" not in installed["animations"]
+    assert target / "animations" / "obsolete_loop" in result.superseded_dirs
+    assert (target / "animations" / "obsolete_loop").is_dir()
+
+    assert result.rollback() == ()
+    assert (target / "pet.json").read_bytes() == before
+
+
+def test_install_rejects_removing_an_action_that_is_installed_in_same_transaction(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target)
+
+    with pytest.raises(ActionInstallError, match="同时安装和删除"):
+        install_actions(target, build_pack(tmp_path), remove_actions=("walk",))
+
+
 def test_rollback_refuses_to_overwrite_config_changed_after_install(tmp_path: Path) -> None:
     target = tmp_path / "target"
     write_pet(target)

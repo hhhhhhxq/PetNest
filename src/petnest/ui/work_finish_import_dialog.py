@@ -66,9 +66,14 @@ class WorkFinishImportDialog(QDialog):
         summary = self.importer.inspect(Path(source))
         self.source = Path(source)
         self.source_label.setText(str(self.source))
+        loop_summary = (
+            f"循环 {summary.lie_loop_frames} 帧"
+            if summary.lie_loop_frames
+            else "躺下后保持最后一帧"
+        )
         self.summary_label.setText(
             f"{summary.name} · 画布 {summary.canvas[0]} × {summary.canvas[1]} · "
-            f"走路 {summary.walk_frames} 帧 · 躺下 {summary.lie_down_frames} 帧"
+            f"走路 {summary.walk_frames} 帧 · 躺下 {summary.lie_down_frames} 帧 · {loop_summary}"
         )
         self.install_button.setEnabled(True)
 
@@ -77,7 +82,7 @@ class WorkFinishImportDialog(QDialog):
             return
         has_existing = any(
             (self.package.root / "animations" / action).exists()
-            for action in ("work_finish_walk", "work_finish_lie_down")
+            for action in ("work_finish_walk", "work_finish_lie_down", "work_finish_lie_loop")
         )
         if has_existing and QMessageBox.question(
             self,

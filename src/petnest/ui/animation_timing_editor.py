@@ -52,6 +52,7 @@ _TRIGGER_TEXT = {
     "wake": "系统恢复输入时",
     "work_finish_walk": "全屏下班提醒 · 走路循环",
     "work_finish_lie_down": "全屏下班提醒 · 躺下过渡",
+    "work_finish_lie_loop": "全屏下班提醒 · 躺下循环",
 }
 _PREVIEW_HIGHLIGHT_STYLE = (
     f"background: {COLORS['accent_soft']}; border: 1px solid {COLORS['accent']}; border-radius: 8px;"
