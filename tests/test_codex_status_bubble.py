@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtGui import QColor, QImage
+from PySide6.QtWidgets import QApplication
 
 from petnest.core.codex_link import CodexLinkSnapshot
 from petnest.ui.codex_status_bubble import CodexStatusBubble
@@ -72,3 +74,21 @@ def test_bubble_geometry_is_clamped_to_available_screen(qtbot) -> None:
     )
 
     assert available.contains(bubble.frameGeometry())
+
+
+def test_translucent_top_level_bubble_explicitly_paints_rounded_background(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=30)
+    qtbot.addWidget(bubble)
+    bubble.show_snapshot(
+        CodexLinkSnapshot("review", 1, 1, "Codex 任务已停止，等待查看"),
+        QRect(100, 100, 80, 80),
+    )
+    QApplication.processEvents()
+    image = QImage(bubble.size(), QImage.Format.Format_ARGB32)
+    image.fill(Qt.GlobalColor.transparent)
+
+    bubble.render(image)
+
+    interior = image.pixelColor(image.width() // 2, max(2, image.height() - 5))
+    assert interior.alpha() == 255
+    assert interior == QColor("#fffaf5")

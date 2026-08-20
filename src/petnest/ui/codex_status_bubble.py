@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QMouseEvent
+from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from petnest.core.codex_link import CodexLinkSnapshot
@@ -29,7 +29,6 @@ class CodexStatusBubble(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setObjectName("codexStatusBubble")
         self.setStyleSheet(
-            "#codexStatusBubble { background: #fffaf5; border: 1px solid #efcdbd; border-radius: 12px; }"
             "QLabel { color: #684d45; font-size: 12px; }"
             "QPushButton { border: none; color: #a58b80; background: transparent; font-size: 15px; }"
             "QPushButton:hover { color: #7e5a4c; }"
@@ -61,6 +60,14 @@ class CodexStatusBubble(QWidget):
 
     def text(self) -> str:
         return self.message_label.text()
+
+    def paintEvent(self, _event: QPaintEvent) -> None:  # noqa: N802 - Qt override
+        """Windows 透明顶层窗口必须显式绘制，样式表背景可能被合成器忽略。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#efcdbd"), 1))
+        painter.setBrush(QColor("#fffaf5"))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 12, 12)
 
     def show_snapshot(
         self,
