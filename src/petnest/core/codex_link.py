@@ -12,7 +12,6 @@ import secrets
 import shlex
 import shutil
 import socket
-import subprocess
 import sys
 from typing import Any
 
@@ -314,7 +313,11 @@ class CodexHookManager:
         return {
             "type": "command",
             "command": shlex.join(arguments),
-            "commandWindows": subprocess.list2cmdline(arguments),
+            # Codex Desktop 在 Windows 上通过 PowerShell `-Command` 执行
+            # commandWindows。带空格的可执行路径必须使用调用运算符 &；
+            # subprocess.list2cmdline 生成的是 cmd.exe 语法，会被当成
+            # 普通字符串而不启动进程。
+            "commandWindows": _powershell_command(arguments),
             "timeout": 3 if event_name == "SessionEnd" else 5,
             "async": False,
             "statusMessage": "同步 PetNest 宠物状态",
@@ -444,6 +447,12 @@ def _default_command_prefix() -> tuple[str, ...]:
     if getattr(sys, "frozen", False):
         return (str(Path(sys.executable).resolve()),)
     return (str(Path(sys.executable).resolve()), "-m", "petnest")
+
+
+def _powershell_command(arguments: tuple[str, ...]) -> str:
+    """生成可直接交给 PowerShell ``-Command`` 的安全参数表达式。"""
+    quoted = " ".join("'" + argument.replace("'", "''") + "'" for argument in arguments)
+    return f"& {quoted}"
 
 
 def _hook_events(document: Mapping[str, object]) -> Mapping[str, object]:
