@@ -299,6 +299,8 @@ class SettingsCenterDialog(QDialog):
         on_diagnose_codex_link: Callable[[], str] | None = None,
         cursor_styles: list[CursorStyle] | None = None,
         supported_roles: Iterable[str] | None = None,
+        keyboard_activity_supported: bool = False,
+        keyboard_activity_status: str = "已关闭",
         pet_preview_path: Path | None = None,
         initial_section: str = "display",
     ) -> None:
@@ -306,6 +308,8 @@ class SettingsCenterDialog(QDialog):
         self._settings = settings
         self._cursor_styles = cursor_styles or []
         self._supported_roles = frozenset(supported_roles) if supported_roles is not None else None
+        self._keyboard_activity_supported = keyboard_activity_supported
+        self._keyboard_activity_status = keyboard_activity_status
         self._on_check_app_update = on_check_app_update
         self._on_download_app_update = on_download_app_update
         self._on_unlock_codex_usage = on_unlock_codex_usage
@@ -762,6 +766,31 @@ class SettingsCenterDialog(QDialog):
         behavior_form.addRow("跟随时宠物大小", self.mouse_follow_scale_input)
         behavior_layout.addLayout(behavior_form)
         layout.addWidget(behavior_card)
+
+        keyboard_card, keyboard_layout = self._card(
+            "键盘活动",
+            "在其他应用输入时也会生效；PetNest 只识别键盘活动，不记录按键或输入内容。",
+            page,
+        )
+        self.keyboard_working_input = ToggleSwitch("敲键盘时播放工作动作", keyboard_card)
+        self.keyboard_working_input.setChecked(self._settings.keyboard_working_enabled)
+        self.keyboard_working_input.setEnabled(self._keyboard_activity_supported)
+        keyboard_layout.addWidget(self.keyboard_working_input)
+        self.keyboard_activity_status_label = QLabel(self._keyboard_activity_status, keyboard_card)
+        self.keyboard_activity_status_label.setObjectName("mutedLabel")
+        self.keyboard_activity_status_label.setWordWrap(True)
+        keyboard_layout.addWidget(self.keyboard_activity_status_label)
+        self.keyboard_working_action_warning = QLabel(
+            "当前宠物缺少“任务进行中”动作，键盘活动会保持待机。",
+            keyboard_card,
+        )
+        self.keyboard_working_action_warning.setWordWrap(True)
+        self.keyboard_working_action_warning.setStyleSheet("color: #A0603E;")
+        self.keyboard_working_action_warning.setVisible(
+            self._codex_action_availability.get("working", "idle（回退）").startswith("idle")
+        )
+        keyboard_layout.addWidget(self.keyboard_working_action_warning)
+        layout.addWidget(keyboard_card)
 
         cursor_card, cursor_layout = self._card("自定义鼠标样式", "关闭后恢复系统默认光标，当前大小设置会保留。", page)
         self.cursor_style_enabled_input = ToggleSwitch("使用自定义鼠标样式", cursor_card)
@@ -1748,6 +1777,7 @@ class SettingsCenterDialog(QDialog):
             scale=self.scale_input.value() / 100.0,
             always_on_top=self.always_on_top_input.isChecked(),
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
+            keyboard_working_enabled=self.keyboard_working_input.isChecked(),
             mouse_follow_enabled=self.mouse_follow_input.isChecked(),
             mouse_follow_scale=self.mouse_follow_scale_input.value(),
             lan_interaction_enabled=self.lan_interaction_input.isChecked(),

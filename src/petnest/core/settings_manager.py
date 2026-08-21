@@ -218,6 +218,10 @@ class SettingsManager:
             version = 25
         if version == 25:
             migrated.setdefault("codex_home_override", None)
+            migrated["schema_version"] = 26
+            version = 26
+        if version == 26:
+            migrated.setdefault("keyboard_working_enabled", False)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

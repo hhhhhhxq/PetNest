@@ -497,6 +497,49 @@ def test_mouse_follow_and_cursor_scale_controls_are_linked(qtbot) -> None:
     assert dialog.updated_settings().cursor_scale == dialog.cursor_scale_slider.value()
 
 
+def test_keyboard_activity_card_defaults_off_and_persists(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(),
+        keyboard_activity_supported=True,
+        keyboard_activity_status="已关闭",
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.keyboard_working_input.isChecked() is False
+    assert dialog.keyboard_working_input.isEnabled()
+    dialog.keyboard_working_input.setChecked(True)
+
+    assert dialog.updated_settings().keyboard_working_enabled is True
+
+
+def test_keyboard_activity_card_is_disabled_outside_windows(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(keyboard_working_enabled=True),
+        keyboard_activity_supported=False,
+        keyboard_activity_status="当前版本仅支持 Windows",
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.keyboard_working_input.isEnabled()
+    assert dialog.keyboard_activity_status_label.text() == "当前版本仅支持 Windows"
+    assert dialog.updated_settings().keyboard_working_enabled is True
+
+
+def test_keyboard_activity_card_warns_when_working_falls_back_to_idle(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(),
+        keyboard_activity_supported=True,
+        codex_action_availability={"working": "idle（回退）"},
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.keyboard_working_action_warning.isHidden()
+    assert "缺少“任务进行中”动作" in dialog.keyboard_working_action_warning.text()
+
+
 def test_mouse_behavior_switches_respond_when_painted_tracks_are_clicked(qtbot) -> None:
     dialog = SettingsDialog(
         Settings(mouse_follow_enabled=False, cursor_style_enabled=False),

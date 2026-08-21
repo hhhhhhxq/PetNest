@@ -309,7 +309,7 @@ def test_schema_25_preserves_explicitly_disabled_link_and_adds_auto_home(tmp_pat
 
     loaded = SettingsManager(path).load()
 
-    assert loaded.schema_version == 26
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
     assert loaded.codex_link_enabled is False
     assert loaded.codex_home_override is None
 
@@ -320,6 +320,24 @@ def test_codex_home_override_round_trips_and_rejects_non_strings(tmp_path) -> No
 
     assert manager.load().codex_home_override == "D:/CodexProfile"
     assert Settings.from_dict({"codex_home_override": ["bad"]}).codex_home_override is None
+
+
+def test_schema_26_adds_disabled_keyboard_working(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text('{"schema_version":26}', encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == 27
+    assert loaded.keyboard_working_enabled is False
+
+
+def test_keyboard_working_round_trips_and_rejects_non_boolean(tmp_path) -> None:
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(keyboard_working_enabled=True))
+
+    assert manager.load().keyboard_working_enabled is True
+    assert Settings.from_dict({"keyboard_working_enabled": "yes"}).keyboard_working_enabled is False
 
 
 def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:

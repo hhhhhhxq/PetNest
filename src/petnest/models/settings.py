@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 26
+    SCHEMA_VERSION = 27
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -45,6 +45,7 @@ class Settings:
     always_on_top: bool = True
     animation_paused: bool = False
     mouse_interaction_enabled: bool = True
+    keyboard_working_enabled: bool = False
     external_event_server_enabled: bool = False
     external_event_port: int = 18486
     lan_interaction_enabled: bool = True
@@ -113,6 +114,7 @@ class Settings:
                 values[name] = None
         values["work_finish_state"] = _work_finish_state(values.get("work_finish_state"))
         for name, default in (
+            ("keyboard_working_enabled", False),
             ("codex_link_enabled", True),
             ("codex_link_show_attention_bubbles", True),
             ("codex_link_show_review_bubbles", True),
