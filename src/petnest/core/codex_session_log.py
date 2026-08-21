@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 import json
 from pathlib import Path
 import re
+from time import monotonic
 
 from petnest.models.event import PetEvent
 
@@ -48,6 +49,8 @@ class CodexSessionLogWatcher:
         max_files: int = 64,
         max_read_bytes: int = 2 * 1024 * 1024,
         max_line_bytes: int = 1024 * 1024,
+        monotonic_time: Callable[[], float] = monotonic,
+        unread_stable_seconds: float = 1.0,
     ) -> None:
         self.root = root.expanduser().resolve()
         self._today = today
@@ -59,9 +62,13 @@ class CodexSessionLogWatcher:
         self._max_files = max(1, int(max_files))
         self._max_read_bytes = max(1024, int(max_read_bytes))
         self._max_line_bytes = max(1024, int(max_line_bytes))
+        self._monotonic_time = monotonic_time
+        self._unread_stable_seconds = max(0.0, float(unread_stable_seconds))
         self._running = False
         self._cursors: dict[Path, _FileCursor] = {}
         self._unread_ids: set[str] = set()
+        self._pending_unread_since: dict[str, float] = {}
+        self._confirmed_unread_ids: set[str] = set()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
 
     @property
@@ -77,6 +84,8 @@ class CodexSessionLogWatcher:
         self._running = True
         self._cursors.clear()
         self._unread_ids = self._read_unread_ids() or set()
+        self._pending_unread_since.clear()
+        self._confirmed_unread_ids.clear()
         for path in self._candidate_files():
             try:
                 stat = path.stat()
@@ -94,6 +103,8 @@ class CodexSessionLogWatcher:
         self._running = False
         self._cursors.clear()
         self._unread_ids.clear()
+        self._pending_unread_since.clear()
+        self._confirmed_unread_ids.clear()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
 
     def reconfigure(self, codex_home: Path) -> None:
@@ -166,16 +177,42 @@ class CodexSessionLogWatcher:
         current = self._read_unread_ids()
         if current is None:
             return ()
-        read_ids = self._unread_ids - current
-        self._unread_ids = current
-        return tuple(
-            PetEvent(
-                "codex.hook",
-                source="codex-log",
-                payload={"hook_event_name": "ThreadRead", "session_id": session_id},
+        now = self._monotonic_time()
+        added_ids = current - self._unread_ids
+        removed_ids = self._unread_ids - current
+        for session_id in added_ids:
+            self._pending_unread_since.setdefault(session_id, now)
+        events: list[PetEvent] = []
+        for session_id in removed_ids:
+            self._pending_unread_since.pop(session_id, None)
+            if session_id not in self._confirmed_unread_ids:
+                continue
+            self._confirmed_unread_ids.discard(session_id)
+            events.append(
+                PetEvent(
+                    "codex.hook",
+                    source="codex-log",
+                    payload={"hook_event_name": "ThreadRead", "session_id": session_id},
+                )
             )
-            for session_id in sorted(read_ids)
-        )
+        for session_id in tuple(self._pending_unread_since):
+            if session_id not in current:
+                self._pending_unread_since.pop(session_id, None)
+                continue
+            if now - self._pending_unread_since[session_id] < self._unread_stable_seconds:
+                continue
+            self._pending_unread_since.pop(session_id, None)
+            self._confirmed_unread_ids.add(session_id)
+            events.append(
+                PetEvent(
+                    "codex.hook",
+                    source="codex-log",
+                    payload={"hook_event_name": "ThreadUnread", "session_id": session_id},
+                )
+            )
+        self._unread_ids = current
+        events.sort(key=lambda event: str(event.payload.get("session_id", "")))
+        return tuple(events)
 
     def _read_unread_ids(self) -> set[str] | None:
         path = self.global_state_path

@@ -1189,7 +1189,7 @@ class PetNest:
     def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
         if self._settings_center_dialog is not None:
             self._settings_center_dialog.set_codex_task_state(snapshot.state)
-        if not self.settings.codex_link_enabled or snapshot.state in {"idle", "running"}:
+        if not self.settings.codex_link_enabled:
             self.codex_review_animation_timer.stop()
             self.window.clear_codex_status()
             return
@@ -1204,11 +1204,7 @@ class PetNest:
             else:
                 self.window.clear_codex_status()
             return
-        if (
-            snapshot.state == "review"
-            and snapshot.unread_review_count > 0
-            and self.settings.codex_link_show_review_bubbles
-        ):
+        if snapshot.unread_review_count > 0 and self.settings.codex_link_show_review_bubbles:
             self.window.show_codex_status(snapshot)
         else:
             self.window.clear_codex_status()
@@ -1242,7 +1238,7 @@ class PetNest:
 
     def _finish_codex_review_animation(self) -> None:
         if self.codex_link.snapshot.state == "review":
-            self.work_activity.finish_codex_review_animation()
+            self.codex_link.finish_review_animation()
 
     def show_cursor_style_dialog(self) -> None:
         """保留托盘独立入口，但定位到设置中心的鼠标分类。"""

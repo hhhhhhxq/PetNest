@@ -1675,7 +1675,7 @@ def test_codex_review_finishes_back_to_active_keyboard(
 
     assert application.work_activity.effective_event == "agent.working"
     assert application.window.current_action == "working"
-    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.codex_link.snapshot.unread_review_count == 0
     application.shutdown()
 
 
@@ -2375,6 +2375,37 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     )
     application._poll_codex_logs()
     assert dialog.codex_link_runtime_label.text() == "任务已完成"
+    assert application.codex_link.snapshot.unread_review_count == 0
+    assert application.window.codex_status_text is None
+
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={
+                "hook_event_name": "ThreadUnread",
+                "session_id": "session-1",
+            },
+        )
+    )
+    application._poll_codex_logs()
+    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.window.codex_status_text == "Codex 任务已完成，等待查看"
+
+    application._finish_codex_review_animation()
+    assert application.codex_link.snapshot.state == "idle"
+    assert application.codex_link.snapshot.unread_review_count == 1
+
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "ThreadRead", "session_id": "session-1"},
+        )
+    )
+    application._poll_codex_logs()
+    assert application.codex_link.snapshot.unread_review_count == 0
+    assert application.window.codex_status_text is None
     application._settings_center_dialog.reject()
     application.shutdown()
 

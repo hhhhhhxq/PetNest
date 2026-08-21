@@ -231,7 +231,7 @@ def test_status_event_without_turn_id_degrades_to_incompatible(tmp_path: Path) -
     assert watcher.status.state == "incompatible"
 
 
-def test_unread_thread_removal_emits_thread_read_without_content(tmp_path: Path) -> None:
+def test_startup_unread_history_is_baselined_and_never_emitted(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     state_path = tmp_path / ".codex-global-state.json"
     _write_unread(state_path, "session-read", "session-still-unread")
@@ -239,21 +239,59 @@ def test_unread_thread_removal_emits_thread_read_without_content(tmp_path: Path)
     watcher.start()
     _write_unread(state_path, "session-still-unread")
 
-    events = watcher.poll()
-
-    assert len(events) == 1
-    assert events[0].payload == {
-        "hook_event_name": "ThreadRead",
-        "session_id": "session-read",
-    }
+    assert watcher.poll() == ()
 
 
-def test_new_unread_thread_does_not_emit_a_read_event(tmp_path: Path) -> None:
+def test_new_unread_thread_must_remain_stable_before_emitting(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     state_path = tmp_path / ".codex-global-state.json"
+    now = [0.0]
     _write_unread(state_path)
-    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY, global_state_path=state_path)
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        global_state_path=state_path,
+        monotonic_time=lambda: now[0],
+        unread_stable_seconds=1.0,
+    )
     watcher.start()
     _write_unread(state_path, "session-new")
 
+    assert watcher.poll() == ()
+    now[0] = 0.9
+    assert watcher.poll() == ()
+    now[0] = 1.1
+    events = watcher.poll()
+
+    assert [event.payload for event in events] == [
+        {"hook_event_name": "ThreadUnread", "session_id": "session-new"}
+    ]
+
+    _write_unread(state_path)
+    read_events = watcher.poll()
+    assert [event.payload for event in read_events] == [
+        {"hook_event_name": "ThreadRead", "session_id": "session-new"}
+    ]
+
+
+def test_transient_unread_thread_removed_before_stable_never_emits(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    state_path = tmp_path / ".codex-global-state.json"
+    now = [0.0]
+    _write_unread(state_path)
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        global_state_path=state_path,
+        monotonic_time=lambda: now[0],
+        unread_stable_seconds=1.0,
+    )
+    watcher.start()
+    _write_unread(state_path, "session-transient")
+
+    assert watcher.poll() == ()
+    now[0] = 0.5
+    _write_unread(state_path)
+    assert watcher.poll() == ()
+    now[0] = 2.0
     assert watcher.poll() == ()

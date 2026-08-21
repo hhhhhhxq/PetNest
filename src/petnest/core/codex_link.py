@@ -70,6 +70,7 @@ class CodexLinkSnapshot:
 class _CodexTask:
     state: str
     unread_review: bool = False
+    review_animation_pending: bool = False
 
 
 class CodexLinkCoordinator:
@@ -93,6 +94,8 @@ class CodexLinkCoordinator:
         self._snapshot_changed = snapshot_changed
         self._tasks: dict[tuple[str, str], _CodexTask] = {}
         self._active_turns: dict[str, str] = {}
+        self._completed_sessions: set[str] = set()
+        self._unread_sessions: set[str] = set()
         self._snapshot = CodexLinkSnapshot()
 
     @property
@@ -109,8 +112,27 @@ class CodexLinkCoordinator:
         turn_id = _bounded_identifier(payload.get("turn_id"))
         if session_id is None:
             return False
+        if hook_name == "ThreadUnread" and event.source == "codex-log":
+            changed = session_id not in self._unread_sessions
+            self._unread_sessions.add(session_id)
+            review_found = False
+            for key, task in tuple(self._tasks.items()):
+                if key[0] != session_id or task.state != "review":
+                    continue
+                review_found = True
+                if not task.unread_review:
+                    changed = True
+                    self._tasks[key] = _CodexTask("review", True, task.review_animation_pending)
+            if session_id in self._completed_sessions and not review_found:
+                changed = True
+                self._tasks[(session_id, "__unread__")] = _CodexTask("review", True, False)
+            if changed:
+                self._emit_snapshot()
+            return changed
         if hook_name == "ThreadRead" and event.source == "codex-log":
-            removed = False
+            removed = session_id in self._unread_sessions or session_id in self._completed_sessions
+            self._unread_sessions.discard(session_id)
+            self._completed_sessions.discard(session_id)
             for key, task in tuple(self._tasks.items()):
                 if key[0] == session_id and task.state == "review":
                     removed = True
@@ -133,7 +155,9 @@ class CodexLinkCoordinator:
         if hook_name == "SessionStart":
             return True
         if hook_name == "SessionEnd":
-            removed = False
+            removed = session_id in self._unread_sessions or session_id in self._completed_sessions
+            self._unread_sessions.discard(session_id)
+            self._completed_sessions.discard(session_id)
             for key in tuple(self._tasks):
                 if key[0] == session_id:
                     removed = True
@@ -143,6 +167,12 @@ class CodexLinkCoordinator:
                 self._emit_snapshot()
             return removed
         provisional_key = (session_id, "__session__")
+        if hook_name == "UserPromptSubmit":
+            self._unread_sessions.discard(session_id)
+            self._completed_sessions.discard(session_id)
+            for old_key, old_task in tuple(self._tasks.items()):
+                if old_key[0] == session_id and old_task.state == "review":
+                    del self._tasks[old_key]
         if turn_id is not None:
             key = (session_id, turn_id)
             if hook_name == "UserPromptSubmit":
@@ -166,7 +196,12 @@ class CodexLinkCoordinator:
         if hook_name == "Stop" and payload.get("stop_hook_active") is True:
             return False
         if hook_name == "Stop":
-            task = _CodexTask("review", True)
+            self._completed_sessions.add(session_id)
+            task = _CodexTask(
+                "review",
+                session_id in self._unread_sessions,
+                True,
+            )
         elif hook_name == "PermissionRequest":
             task = _CodexTask("waiting")
         elif hook_name == "PostToolUse" and payload.get("tool_failed") is True:
@@ -179,13 +214,38 @@ class CodexLinkCoordinator:
 
     def mark_reviews_read(self) -> None:
         """只清除未读徽标，不改变 review 动作状态。"""
-        changed = False
+        changed = bool(self._unread_sessions)
+        self._completed_sessions.difference_update(self._unread_sessions)
+        self._unread_sessions.clear()
         for key, task in tuple(self._tasks.items()):
             if task.unread_review:
                 changed = True
-                self._tasks[key] = _CodexTask(task.state, False)
+                if task.state == "review" and not task.review_animation_pending:
+                    del self._tasks[key]
+                else:
+                    self._tasks[key] = _CodexTask(
+                        task.state,
+                        False,
+                        task.review_animation_pending,
+                    )
         if changed:
             self._emit_snapshot(publish_pet_event=False)
+
+    def finish_review_animation(self) -> None:
+        """结束一次完成动画；仅保留已被 Codex 确认未读的徽标状态。"""
+        changed = False
+        for key, task in tuple(self._tasks.items()):
+            if task.state != "review" or not task.review_animation_pending:
+                continue
+            changed = True
+            if task.unread_review:
+                self._tasks[key] = _CodexTask("review", True, False)
+            else:
+                del self._tasks[key]
+                if self._active_turns.get(key[0]) == key[1]:
+                    self._active_turns.pop(key[0], None)
+        if changed:
+            self._emit_snapshot(pet_event_priority=100)
 
     def dismiss_reviews(self) -> None:
         """确认并移除 review 任务，恢复剩余任务或输入上下文。"""
@@ -194,6 +254,8 @@ class CodexLinkCoordinator:
             if task.state == "review":
                 removed = True
                 del self._tasks[key]
+                self._unread_sessions.discard(key[0])
+                self._completed_sessions.discard(key[0])
                 if self._active_turns.get(key[0]) == key[1]:
                     self._active_turns.pop(key[0], None)
         if removed:
@@ -201,32 +263,65 @@ class CodexLinkCoordinator:
 
     def clear(self) -> None:
         """关闭联动时清空所有任务并恢复宠物上下文。"""
-        if not self._tasks and self._snapshot.state == "idle":
+        if (
+            not self._tasks
+            and not self._completed_sessions
+            and not self._unread_sessions
+            and self._snapshot.state == "idle"
+        ):
             return
         self._tasks.clear()
         self._active_turns.clear()
+        self._completed_sessions.clear()
+        self._unread_sessions.clear()
         self._emit_snapshot()
 
-    def _emit_snapshot(self, *, publish_pet_event: bool = True) -> None:
+    def _emit_snapshot(
+        self,
+        *,
+        publish_pet_event: bool = True,
+        pet_event_priority: int = 90,
+    ) -> None:
         snapshot = self._aggregate()
         if snapshot == self._snapshot:
             return
+        previous_state = self._snapshot.state
         self._snapshot = snapshot
-        if publish_pet_event:
+        if publish_pet_event and snapshot.state != previous_state:
             from petnest.models.event import PetEvent
 
-            self._publish(PetEvent(self._PET_EVENTS[snapshot.state], source="codex-link", priority=90))
+            self._publish(
+                PetEvent(
+                    self._PET_EVENTS[snapshot.state],
+                    source="codex-link",
+                    priority=pet_event_priority,
+                )
+            )
         if self._snapshot_changed is not None:
             self._snapshot_changed(snapshot)
 
     def _aggregate(self) -> CodexLinkSnapshot:
         if not self._tasks:
             return CodexLinkSnapshot()
-        states = tuple(task.state for task in self._tasks.values())
-        state = next(candidate for candidate in self._STATE_PRIORITY if candidate in states)
-        count = states.count(state)
+        states = tuple(
+            task.state
+            for task in self._tasks.values()
+            if task.state != "review" or task.review_animation_pending
+        )
+        state = next(
+            (candidate for candidate in self._STATE_PRIORITY if candidate in states),
+            "idle",
+        )
+        count = states.count(state) if state != "idle" else 0
         unread = sum(task.unread_review for task in self._tasks.values())
-        return CodexLinkSnapshot(state, count, unread, _snapshot_message(state, count))
+        message_state = "review" if unread and state in {"idle", "running"} else state
+        message_count = unread if message_state == "review" and state != "review" else count
+        return CodexLinkSnapshot(
+            state,
+            count,
+            unread,
+            _snapshot_message(message_state, message_count),
+        )
 
 
 class CodexHookManager:
