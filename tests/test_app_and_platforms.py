@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import socket
+import sys
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -24,7 +25,7 @@ from petnest.app import PetNest, effect_directories_for, resource_directory_for_
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
-from petnest.core.codex_link import CodexHookManager
+from petnest.core.codex_link import CodexHookManager, CodexLinkSnapshot
 from petnest.core.codex_discovery import (
     CodexAvailabilityState,
     CodexLinkAvailability,
@@ -346,6 +347,66 @@ def test_settings_and_cursor_entries_reuse_one_settings_center(qtbot: pytest.QtB
     assert first.section_list.currentRow() == 1
     first.reject()
     assert application._settings_center_dialog is None
+    application.shutdown()
+
+
+def test_macos_settings_center_is_modeless_and_not_owned_by_pet_panel(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr("petnest.app.sys.platform", "darwin")
+
+    application.show_settings_dialog()
+
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    assert dialog.parentWidget() is None
+    assert dialog.windowModality() is Qt.WindowModality.NonModal
+    assert dialog.isVisible()
+    dialog.reject()
+    assert application._settings_center_dialog is None
+    application.shutdown()
+
+
+def test_settings_center_suppresses_always_on_top_codex_bubble(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.settings = replace(
+        application.settings,
+        codex_link_enabled=True,
+        codex_link_show_attention_bubbles=True,
+    )
+    waiting = CodexLinkSnapshot("waiting", 1, 0, "Codex 正在等待你处理")
+    application._handle_codex_snapshot(waiting)
+    assert application.window.codex_status_bubble.isVisible()
+    monkeypatch.setattr("petnest.app.sys.platform", "darwin")
+
+    application.show_settings_dialog()
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    assert not application.window.codex_status_bubble.isVisible()
+
+    application._handle_codex_snapshot(waiting)
+
+    assert not application.window.codex_status_bubble.isVisible()
+    dialog.reject()
     application.shutdown()
 
 
@@ -1778,13 +1839,19 @@ def test_settings_pet_action_entry_opens_interactive_child_dialog(
     application._show_settings_center("codex_link")
     settings_dialog = application._settings_center_dialog
     assert settings_dialog is not None
-    assert settings_dialog.windowModality() == Qt.WindowModality.WindowModal
+    expected_modality = (
+        Qt.WindowModality.NonModal
+        if sys.platform == "darwin"
+        else Qt.WindowModality.WindowModal
+    )
+    assert settings_dialog.windowModality() == expected_modality
 
     settings_dialog.codex_open_pet_actions_button.click()
 
     action_dialog = application._pet_action_exchange_dialog
     assert action_dialog is not None
     assert action_dialog.parentWidget() is settings_dialog
+    assert action_dialog.windowModality() == Qt.WindowModality.WindowModal
     assert action_dialog.isVisible()
     assert action_dialog.isEnabled()
     destroyed: list[bool] = []
@@ -2390,6 +2457,9 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     )
     application._poll_codex_logs()
     assert application.codex_link.snapshot.unread_review_count == 1
+    if sys.platform == "darwin":
+        assert application.window.codex_status_text is None
+        dialog.reject()
     assert application.window.codex_status_text == "Codex 任务已完成，等待查看"
 
     application._finish_codex_review_animation()
@@ -2408,7 +2478,8 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     application._poll_codex_logs()
     assert application.codex_link.snapshot.unread_review_count == 0
     assert application.window.codex_status_text is None
-    application._settings_center_dialog.reject()
+    if application._settings_center_dialog is not None:
+        application._settings_center_dialog.reject()
     application.shutdown()
 
 

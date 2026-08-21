@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtGui import QAction, QKeySequence
+
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.tray_icon import PetTrayIcon
 from tests.test_pet_window import _package
@@ -46,3 +48,14 @@ def test_tray_omits_cursor_style_and_manual_resource_update_entries(qtbot, tmp_p
     assert all("鼠标样式" not in text and "资源更新" not in text for text in texts)
     assert not hasattr(tray, "cursor_styles_action")
     assert not hasattr(tray, "resource_update_action")
+
+
+def test_macos_quit_action_owns_the_native_quit_role(qtbot, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "darwin")
+    window = PetWindow(_package(tmp_path))
+    qtbot.addWidget(window)
+
+    tray = PetTrayIcon(window)
+
+    assert tray.quit_action.menuRole() is QAction.MenuRole.QuitRole
+    assert tray.quit_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Quit)

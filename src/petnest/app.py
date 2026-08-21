@@ -1198,6 +1198,15 @@ class PetNest:
                 self.codex_review_animation_timer.start(self._codex_review_animation_duration_ms())
         else:
             self.codex_review_animation_timer.stop()
+        if (
+            sys.platform == "darwin"
+            and self._settings_center_dialog is not None
+            and self._settings_center_dialog.isVisible()
+        ):
+            # macOS 会把气泡的 Qt.Tool 映射为高于普通窗口的 NSPanel。
+            # 设置中心开启时不允许它重新置顶，避免抢走对话框焦点。
+            self.window.clear_codex_status()
+            return
         if snapshot.state in {"waiting", "failed"}:
             if self.settings.codex_link_show_attention_bubbles:
                 self.window.show_codex_status(snapshot)
@@ -1247,6 +1256,8 @@ class PetNest:
     def _show_settings_center(self, initial_section: str) -> None:
         if self.settings.codex_link_enabled:
             self._refresh_codex_discovery()
+        if sys.platform == "darwin":
+            self.window.clear_codex_status()
         dialog = self._settings_center_dialog
         if dialog is not None:
             dialog.select_section(initial_section)
@@ -1266,9 +1277,12 @@ class PetNest:
         )
         self.codex_plugin_status = self.codex_plugin_manager.inspect()
         codex_home = self.codex_hook_manager.codex_home
+        # Qt.Tool 在 macOS 上是不可成为 key window 的 NSPanel。不能将
+        # window-modal 设置对话框挂在这种窗口上，否则会破坏焦点和退出响应链。
+        dialog_parent = None if sys.platform == "darwin" else self.window
         dialog = SettingsDialog(
             self.settings,
-            self.window,
+            dialog_parent,
             on_check_app_update=self._check_app_update_from_settings if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_download_app_update=self._schedule_app_update_download if sys.platform in APP_UPDATE_PLATFORMS else None,
             on_unlock_codex_usage=self._unlock_codex_usage,
@@ -1305,7 +1319,14 @@ class PetNest:
             dialog.set_app_update_available(self._pending_app_update)
         dialog.accepted.connect(lambda: self.apply_settings(dialog.updated_settings()))
         dialog.finished.connect(lambda _result: self._clear_settings_center(dialog))
-        dialog.open()
+        if sys.platform == "darwin":
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dialog.setWindowModality(Qt.WindowModality.NonModal)
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+        else:
+            dialog.open()
         self._handle_resource_section_opened(initial_section)
 
     def _set_codex_home_override(self, home: Path | None) -> CodexLinkAvailability:
@@ -1339,6 +1360,8 @@ class PetNest:
     def _clear_settings_center(self, dialog: SettingsDialog) -> None:
         if self._settings_center_dialog is dialog:
             self._settings_center_dialog = None
+            if sys.platform == "darwin" and not self._shutdown:
+                self._handle_codex_snapshot(self.codex_link.snapshot)
 
     def _test_codex_link_animation(self) -> str:
         self.window.handle_pet_event(PetEvent("agent.working", source="codex-test", priority=100))

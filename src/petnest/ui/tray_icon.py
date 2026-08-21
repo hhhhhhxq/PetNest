@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import QApplication, QMenu, QStyle, QSystemTrayIcon
 
 from .pet_window import PetWindow
@@ -101,6 +101,11 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_mouse_follow_action = QAction("跟随鼠标", self.menu)
         self.toggle_mouse_follow_action.setCheckable(True)
         self.quit_action = QAction("退出 PetNest", self.menu)
+        if sys.platform == "darwin":
+            # 中文文案不能依赖 Qt 的文本启发式角色识别。显式接管
+            # macOS 应用菜单中的退出项，让 ⌘Q 与托盘退出共用同一清理路径。
+            self.quit_action.setMenuRole(QAction.MenuRole.QuitRole)
+            self.quit_action.setShortcut(QKeySequence(QKeySequence.StandardKey.Quit))
         self.reload_action = QAction("重新加载当前宠物", self.menu)
         self.exchange_action = QAction("宠物与动作…", self.menu)
         self.open_pets_folder_action = QAction("打开宠物文件夹", self.menu)
