@@ -1,7 +1,7 @@
 ; PetNest Windows 安装包。先由根目录 build_windows.bat 生成 dist\PetNest。
 
 #ifndef AppVersion
-#define AppVersion "0.1.6"
+#define AppVersion "0.1.7"
 #endif
 
 [Setup]
