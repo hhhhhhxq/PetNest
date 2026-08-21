@@ -123,6 +123,12 @@ class CodexLinkCoordinator:
         if session_id is None:
             return False
         self._prune_completed_sessions()
+        if (
+            hook_name == "UserPromptSubmit"
+            and turn_id is not None
+            and (session_id, turn_id) in self._completed_turns
+        ):
+            return True
         if hook_name == "ThreadUnread" and event.source == "codex-log":
             changed = session_id not in self._unread_sessions
             self._unread_sessions.add(session_id)

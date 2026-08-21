@@ -297,6 +297,18 @@ def test_delayed_duplicate_stop_after_animation_does_not_replay_review() -> None
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
 
 
+def test_delayed_log_start_does_not_revive_completed_turn() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+
+    assert coordinator.consume(_log("UserPromptSubmit", session="same", turn="turn-1"))
+
+    assert coordinator.snapshot.state == "idle"
+    assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
+
+
 def test_log_turn_aborted_clears_current_turn_without_failure_bubble() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)

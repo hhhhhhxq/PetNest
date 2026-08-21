@@ -177,6 +177,28 @@ def test_start_does_not_recover_past_malformed_lifecycle_record(tmp_path: Path) 
     assert watcher.poll() == ()
 
 
+def test_start_ignores_timestamp_that_overflows_during_utc_conversion(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-overflowing-timestamp.jsonl"
+    path.write_bytes(
+        _meta("session-overflow")
+        + _event(
+            "task_started",
+            "turn-overflow",
+            timestamp="0001-01-01T00:00:00+23:59",
+        )
+    )
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
+
+    watcher.start()
+
+    assert watcher.poll() == ()
+
+
 def test_recovered_turn_expires_after_five_minutes_without_file_growth(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     path = _day(root) / "rollout-expiring.jsonl"
