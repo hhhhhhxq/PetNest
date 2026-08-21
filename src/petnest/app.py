@@ -2233,6 +2233,10 @@ class PetNest:
         self.window.reload_countdown_skins(countdown_root)
 
     def _configure_lan_service(self) -> None:
+        if os.environ.get("PETNEST_TEST_DISABLE_LAN", "").strip() == "1":
+            self.lan_pool_sync.stop()
+            self.lan_service.stop()
+            return
         if self.settings.lan_interaction_enabled:
             if not self.lan_service.start():
                 LOGGER.warning("局域网互动未启用，桌宠仍可正常使用")

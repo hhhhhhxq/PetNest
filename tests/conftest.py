@@ -9,6 +9,7 @@ import pytest
 
 
 os.environ.setdefault("PETNEST_LAN_AUTO_SYNC", "0")
+os.environ["PETNEST_TEST_DISABLE_LAN"] = "1"
 
 
 @pytest.fixture(autouse=True)

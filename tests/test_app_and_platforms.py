@@ -2967,19 +2967,56 @@ def test_application_assigns_a_stable_device_id_for_lan_identity(
     assert second.device_id == first_id
 
 
-def test_lan_service_follows_the_user_presence_toggle(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_lan_service_follows_the_user_presence_toggle(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = QApplication.instance() or QApplication([])
     del app
+    monkeypatch.delenv("PETNEST_TEST_DISABLE_LAN", raising=False)
     settings_manager = SettingsManager(tmp_path / "settings.json")
     settings_manager.save(Settings(lan_interaction_enabled=True))
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager, enable_tray=False)
     qtbot.addWidget(application.window)
+    monkeypatch.setattr(application.lan_service, "discover", lambda: None)
     application.start()
 
     assert application.lan_service.is_running
     application.apply_settings(replace(application.settings, lan_interaction_enabled=False))
     assert not application.lan_service.is_running
+
+
+def test_test_network_isolation_skips_app_lan_services(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PETNEST_TEST_DISABLE_LAN", "1")
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    started: list[str] = []
+    monkeypatch.setattr(
+        application.lan_service,
+        "start",
+        lambda: started.append("lan") or True,
+    )
+    monkeypatch.setattr(
+        application.lan_pool_sync,
+        "start",
+        lambda: started.append("pool"),
+    )
+
+    application._configure_lan_service()
+
+    assert started == []
+    application.shutdown()
 
 
 def test_shutdown_clears_remote_interaction_overlay(qtbot: pytest.QtBot, tmp_path: Path) -> None:
