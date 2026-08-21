@@ -96,6 +96,20 @@ class CodexSessionLogWatcher:
         self._unread_ids.clear()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
 
+    def reconfigure(self, codex_home: Path) -> None:
+        """Switch to one verified Codex Home and baseline its existing history."""
+        home = codex_home.expanduser().resolve()
+        root = home / "sessions"
+        global_state_path = home / ".codex-global-state.json"
+        if self.root == root and self.global_state_path == global_state_path:
+            return
+        was_running = self._running
+        self.stop()
+        self.root = root
+        self.global_state_path = global_state_path
+        if was_running:
+            self.start()
+
     def poll(self) -> tuple[PetEvent, ...]:
         """读取本轮新增完整行并返回脱敏状态事件。"""
         if not self._running:

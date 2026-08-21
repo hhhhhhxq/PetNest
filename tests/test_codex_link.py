@@ -130,6 +130,18 @@ def test_invalid_hooks_json_is_never_overwritten(tmp_path: Path) -> None:
     assert not list(manager.hooks_path.parent.glob("hooks.json.petnest-*.bak"))
 
 
+def test_hook_manager_can_switch_codex_home_without_moving_petnest_metadata(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    original_metadata_path = manager.metadata_path
+    second = tmp_path / "second-codex-home"
+
+    manager.set_codex_home(second)
+
+    assert manager.codex_home == second.resolve()
+    assert manager.hooks_path == second.resolve() / "hooks.json"
+    assert manager.metadata_path == original_metadata_path
+
+
 def test_forward_codex_hook_sends_only_allowlisted_status_fields(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     metadata = manager.ensure_metadata()

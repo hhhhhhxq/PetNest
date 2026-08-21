@@ -130,6 +130,32 @@ def test_inspect_offers_one_plain_primary_action_when_plugin_is_missing(tmp_path
     assert "基础联动" in status.message
 
 
+def test_plugin_manager_can_switch_cli_codex_home_without_moving_marketplace(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, FakeCodexCli())
+    original_marketplace = manager.marketplace_path
+    original_plugin_root = manager.plugin_root
+    second = tmp_path / "second-codex-home"
+
+    manager.set_codex_home(second)
+
+    assert manager.codex_home == second.resolve()
+    assert manager.marketplace_path == original_marketplace
+    assert manager.plugin_root == original_plugin_root
+
+
+def test_plugin_receipt_check_is_local_and_does_not_call_codex_cli(tmp_path: Path) -> None:
+    cli = FakeCodexCli()
+    manager = _manager(tmp_path, cli)
+
+    assert manager.has_install_receipt() is False
+    assert cli.calls == []
+    manager.install_or_repair()
+    calls_after_install = list(cli.calls)
+
+    assert manager.has_install_receipt() is True
+    assert cli.calls == calls_after_install
+
+
 def test_install_materializes_plugin_merges_marketplace_and_replaces_legacy_hooks(tmp_path: Path) -> None:
     cli = FakeCodexCli()
     manager = _manager(tmp_path, cli)

@@ -64,6 +64,24 @@ def test_start_baselines_existing_file_without_replaying_history(tmp_path: Path)
     }
 
 
+def test_reconfigure_home_stops_old_source_and_baselines_new_history(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    watcher = CodexSessionLogWatcher(first / "sessions", today=lambda: TODAY)
+    watcher.start()
+    path = _day(second / "sessions") / "rollout-new-home.jsonl"
+    path.write_bytes(_meta("session-2") + _event("task_started", "old-turn"))
+
+    watcher.reconfigure(second)
+
+    assert watcher.root == (second / "sessions").resolve()
+    assert watcher.global_state_path == (second / ".codex-global-state.json").resolve()
+    assert watcher.poll() == ()
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "new-turn"))
+    assert watcher.poll()[0].payload["turn_id"] == "new-turn"
+
+
 def test_new_file_maps_started_complete_and_aborted_without_content(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)

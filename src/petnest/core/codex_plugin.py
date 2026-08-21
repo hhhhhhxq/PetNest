@@ -163,6 +163,17 @@ class CodexPluginManager:
             return CodexPluginStatus.repair(str(error))
         return CodexPluginStatus.enabled()
 
+    def set_codex_home(self, codex_home: Path) -> None:
+        """Switch the Codex CLI profile without moving the personal marketplace."""
+        self.codex_home = codex_home.expanduser().resolve()
+
+    def has_install_receipt(self) -> bool:
+        """Check PetNest's local receipt without invoking Codex or changing state."""
+        try:
+            return self._read_receipt() is not None
+        except (CodexLinkError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+
     def install_or_repair(self) -> CodexPluginStatus:
         """安全写入个人 marketplace，注册插件，成功后移除旧匿名 Hook。"""
         installed_before = False

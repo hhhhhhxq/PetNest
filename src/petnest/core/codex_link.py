@@ -275,6 +275,12 @@ class CodexHookManager:
         """端口设置变化时刷新后续元数据写入目标。"""
         self.port = _valid_port(port)
 
+    def set_codex_home(self, codex_home: Path) -> None:
+        """切换当前 profile 的 Hook 配置，不移动 PetNest 私有元数据。"""
+        resolved = codex_home.expanduser().resolve()
+        self.codex_home = resolved
+        self.hooks_path = resolved / "hooks.json"
+
     def install(self) -> CodexHookStatus:
         """结构化合并全部 PetNest Hook；已有配置无法解析时绝不覆盖。"""
         document = self._read_hooks() if self.hooks_path.exists() else {"hooks": {}}
