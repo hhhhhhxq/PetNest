@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 from PIL import Image
@@ -149,6 +151,82 @@ def test_install_can_atomically_remove_an_action_and_rollback_its_config(tmp_pat
 
     assert result.rollback() == ()
     assert (target / "pet.json").read_bytes() == before
+
+
+def _directory_link(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        completed = subprocess.run(
+            ("cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            pytest.skip(f"当前平台不能创建目录 junction：{completed.stderr or completed.stdout}")
+        return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("当前平台不能创建目录符号链接")
+
+
+def test_install_rejects_junctioned_animations_tree_without_touching_target(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    write_pet(target)
+    external = tmp_path / "external-animations"
+    (target / "animations").replace(external)
+    _directory_link(target / "animations", external)
+    marker = external / "idle" / "001.png"
+    before = marker.read_bytes()
+
+    with pytest.raises(ActionInstallError, match="链接"):
+        install_actions(target, build_pack(tmp_path))
+
+    assert marker.read_bytes() == before
+    assert not (external / ".revisions").exists()
+
+
+def test_cleanup_refuses_junction_even_when_it_appears_under_allowed_root(tmp_path: Path) -> None:
+    allowed = tmp_path / "revisions"
+    external = tmp_path / "external"
+    allowed.mkdir()
+    external.mkdir()
+    marker = external / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    junction = allowed / "candidate"
+    _directory_link(junction, external)
+
+    warnings = action_installer_module._cleanup_directories(
+        (junction,),
+        allowed_root=allowed,
+        boundary_root=tmp_path,
+    )
+
+    assert warnings and "链接" in warnings[0]
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_cleanup_refuses_candidate_beneath_replaced_junction_root(tmp_path: Path) -> None:
+    target = tmp_path / "pet"
+    allowed = target / "animations" / ".revisions"
+    allowed.mkdir(parents=True)
+    original = tmp_path / "original-revisions"
+    allowed.replace(original)
+    external = tmp_path / "external"
+    candidate = external / "candidate"
+    candidate.mkdir(parents=True)
+    marker = candidate / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    _directory_link(allowed, external)
+
+    warnings = action_installer_module._cleanup_directories(
+        (allowed / "candidate",),
+        allowed_root=allowed,
+        boundary_root=target,
+    )
+
+    assert warnings and "链接" in warnings[0]
+    assert marker.read_text(encoding="utf-8") == "keep"
 
 
 def test_install_rejects_removing_an_action_that_is_installed_in_same_transaction(tmp_path: Path) -> None:

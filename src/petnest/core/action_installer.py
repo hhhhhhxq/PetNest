@@ -71,6 +71,7 @@ class InstallResult:
         return _cleanup_directories(
             self.created_revision_dirs,
             allowed_root=self.target_root / "animations" / ".revisions",
+            boundary_root=self.target_root,
         )
 
     def finalize(self) -> tuple[str, ...]:
@@ -89,7 +90,11 @@ class InstallResult:
             for path in self.superseded_dirs
             if not any(reference == path or reference.is_relative_to(path) for reference in referenced)
         )
-        return _cleanup_directories(removable, allowed_root=self.target_root / "animations")
+        return _cleanup_directories(
+            removable,
+            allowed_root=self.target_root / "animations",
+            boundary_root=self.target_root,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,8 +127,8 @@ def install_actions(
     """安装到不可变动作修订目录，仅以 ``pet.json`` 作为提交点。"""
 
     raw_target = Path(target_pet).expanduser()
-    if raw_target.is_symlink():
-        raise ActionInstallError("目标宠物不能是符号链接")
+    if _is_link_like(raw_target):
+        raise ActionInstallError("目标宠物不能是符号链接或目录连接")
     target = raw_target.resolve()
     _reject_symlinks(target)
     config_path = target / "pet.json"
@@ -175,7 +180,11 @@ def install_actions(
         _validate_candidate(target, committed_config, {plan.target_name for plan in plans})
         _replace_bytes_atomically(config_path, committed_config)
     except Exception as error:
-        cleanup_warnings = _cleanup_directories(tuple(created), allowed_root=target / "animations" / ".revisions")
+        cleanup_warnings = _cleanup_directories(
+            tuple(created),
+            allowed_root=target / "animations" / ".revisions",
+            boundary_root=target,
+        )
         if isinstance(error, ActionInstallError):
             if cleanup_warnings:
                 raise ActionInstallError(f"{error}；{'；'.join(cleanup_warnings)}") from error
@@ -306,8 +315,8 @@ def _install_one(
     try:
         for asset in asset_paths:
             configured_asset = Path(asset)
-            if configured_asset.is_symlink():
-                raise ActionInstallError(f"动作 {plan.source_name} 的资源文件不能是符号链接")
+            if _is_link_like(configured_asset):
+                raise ActionInstallError(f"动作 {plan.source_name} 的资源文件不能是符号链接或目录连接")
             asset_path = configured_asset.resolve()
             if not asset_path.is_file() or not asset_path.is_relative_to(source_dir):
                 raise ActionInstallError(f"动作 {plan.source_name} 的资源文件不安全")
@@ -369,8 +378,8 @@ def _managed_animation_directory(target: Path, configured: object) -> Path:
     if path.is_absolute() or PureWindowsPath(configured).is_absolute() or PureWindowsPath(configured).drive:
         raise ActionInstallError("已有动作的资源路径不安全")
     configured_path = target / path
-    if configured_path.is_symlink():
-        raise ActionInstallError("已有动作的资源路径不能是符号链接")
+    if _is_link_like(configured_path):
+        raise ActionInstallError("已有动作的资源路径不能是符号链接或目录连接")
     resolved = configured_path.resolve()
     animations_root = (target / "animations").resolve()
     if resolved == animations_root or not resolved.is_relative_to(animations_root):
@@ -382,11 +391,11 @@ def _managed_animation_directory(target: Path, configured: object) -> Path:
 
 def _prepare_revisions_root(target: Path) -> Path:
     animations_root = target / "animations"
-    if animations_root.is_symlink() or not animations_root.is_dir():
+    if _is_link_like(animations_root) or not animations_root.is_dir():
         raise ActionInstallError("目标宠物的 animations 必须是常规目录")
     revisions_root = animations_root / ".revisions"
-    if revisions_root.is_symlink():
-        raise ActionInstallError("动作修订目录不能是符号链接")
+    if _is_link_like(revisions_root):
+        raise ActionInstallError("动作修订目录不能是符号链接或目录连接")
     if revisions_root.exists() and not revisions_root.is_dir():
         raise ActionInstallError("动作修订路径不是目录")
     revisions_root.mkdir(exist_ok=True)
@@ -448,7 +457,7 @@ def _referenced_directories(target: Path, animations: Mapping[object, object]) -
         if path.is_absolute() or PureWindowsPath(configured).is_absolute() or PureWindowsPath(configured).drive:
             continue
         configured_path = target / path
-        if configured_path.is_symlink():
+        if _is_link_like(configured_path):
             continue
         resolved = configured_path.resolve()
         if resolved.is_relative_to(target_root):
@@ -456,14 +465,34 @@ def _referenced_directories(target: Path, animations: Mapping[object, object]) -
     return referenced
 
 
-def _cleanup_directories(paths: tuple[Path, ...], *, allowed_root: Path) -> tuple[str, ...]:
+def _cleanup_directories(
+    paths: tuple[Path, ...],
+    *,
+    allowed_root: Path,
+    boundary_root: Path,
+) -> tuple[str, ...]:
     warnings: list[str] = []
+    raw_boundary = Path(boundary_root).absolute()
+    raw_allowed = Path(allowed_root).absolute()
+    try:
+        raw_allowed.relative_to(raw_boundary)
+        _reject_link_components(raw_boundary, raw_allowed)
+    except (ActionInstallError, ValueError) as error:
+        return (str(error),)
+    safe_boundary = raw_boundary.resolve()
     safe_root = allowed_root.resolve()
+    if safe_root == safe_boundary or not safe_root.is_relative_to(safe_boundary):
+        return (f"拒绝使用范围外清理根目录：{allowed_root}",)
     for path in dict.fromkeys(paths):
-        configured = Path(path)
+        configured = Path(path).absolute()
         try:
-            if configured.is_symlink():
-                raise ActionInstallError(f"拒绝清理符号链接：{configured}")
+            if _is_link_like(configured):
+                raise ActionInstallError(f"拒绝清理符号链接或目录连接：{configured}")
+            try:
+                configured.relative_to(raw_allowed)
+            except ValueError as error:
+                raise ActionInstallError(f"拒绝清理范围外目录：{configured}") from error
+            _reject_link_components(raw_boundary, configured)
             resolved = configured.resolve()
             if resolved == safe_root or not resolved.is_relative_to(safe_root):
                 raise ActionInstallError(f"拒绝清理范围外目录：{configured}")
@@ -477,6 +506,20 @@ def _cleanup_directories(paths: tuple[Path, ...], *, allowed_root: Path) -> tupl
     return tuple(warnings)
 
 
+def _reject_link_components(boundary: Path, candidate: Path) -> None:
+    try:
+        relative = candidate.absolute().relative_to(boundary.absolute())
+    except ValueError as error:
+        raise ActionInstallError(f"路径超出安全边界：{candidate}") from error
+    current = boundary.absolute()
+    if _is_link_like(current):
+        raise ActionInstallError(f"安全边界不能是符号链接或目录连接：{current}")
+    for part in relative.parts:
+        current /= part
+        if _is_link_like(current):
+            raise ActionInstallError(f"路径包含符号链接或目录连接：{current}")
+
+
 def _reject_symlinks(root: Path) -> None:
     if not root.is_dir():
         raise ActionInstallError(f"目标宠物目录不存在：{root}")
@@ -484,8 +527,15 @@ def _reject_symlinks(root: Path) -> None:
         current_path = Path(current)
         for name in (*directories, *filenames):
             candidate = current_path / name
-            if candidate.is_symlink():
-                raise ActionInstallError(f"目标宠物不能包含符号链接：{candidate}")
+            if _is_link_like(candidate):
+                raise ActionInstallError(f"目标宠物不能包含符号链接或目录连接：{candidate}")
+
+
+def _is_link_like(path: Path) -> bool:
+    try:
+        return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    except OSError:
+        return True
 
 
 def _read_config(path: Path) -> dict[str, object]:

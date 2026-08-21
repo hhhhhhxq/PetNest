@@ -72,6 +72,10 @@ class AnimationPreviewWidget(QWidget):
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self._advance_preview)
 
+    @property
+    def frame_count(self) -> int:
+        return len(self._pixmaps)
+
     def set_frames(
         self,
         frames: Sequence[Path | QPixmap],

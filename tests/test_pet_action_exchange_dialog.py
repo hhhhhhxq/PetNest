@@ -90,6 +90,16 @@ def test_exchange_dialog_can_route_to_each_page(qtbot: object, tmp_path: Path) -
     assert dialog.current_page_name() == "导入宠物"
 
 
+def test_action_import_page_subtitle_explains_both_modes(qtbot: object, tmp_path: Path) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+
+    dialog.select_page("导入动作")
+
+    assert dialog.page_subtitle.text() == "从资源包提取动作，或用图片制作可触发动作"
+
+
 def test_exchange_dialog_routes_footer_command_to_active_page(qtbot: object, tmp_path: Path, monkeypatch: object) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")

@@ -200,3 +200,118 @@ def test_action_import_page_refresh_packages_rebuilds_target_selector(qtbot: obj
     assert page.target_combo.currentData() == "second"
     assert [page.target_combo.itemData(i) for i in range(page.target_combo.count())] == ["first", "second"]
     assert page.footer_state().primary_text == "安装选中动作"
+
+
+def test_action_import_page_has_approved_two_modes(qtbot: object, tmp_path: Path) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets", current_pet_id=target.identifier)
+    qtbot.addWidget(page)
+
+    assert page.resource_mode_button.text() == "从资源包提取动作"
+    assert page.image_mode_button.text() == "用图片制作动作"
+    assert page.current_mode() == "resource"
+    assert page.mode_stack.currentWidget() is page.resource_container
+    assert page.target_combo.currentData() == target.identifier
+
+
+def test_switching_modes_preserves_resource_and_image_drafts(qtbot: object, tmp_path: Path) -> None:
+    source = build_source(tmp_path)
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    frame = tmp_path / "frame.png"
+    Image.new("RGBA", (16, 16), (10, 20, 30, 255)).save(frame)
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.load_source(source)
+
+    page.select_image_mode()
+    page.image_content.load_files([frame])
+    page.select_resource_mode()
+
+    assert page.source_input.text() == str(source)
+    assert page._pack is not None
+    page.select_image_mode()
+    assert page.image_content.ordered_paths() == (frame.resolve(),)
+
+
+def test_image_mode_installs_selected_slot_and_clears_only_after_runtime_success(
+    qtbot: object, tmp_path: Path
+) -> None:
+    source = build_source(tmp_path)
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    frame = tmp_path / "click.png"
+    Image.new("RGBA", (16, 16), (10, 20, 30, 255)).save(frame)
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.load_source(source)
+    page.select_image_mode()
+    page.image_content.select_slot("mouse_click")
+    page.image_content.load_files([frame])
+
+    page.trigger_primary()
+
+    config = json.loads((target.root / "pet.json").read_text(encoding="utf-8"))
+    assert config["bindings"]["mouse.click"] == "click"
+    assert (target.root / config["animations"]["click"]["path"] / "0001.png").is_file()
+    assert page.footer_state().status == "动作已写入，正在重新加载目标宠物…"
+    assert page.image_content.ordered_paths() == (frame.resolve(),)
+
+    page.complete_install("已安装点击动作。")
+
+    assert page.image_content.ordered_paths() == ()
+    assert page._pack is not None
+    assert page.source_input.text() == str(source)
+
+
+def test_image_mode_routes_primary_and_failure_keeps_draft(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    frame = tmp_path / "click.png"
+    Image.new("RGBA", (32, 32), (10, 20, 30, 255)).save(frame)
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.select_image_mode()
+    page.image_content.select_slot("mouse_click")
+    page.image_content.load_files([frame])
+    calls: list[bool] = []
+
+    monkeypatch.setattr(page, "install_image_action", lambda: calls.append(True))
+    page.trigger_primary()
+
+    assert calls == [True]
+
+    page.complete_install_failure("重新加载失败，已恢复原动作。")
+    assert page.image_content.ordered_paths() == (frame.resolve(),)
+    assert "已恢复" in page.image_content.status_label.text()
+
+
+def test_image_mode_reports_processing_installing_and_reload_phases(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    frame = tmp_path / "click.png"
+    Image.new("RGBA", (16, 16), (10, 20, 30, 255)).save(frame)
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.select_image_mode()
+    page.image_content.select_slot("mouse_click")
+    page.image_content.load_files([frame])
+    observed: list[str] = []
+    processed: list[bool] = []
+
+    def inspect_install(*_args: object, **_kwargs: object) -> object:
+        observed.append(page.footer_state().status)
+        return SimpleNamespace(installed=("click",))
+
+    monkeypatch.setattr(action_import_page_module, "install_actions", inspect_install)
+    monkeypatch.setattr(
+        action_import_page_module.QApplication,
+        "processEvents",
+        lambda *_args, **_kwargs: processed.append(True),
+    )
+
+    page.install_image_action()
+
+    assert observed == ["正在安装动作…"]
+    assert processed == [True, True]
+    assert page.footer_state().status == "动作已写入，正在重新加载目标宠物…"

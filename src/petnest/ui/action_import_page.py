@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QEventLoop, QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -35,8 +37,10 @@ from petnest.core.action_transfer import (
     load_legacy_work_finish_pack,
 )
 from petnest.core.exchange_source import ExchangeSource
+from petnest.core.image_action_builder import ImageActionSourceError
 from petnest.models.pet_package import PetPackage
 from petnest.ui.exchange_page import ExchangePage
+from petnest.ui.image_action_import_content import ImageActionImportContent
 from petnest.ui.theme import dialog_stylesheet
 
 
@@ -65,6 +69,8 @@ class ActionImportPage(ExchangePage):
         self._pack: ActionPack | None = None
         self._status_text = self._DEFAULT_STATUS
         self._installing = False
+        self._mode = "resource"
+        self._active_install_mode: str | None = None
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -80,13 +86,34 @@ class ActionImportPage(ExchangePage):
         if target_index < 0 and self.target_combo.count():
             target_index = 0
         self.target_combo.setCurrentIndex(target_index)
-        self.target_combo.currentIndexChanged.connect(self._refresh_conflicts)
         header.addWidget(self.target_combo)
         layout.addLayout(header)
 
+        mode_row = QHBoxLayout()
+        self.resource_mode_button = QPushButton("从资源包提取动作", self)
+        self.resource_mode_button.setCheckable(True)
+        self.resource_mode_button.setChecked(True)
+        self.image_mode_button = QPushButton("用图片制作动作", self)
+        self.image_mode_button.setCheckable(True)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_group.addButton(self.resource_mode_button)
+        self.mode_group.addButton(self.image_mode_button)
+        self.resource_mode_button.clicked.connect(self.select_resource_mode)
+        self.image_mode_button.clicked.connect(self.select_image_mode)
+        mode_row.addWidget(self.resource_mode_button, 1)
+        mode_row.addWidget(self.image_mode_button, 1)
+        layout.addLayout(mode_row)
+
+        self.mode_stack = QStackedWidget(self)
+        self.resource_container = QWidget(self.mode_stack)
+        resource_layout = QVBoxLayout(self.resource_container)
+        resource_layout.setContentsMargins(0, 0, 0, 0)
+        resource_layout.setSpacing(10)
+
         source_row = QHBoxLayout()
         self.source_input = QLineEdit(self)
-        self.source_input.setPlaceholderText("选择动作 ZIP、完整宠物文件夹或旧版下班动画包")
+        self.source_input.setPlaceholderText("选择动作分享包、完整宠物包或旧版下班动画包")
         source_row.addWidget(self.source_input, 1)
         browse = QPushButton("选择来源…", self)
         browse.clicked.connect(self._choose_source)
@@ -94,7 +121,7 @@ class ActionImportPage(ExchangePage):
         inspect = QPushButton("读取来源", self)
         inspect.clicked.connect(lambda: self.load_source(Path(self.source_input.text().strip())))
         source_row.addWidget(inspect)
-        layout.addLayout(source_row)
+        resource_layout.addLayout(source_row)
         info_row = QHBoxLayout()
         self.source_kind_label = QLabel("尚未读取来源", self)
         self.source_kind_label.setObjectName("accentValue")
@@ -103,7 +130,7 @@ class ActionImportPage(ExchangePage):
         self.source_summary_label.setObjectName("mutedLabel")
         info_row.addWidget(self.source_summary_label)
         info_row.addStretch(1)
-        layout.addLayout(info_row)
+        resource_layout.addLayout(info_row)
 
         body = QHBoxLayout()
         self.action_list = QListWidget(self)
@@ -115,10 +142,24 @@ class ActionImportPage(ExchangePage):
         self.conflict_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.conflict_table.setMinimumWidth(390)
         body.addWidget(self.conflict_table, 3)
-        layout.addLayout(body, 1)
+        resource_layout.addLayout(body, 1)
 
         self.import_bindings = QCheckBox("同时导入相关绑定", self)
         info_row.insertWidget(0, self.import_bindings)
+
+        self.image_content = ImageActionImportContent(
+            self._packages,
+            current_pet_id=current_pet_id,
+            embed_target_selector=False,
+            parent=self.mode_stack,
+        )
+        self.image_content.draft_changed.connect(self._sync_footer)
+        self.mode_stack.addWidget(self.resource_container)
+        self.mode_stack.addWidget(self.image_content)
+        layout.addWidget(self.mode_stack, 1)
+        self.target_combo.currentIndexChanged.connect(self._target_changed)
+        if isinstance(self.target_combo.currentData(), str):
+            self.image_content.select_target(str(self.target_combo.currentData()))
 
         # These controls remain as hidden compatibility attributes for callers
         # that used the old dialog page directly.  The visible command area is
@@ -130,6 +171,25 @@ class ActionImportPage(ExchangePage):
         self.install_button.setObjectName("legacyInstallButton")
         self.install_button.clicked.connect(self.install_selected)
         self.install_button.hide()
+        self._sync_footer()
+
+    def current_mode(self) -> str:
+        return self._mode
+
+    def select_resource_mode(self, *_args: object) -> None:
+        self._select_mode("resource")
+
+    def select_image_mode(self, *_args: object) -> None:
+        self._select_mode("image")
+
+    def _select_mode(self, mode: str) -> None:
+        if mode not in {"resource", "image"} or self._installing:
+            return
+        self._mode = mode
+        resource = mode == "resource"
+        self.resource_mode_button.setChecked(resource)
+        self.image_mode_button.setChecked(not resource)
+        self.mode_stack.setCurrentWidget(self.resource_container if resource else self.image_content)
         self._sync_footer()
 
     def available_action_names(self) -> set[str]:
@@ -227,30 +287,81 @@ class ActionImportPage(ExchangePage):
             )
         except (ActionInstallError, ActionPackError) as error:
             self._installing = False
+            self._active_install_mode = None
             self._sync_footer(f"安装失败：{error}")
             QMessageBox.warning(self, "动作安装失败", str(error))
             return
+        self._active_install_mode = "resource"
+        self._sync_footer("动作已写入，正在重新加载目标宠物…")
+        self.actions_installed.emit(package.identifier, result)
+
+    def install_image_action(self) -> None:
+        if self._installing:
+            return
+        package = self._target_package()
+        if package is None or not self.image_content.can_install():
+            self.image_content.finish_failure("请先选择可触发动作、添加图片并确认画布处理。")
+            self._sync_footer()
+            return
+        if self._is_pet_locked(package.identifier):
+            self.image_content.finish_failure("当前宠物正在显示下班提醒，请先结束提醒后再安装动作。")
+            self._sync_footer()
+            return
+        self._installing = True
+        self._sync_footer("正在处理图片…")
+        QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        try:
+            with self.image_content.build_pack() as pack:
+                action_name = next(iter(pack.actions))
+                self._sync_footer("正在安装动作…")
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+                result = install_actions(
+                    package.root,
+                    pack,
+                    decisions={action_name: ConflictDecision.replace()},
+                    import_bindings=True,
+                )
+        except (ActionInstallError, ActionPackError, ImageActionSourceError) as error:
+            self._installing = False
+            self._active_install_mode = None
+            message = f"安装失败：{error}"
+            self.image_content.finish_failure(message)
+            self._sync_footer()
+            QMessageBox.warning(self, "动作安装失败", str(error))
+            return
+        self._active_install_mode = "image"
         self._sync_footer("动作已写入，正在重新加载目标宠物…")
         self.actions_installed.emit(package.identifier, result)
 
     def complete_install(self, message: str) -> None:
         """运行时确认动作可用后，清空本次来源并保留最终结果。"""
-
-        self._close_pack()
-        self.source_input.clear()
-        self.source_kind_label.setText("尚未读取来源")
-        self.source_summary_label.clear()
-        self.action_list.clear()
-        self.conflict_table.setRowCount(0)
-        self.import_bindings.setChecked(False)
+        completed_mode = self._active_install_mode or self._mode
+        if completed_mode == "image":
+            self.image_content.clear_after_success(message)
+        else:
+            self._close_pack()
+            self.source_input.clear()
+            self.source_kind_label.setText("尚未读取来源")
+            self.source_summary_label.clear()
+            self.action_list.clear()
+            self.conflict_table.setRowCount(0)
+            self.import_bindings.setChecked(False)
+            self._status_text = message
         self._installing = False
-        self._sync_footer(message)
+        self._active_install_mode = None
+        self._sync_footer()
 
     def complete_install_failure(self, message: str) -> None:
         """运行时应用或回滚失败后恢复操作按钮，并保留来源以便重试。"""
 
+        failed_mode = self._active_install_mode or self._mode
+        if failed_mode == "image":
+            self.image_content.finish_failure(message)
+        else:
+            self._status_text = message
         self._installing = False
-        self._sync_footer(message)
+        self._active_install_mode = None
+        self._sync_footer()
 
     def _selected_pack(self, selected: set[str]) -> ActionPack:
         if self._pack is None:
@@ -298,7 +409,10 @@ class ActionImportPage(ExchangePage):
         self._sync_footer()
 
     def trigger_primary(self) -> None:
-        self.install_selected()
+        if self._mode == "image":
+            self.install_image_action()
+        else:
+            self.install_selected()
 
     def refresh_packages(self, packages: Sequence[PetPackage], current_pet_id: str) -> None:
         """Refresh target pets while keeping the currently loaded source pack."""
@@ -314,6 +428,7 @@ class ActionImportPage(ExchangePage):
             if index < 0 and self.target_combo.count():
                 index = 0
             self.target_combo.setCurrentIndex(index)
+        self.image_content.refresh_packages(self._packages, str(self.target_combo.currentData() or desired_id))
         self._refresh_conflicts()
 
     def close_pack(self) -> None:
@@ -325,22 +440,38 @@ class ActionImportPage(ExchangePage):
         return
 
     def _sync_footer(self, message: str | None = None) -> None:
-        if message is not None:
-            self._status_text = message
-        status = self._status_text
-        enabled = (
-            not self._installing
-            and self._pack is not None
-            and bool(self.selected_action_names())
-            and self._target_package() is not None
-        )
+        if self._mode == "image":
+            if message is not None:
+                self.image_content.status_label.setText(message)
+            status = self.image_content.status_label.text()
+            enabled = not self._installing and self.image_content.can_install()
+            primary_text = "处理中…" if self._installing else self.image_content.primary_text()
+        else:
+            if message is not None:
+                self._status_text = message
+            status = self._status_text
+            enabled = (
+                not self._installing
+                and self._pack is not None
+                and bool(self.selected_action_names())
+                and self._target_package() is not None
+            )
+            primary_text = "处理中…" if self._installing else "安装选中动作"
+        self.resource_mode_button.setEnabled(not self._installing)
+        self.image_mode_button.setEnabled(not self._installing)
         self.status_label.setText(status)
         self.install_button.setEnabled(enabled)
         self.set_footer(
             status=status,
-            primary_text="处理中…" if self._installing else "安装选中动作",
+            primary_text=primary_text,
             primary_enabled=enabled,
         )
+
+    def _target_changed(self, *_args: object) -> None:
+        identifier = self.target_combo.currentData()
+        if isinstance(identifier, str):
+            self.image_content.select_target(identifier)
+        self._refresh_conflicts()
 
     def _conflict_decisions(self, selected: set[str]) -> dict[str, ConflictDecision]:
         decisions: dict[str, ConflictDecision] = {}

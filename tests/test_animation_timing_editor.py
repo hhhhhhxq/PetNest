@@ -89,3 +89,17 @@ def test_action_thumbnail_column_is_wide_enough_for_complete_icon(qtbot: object,
     assert editor.action_table.horizontalScrollBar().maximum() == 0
     assert editor.action_table.item(0, 0).text() == ""
     assert editor.action_table.item(0, 1).text().startswith("idle\n")
+
+
+def test_action_rows_use_shared_trigger_slot_labels(qtbot: object, tmp_path: Path) -> None:
+    editor = AnimationTimingEditor(_package(tmp_path))
+    qtbot.addWidget(editor)
+
+    hover_row = next(
+        row
+        for row in range(editor.action_table.rowCount())
+        if editor.action_table.item(row, 0).data(__import__("PySide6").QtCore.Qt.ItemDataRole.UserRole)
+        == "hover"
+    )
+
+    assert editor.action_table.item(hover_row, 1).text().startswith("hover\n鼠标移入 ·")

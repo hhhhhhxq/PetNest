@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from petnest import app as app_module
 from petnest.app import PetNest
@@ -328,4 +329,55 @@ def test_action_install_handler_reports_rollback_failure(
     application._handle_actions_exchange_installed(application.package.identifier, result)
 
     assert messages and "config changed" in messages[0][1]
+    application.shutdown()
+
+
+def test_image_action_flow_reloads_current_pet_and_clears_draft_after_success(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    monkeypatch.setattr(app_module.QMessageBox, "information", lambda *_args: None)
+    application.show_pet_action_exchange_dialog("导入动作")
+    dialog = application._pet_action_exchange_dialog
+    assert dialog is not None
+    page = dialog.action_import_page
+    frame = tmp_path / "new-click.png"
+    Image.new("RGBA", (256, 256), (20, 80, 220, 200)).save(frame)
+    page.select_image_mode()
+    page.image_content.select_slot("mouse_click")
+    page.image_content.load_files([frame])
+
+    page.trigger_primary()
+
+    assert "click" in application.package.animations
+    assert application.package.bindings["mouse.click"] == "click"
+    assert page.image_content.ordered_paths() == ()
+    dialog.close()
+    application.shutdown()
+
+
+def test_image_action_reload_failure_rolls_back_and_keeps_draft(
+    qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    application = _application(tmp_path, qtbot)
+    application.show_pet_action_exchange_dialog("导入动作")
+    dialog = application._pet_action_exchange_dialog
+    assert dialog is not None
+    page = dialog.action_import_page
+    frame = tmp_path / "new-click.png"
+    Image.new("RGBA", (256, 256), (20, 80, 220, 200)).save(frame)
+    before = (application.package.root / "pet.json").read_bytes()
+    page.select_image_mode()
+    page.image_content.select_slot("mouse_click")
+    page.image_content.load_files([frame])
+    reload_results = iter((False, True))
+    monkeypatch.setattr(application, "reload_current_pet", lambda **_kwargs: next(reload_results))
+    monkeypatch.setattr(app_module.QMessageBox, "warning", lambda *_args: None)
+
+    page.trigger_primary()
+
+    assert (application.package.root / "pet.json").read_bytes() == before
+    assert page.image_content.ordered_paths() == (frame.resolve(),)
+    assert "已恢复" in page.image_content.status_label.text()
+    dialog.close()
     application.shutdown()

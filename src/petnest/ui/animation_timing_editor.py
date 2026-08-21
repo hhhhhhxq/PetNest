@@ -29,31 +29,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from petnest.core.action_slots import action_trigger_label
 from petnest.models.pet_package import AnimationDefinition, PetPackage
 from petnest.ui.animation_preview_widget import AnimationPreviewWidget
 from petnest.ui.theme import COLORS
 
 
-_TRIGGER_TEXT = {
-    "idle": "默认待机",
-    "drag": "拖动宠物时",
-    "drag_right": "向右拖动宠物时",
-    "drag_left": "向左拖动宠物时",
-    "click": "鼠标点击时",
-    "drop": "结束拖动时",
-    "error": "任务报错时",
-    "waiting": "任务等待时",
-    "working": "任务工作时",
-    "hover": "鼠标移入时",
-    "codex_running_left": "旧版 Codex 左向拖动动作",
-    "look_directions": "V2 环视方向 000°–337.5°",
-    "bored": "系统长时间无输入时",
-    "sleep": "系统无人操作更久时",
-    "wake": "系统恢复输入时",
-    "work_finish_walk": "全屏下班提醒 · 走路循环",
-    "work_finish_lie_down": "全屏下班提醒 · 躺下过渡",
-    "work_finish_lie_loop": "全屏下班提醒 · 躺下循环",
-}
 _PREVIEW_HIGHLIGHT_STYLE = (
     f"background: {COLORS['accent_soft']}; border: 1px solid {COLORS['accent']}; border-radius: 8px;"
 )
@@ -365,7 +346,7 @@ class AnimationTimingEditor(QWidget):
             for row, (action, definition) in enumerate(self._package.animations.items()):
                 values = (
                     "",
-                    f"{action}\n{_TRIGGER_TEXT.get(action, '自定义动作')} · {len(definition.frames)} 帧 · "
+                    f"{action}\n{action_trigger_label(self._package, action)} · {len(definition.frames)} 帧 · "
                     f"{sum(self._timelines.get(action, ()))} ms",
                     str(len(definition.frames)),
                     _mode_label(self._modes.get(action, "total")),
@@ -393,7 +374,7 @@ class AnimationTimingEditor(QWidget):
             return
         self._current_action = action
         definition = self._package.animations[action]
-        self.editor_heading_label.setText(f"{action} · {_TRIGGER_TEXT.get(action, '自定义动作')}")
+        self.editor_heading_label.setText(f"{action} · {action_trigger_label(self._package, action)}")
         self.editor_description_label.setText(
             f"共 {len(definition.frames)} 帧 · "
             f"{'只调整整体播放速度' if self._modes[action] == 'total' else '每帧单独设置播放时长'}"
