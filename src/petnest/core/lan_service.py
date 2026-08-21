@@ -936,13 +936,30 @@ class LanInteractionService(QObject):
             return
         address = address if isinstance(address, QHostAddress) else QHostAddress(address)
         host = address.toString()
-        is_saved = device_id in self._known_peers()
+        port = int(presence["port"])
+        known_peers = self._known_peers()
+        is_saved = device_id in known_peers
+        duplicate_ids = tuple(
+            peer_id
+            for peer_id, existing_peer in self._peers.items()
+            if peer_id != device_id
+            and peer_id not in known_peers
+            and peer_id not in self._manual_peer_targets
+            and existing_peer.ip_address == host
+            and existing_peer.port == port
+        )
+        for duplicate_id in duplicate_ids:
+            self._peers.pop(duplicate_id, None)
+            self._peer_seen_at.pop(duplicate_id, None)
+            self._interaction_times.pop(duplicate_id, None)
+            self._usage_sync_times.pop(duplicate_id, None)
+            self.peer_removed.emit(duplicate_id)
         peer = LanPeer(
             device_id=device_id,
             display_name=str(presence["display_name"]),
             pet_name=str(presence["pet_name"]),
             ip_address=host,
-            port=int(presence["port"]),
+            port=port,
             online=True,
             saved=is_saved,
             connection_state="online",
@@ -955,7 +972,7 @@ class LanInteractionService(QObject):
         if is_saved:
             self._save_verified_peer(peer)
         if device_id in self._manual_peer_targets:
-            self._manual_peer_targets[device_id] = (host, int(presence["port"]))
+            self._manual_peer_targets[device_id] = (host, port)
         if previous != peer:
             self.peer_changed.emit(peer)
         return peer
@@ -1006,6 +1023,7 @@ class LanInteractionService(QObject):
             else QHostAddress(address).toString()
         )
         device_id = str(presence["device_id"])
+        advertised_port = int(presence["port"])
         expected_device_id = self._saved_probe_targets.get((host, int(source_port)))
         if expected_device_id is not None and expected_device_id != device_id:
             self.error.emit("已保存伙伴身份不匹配，已拒绝此次重连")
@@ -1024,12 +1042,20 @@ class LanInteractionService(QObject):
         if target is None or target[0] != host:
             if (
                 self._peer_registry is not None
-                and not self._peer_registry.matches_expected_identity(host, device_id)
+                and not self._peer_registry.matches_expected_identity(
+                    host,
+                    advertised_port,
+                    device_id,
+                )
             ):
                 self.error.emit("已保存伙伴身份不匹配，已拒绝此次重连")
                 return True
             return False
-        if self._peer_registry is None or self._peer_registry.matches_expected_identity(host, device_id):
+        if self._peer_registry is None or self._peer_registry.matches_expected_identity(
+            host,
+            advertised_port,
+            device_id,
+        ):
             return False
         self._manual_probe_target = None
         self._manual_probe_expected_device_id = None

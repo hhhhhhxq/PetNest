@@ -64,13 +64,26 @@ class PoolRosterStore:
         incoming_ids = [record.device_id for record in incoming]
         if len(set(incoming_ids)) != len(incoming_ids):
             raise ValueError("duplicate device_id in merge records")
-        if len(set(self._records).union(incoming_ids)) > MAX_POOL_RECORDS:
+        local_record = self._records.get(self.local_device_id)
+        local_endpoint_conflict_ids = {
+            record.device_id
+            for record in incoming
+            if local_record is not None
+            and record.device_id != self.local_device_id
+            and record.ip_address == local_record.ip_address
+            and record.port == local_record.port
+        }
+        accepted_incoming_ids = set(incoming_ids).difference(local_endpoint_conflict_ids)
+        if len(set(self._records).union(accepted_incoming_ids)) > MAX_POOL_RECORDS:
             raise ValueError("pool roster cannot contain more than 256 records")
 
         changed: list[str] = []
         local_newer: list[str] = []
         conflicts: list[str] = []
         for remote in incoming:
+            if remote.device_id in local_endpoint_conflict_ids:
+                conflicts.append(remote.device_id)
+                continue
             local = self._records.get(remote.device_id)
             if remote.device_id == self.local_device_id and local != remote:
                 conflicts.append(remote.device_id)
@@ -104,26 +117,42 @@ class PoolRosterStore:
     ) -> PoolMemberRecord:
         existing = self._records.get(self.local_device_id)
         normalized_state = state if isinstance(state, PoolMemberState) else PoolMemberState(state)
-        if (
+        unchanged = (
             existing is not None
             and existing.display_name == display_name.strip()
             and existing.state is normalized_state
             and existing.ip_address == ip_address
             and existing.port == port
-        ):
-            return existing
-        revision = max(self._local_revision, existing.revision if existing is not None else 0) + 1
-        record = PoolMemberRecord(
-            self.local_device_id,
-            display_name,
-            normalized_state,
-            revision,
-            ip_address,
-            port,
-            1,
         )
+        if unchanged:
+            record = existing
+        else:
+            revision = max(self._local_revision, existing.revision if existing is not None else 0) + 1
+            record = PoolMemberRecord(
+                self.local_device_id,
+                display_name,
+                normalized_state,
+                revision,
+                ip_address,
+                port,
+                1,
+            )
+        conflicting_ids = tuple(
+            device_id
+            for device_id, candidate in self._records.items()
+            if device_id != self.local_device_id
+            and candidate.ip_address == ip_address
+            and candidate.port == port
+        )
+        if unchanged and not conflicting_ids:
+            return record
+        for device_id in conflicting_ids:
+            del self._records[device_id]
+        if unchanged:
+            self._save()
+            return record
         self._records[self.local_device_id] = record
-        self._local_revision = revision
+        self._local_revision = record.revision
         self._save()
         return record
 

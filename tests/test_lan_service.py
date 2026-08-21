@@ -12,6 +12,8 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtNetwork import QHostAddress, QTcpServer
 from PySide6.QtTest import QTest
 
+import pytest
+
 import petnest.core.lan_service as lan_service_module
 from petnest.core.lan_discovery import InterfaceIPv4
 from petnest.core.lan_interaction import LanPacketCodec
@@ -572,7 +574,7 @@ def test_saved_ip_rejects_a_different_device_even_from_another_source_port(tmp_p
     service.error.connect(errors.append)
     service._saved_probe_targets[(trusted.ip_address, trusted.port)] = trusted.device_id
     packet = LanPacketCodec.hello_ack(
-        device_id="attacker", display_name="冒名者", pet_name="猫", port=19001
+        device_id="attacker", display_name="冒名者", pet_name="猫", port=trusted.port
     )
 
     service._handle_datagram(
@@ -582,6 +584,35 @@ def test_saved_ip_rejects_a_different_device_even_from_another_source_port(tmp_p
     assert registry.load() == (trusted,)
     assert all(peer.device_id != "attacker" for peer in service.peers())
     assert errors and "身份" in errors[-1]
+
+
+def test_saved_peer_allows_another_device_on_the_same_ip_with_a_different_port(
+    tmp_path,
+    qtbot,
+) -> None:
+    registry = KnownLanPeerRegistry(tmp_path / "known-lan-peers.json")
+    trusted = KnownLanPeer("trusted", "可信伙伴", "192.168.1.20", 19000)
+    registry.upsert(trusted)
+    service = LanInteractionService(
+        device_id="local",
+        display_name="本机",
+        pet_name="平安",
+        peer_registry=registry,
+    )
+    packet = LanPacketCodec.hello(
+        device_id="other-device",
+        display_name="同机伙伴",
+        pet_name="猫",
+        port=19001,
+    )
+
+    service._handle_datagram(
+        LanPacketCodec.encode(packet),
+        QHostAddress(trusted.ip_address),
+        19001,
+    )
+
+    assert {peer.device_id for peer in service.peers()} == {"trusted", "other-device"}
 
 
 def test_forget_peer_removes_saved_projection_and_runtime_state(tmp_path, qtbot) -> None:
@@ -689,6 +720,65 @@ def test_service_registers_a_remote_presence_with_ip_and_port(qtbot) -> None:
 
     assert changed[0].device_id == "remote"
     assert (changed[0].ip_address, changed[0].port, changed[0].pet_name) == ("192.168.1.20", 19000, "橘猫")
+
+
+def test_same_endpoint_replaces_an_older_unsaved_identity(qtbot) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安")
+    removed: list[str] = []
+    service.peer_removed.connect(removed.append)
+    for device_id in ("ghost-a", "ghost-b"):
+        packet = LanPacketCodec.hello(
+            device_id=device_id,
+            display_name=device_id,
+            pet_name="猫",
+            port=18487,
+        )
+        service._handle_datagram(
+            LanPacketCodec.encode(packet),
+            QHostAddress("192.168.1.20"),
+            18487,
+        )
+
+    assert [peer.device_id for peer in service.peers()] == ["ghost-b"]
+    assert removed == ["ghost-a"]
+    assert "ghost-a" not in service._peer_seen_at
+
+
+@pytest.mark.parametrize(
+    ("second_ip", "second_port"),
+    (("192.168.1.21", 18487), ("192.168.1.20", 18488)),
+)
+def test_different_endpoints_keep_both_unsaved_identities(
+    qtbot,
+    second_ip: str,
+    second_port: int,
+) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安")
+    first = LanPacketCodec.hello(
+        device_id="peer-a",
+        display_name="甲",
+        pet_name="猫",
+        port=18487,
+    )
+    second = LanPacketCodec.hello(
+        device_id="peer-b",
+        display_name="乙",
+        pet_name="猫",
+        port=second_port,
+    )
+
+    service._handle_datagram(
+        LanPacketCodec.encode(first),
+        QHostAddress("192.168.1.20"),
+        18487,
+    )
+    service._handle_datagram(
+        LanPacketCodec.encode(second),
+        QHostAddress(second_ip),
+        second_port,
+    )
+
+    assert {peer.device_id for peer in service.peers()} == {"peer-a", "peer-b"}
 
 
 def test_service_sends_a_targeted_interaction_over_local_udp(qtbot) -> None:

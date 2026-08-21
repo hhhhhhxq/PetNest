@@ -82,9 +82,13 @@ class KnownLanPeerRegistry:
         peers.pop(device_id, None)
         self._save(tuple(peers.values()))
 
-    def matches_expected_identity(self, ip_address: str, device_id: str) -> bool:
-        """未登记 IP 可继续验证，已登记 IP 仅接受原设备。"""
-        return all(peer.ip_address != ip_address or peer.device_id == device_id for peer in self.load())
+    def matches_expected_identity(self, ip_address: str, port: int, device_id: str) -> bool:
+        """未登记端点可继续验证，已登记端点仅接受原设备。"""
+        return all(
+            (peer.ip_address, peer.port) != (ip_address, port)
+            or peer.device_id == device_id
+            for peer in self.load()
+        )
 
     def _parse_document(self, document: object) -> tuple[KnownLanPeer, ...]:
         if not isinstance(document, dict) or set(document) != {"schema_version", "peers"}:

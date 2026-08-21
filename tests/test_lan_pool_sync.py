@@ -132,6 +132,25 @@ def test_received_third_party_records_are_merged_and_queued_for_direct_verificat
     assert a.lan.probes == [(third_party.ip_address, third_party.port, "b")]
 
 
+def test_sync_does_not_restore_a_foreign_identity_at_the_local_endpoint(qtbot, tmp_path) -> None:
+    local = record("a", 1)
+    a = _sync_node(tmp_path / "a", "a", records=(local,))
+    ghost = PoolMemberRecord(
+        "ghost",
+        "用户-GHOST",
+        PoolMemberState.JOINED,
+        1,
+        local.ip_address,
+        local.port,
+        1,
+    )
+
+    a.sync.receive_records("d", PoolRecords("d", (ghost,)))
+
+    assert set(a.roster.records()) == {"a"}
+    assert a.lan.probes == []
+
+
 def test_local_join_and_leave_increment_revision_and_emit_heartbeat(qtbot, tmp_path) -> None:
     a = _sync_node(tmp_path / "a", "a")
 

@@ -83,6 +83,51 @@ def test_local_record_revision_only_increments_when_content_changes(tmp_path) ->
     assert store.records()["local"] == left
 
 
+def test_update_local_removes_foreign_records_at_the_same_endpoint(tmp_path) -> None:
+    path = tmp_path / "roster.json"
+    store = PoolRosterStore(path, local_device_id="local")
+    store.merge(
+        (
+            _record("ghost-a", ip_address="192.168.1.10", port=18487),
+            _record("ghost-b", ip_address="192.168.1.10", port=18487),
+            _record("other-ip", ip_address="192.168.1.11", port=18487),
+            _record("other-port", ip_address="192.168.1.10", port=18488),
+        )
+    )
+
+    store.update_local(
+        display_name="本机",
+        state=PoolMemberState.JOINED,
+        ip_address="192.168.1.10",
+        port=18487,
+    )
+
+    expected_ids = {"local", "other-ip", "other-port"}
+    assert set(store.records()) == expected_ids
+    assert set(PoolRosterStore(path, local_device_id="local").records()) == expected_ids
+
+
+def test_unchanged_local_record_still_cleans_a_later_endpoint_conflict(tmp_path) -> None:
+    store = PoolRosterStore(tmp_path / "roster.json", local_device_id="local")
+    local = store.update_local(
+        display_name="本机",
+        state=PoolMemberState.JOINED,
+        ip_address="192.168.1.10",
+        port=18487,
+    )
+    store.merge((_record("ghost", ip_address="192.168.1.10", port=18487),))
+
+    same = store.update_local(
+        display_name="本机",
+        state=PoolMemberState.JOINED,
+        ip_address="192.168.1.10",
+        port=18487,
+    )
+
+    assert same.revision == local.revision
+    assert set(store.records()) == {"local"}
+
+
 def test_roster_round_trips_records_revision_map_and_digest(tmp_path) -> None:
     path = tmp_path / "lan-alert-pool-roster.json"
     store = PoolRosterStore(path, local_device_id="local")

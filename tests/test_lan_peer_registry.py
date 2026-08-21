@@ -55,11 +55,12 @@ def test_load_backs_up_corrupt_file_and_returns_empty(tmp_path) -> None:
 
 def test_mismatched_identity_cannot_claim_registered_ip(tmp_path) -> None:
     registry = KnownLanPeerRegistry(tmp_path / "known-lan-peers.json")
-    registry.upsert(peer(device_id="trusted", ip_address="192.168.1.20"))
+    registry.upsert(peer(device_id="trusted", ip_address="192.168.1.20", port=19000))
 
-    assert not registry.matches_expected_identity("192.168.1.20", "attacker")
-    assert registry.matches_expected_identity("192.168.1.20", "trusted")
-    assert registry.matches_expected_identity("192.168.1.21", "attacker")
+    assert not registry.matches_expected_identity("192.168.1.20", 19000, "attacker")
+    assert registry.matches_expected_identity("192.168.1.20", 19000, "trusted")
+    assert registry.matches_expected_identity("192.168.1.20", 19001, "other-device")
+    assert registry.matches_expected_identity("192.168.1.21", 19000, "attacker")
 
 
 @pytest.mark.parametrize(
