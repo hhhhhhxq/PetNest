@@ -207,13 +207,17 @@ class SettingsManager:
             migrated["schema_version"] = 23
             version = 23
         if version == 23:
-            migrated.setdefault("codex_link_enabled", False)
+            migrated.setdefault("codex_link_enabled", True)
             migrated.setdefault("codex_link_show_attention_bubbles", True)
             migrated.setdefault("codex_link_show_review_bubbles", True)
             migrated["schema_version"] = 24
             version = 24
         if version == 24:
             migrated.setdefault("codex_link_log_fallback_enabled", True)
+            migrated["schema_version"] = 25
+            version = 25
+        if version == 25:
+            migrated.setdefault("codex_home_override", None)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

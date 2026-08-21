@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -42,6 +43,11 @@ from PySide6.QtWidgets import (
 from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.core.codex_link import CodexHookStatus
 from petnest.core.codex_plugin import CodexPluginStatus
+from petnest.core.codex_discovery import (
+    CodexAvailabilityState,
+    CodexLinkAvailability,
+    normalize_selected_codex_home,
+)
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
 from petnest.ui.theme import dialog_stylesheet
@@ -277,7 +283,9 @@ class SettingsCenterDialog(QDialog):
         codex_log_status: CodexLogSourceStatus | None = None,
         codex_action_availability: Mapping[str, str] | None = None,
         codex_plugin_status: CodexPluginStatus | None = None,
+        codex_availability: CodexLinkAvailability | None = None,
         codex_home_path: Path | None = None,
+        on_set_codex_home_override: Callable[[Path | None], CodexLinkAvailability] | None = None,
         on_configure_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
         on_recheck_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
         on_remove_codex_plugin: Callable[[], CodexPluginStatus] | None = None,
@@ -306,7 +314,17 @@ class SettingsCenterDialog(QDialog):
         self._codex_log_status = codex_log_status or CodexLogSourceStatus("stopped", "本地日志回退未启动")
         self._codex_action_availability = dict(codex_action_availability or {})
         self._codex_plugin_status = codex_plugin_status or CodexPluginStatus.missing()
-        self._codex_home_path = (codex_home_path or Path.home() / ".codex").expanduser()
+        self._codex_availability = codex_availability or CodexLinkAvailability(
+            CodexAvailabilityState.DISABLED if not settings.codex_link_enabled else CodexAvailabilityState.DETECTING,
+            "联动已关闭" if not settings.codex_link_enabled else "正在查找 Codex",
+            False,
+        )
+        self._codex_home_path = (
+            self._codex_availability.selected_home
+            or codex_home_path
+            or Path.home() / ".codex"
+        ).expanduser()
+        self._on_set_codex_home_override = on_set_codex_home_override
         self._on_configure_codex_plugin = on_configure_codex_plugin
         self._on_recheck_codex_plugin = on_recheck_codex_plugin
         self._on_remove_codex_plugin = on_remove_codex_plugin
@@ -830,6 +848,9 @@ class SettingsCenterDialog(QDialog):
         self.codex_link_runtime_label.setWordWrap(True)
         self.codex_link_runtime_label.setStyleSheet("font-size: 14px; font-weight: 700; color: #6D7F65;")
         link_layout.addWidget(self.codex_link_runtime_label)
+        self.codex_choose_home_button = QPushButton("选择 Codex 数据目录", link_card)
+        self.codex_choose_home_button.clicked.connect(self._choose_codex_home)
+        link_layout.addWidget(self.codex_choose_home_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         missing_actions = []
         if self._codex_action_availability.get("working", "idle（回退）").startswith("idle"):
@@ -933,13 +954,13 @@ class SettingsCenterDialog(QDialog):
         self.codex_technical_source_label.setWordWrap(True)
         self.codex_technical_source_label.setObjectName("mutedLabel")
         advanced_layout.addWidget(self.codex_technical_source_label)
-        paths_label = QLabel(
-            f"Codex Home：{self._codex_home_path}\n会话目录：{self._codex_home_path / 'sessions'}",
+        self.codex_paths_label = QLabel(
+            "",
             self.codex_advanced_details_panel,
         )
-        paths_label.setWordWrap(True)
-        paths_label.setObjectName("mutedLabel")
-        advanced_layout.addWidget(paths_label)
+        self.codex_paths_label.setWordWrap(True)
+        self.codex_paths_label.setObjectName("mutedLabel")
+        advanced_layout.addWidget(self.codex_paths_label)
         self.codex_action_status_labels: dict[str, QLabel] = {}
         action_form = QFormLayout()
         for action, title in (
@@ -958,6 +979,12 @@ class SettingsCenterDialog(QDialog):
         self.codex_plugin_details_label.setObjectName("mutedLabel")
         advanced_layout.addWidget(self.codex_plugin_details_label)
         advanced_buttons = QHBoxLayout()
+        self.codex_reselect_home_button = QPushButton("重新选择数据目录…", self.codex_advanced_details_panel)
+        self.codex_reselect_home_button.clicked.connect(self._choose_codex_home)
+        advanced_buttons.addWidget(self.codex_reselect_home_button)
+        self.codex_restore_auto_home_button = QPushButton("恢复自动查找", self.codex_advanced_details_panel)
+        self.codex_restore_auto_home_button.clicked.connect(self._restore_codex_home_auto)
+        advanced_buttons.addWidget(self.codex_restore_auto_home_button)
         self.codex_diagnose_button = QPushButton("检查详细状态", self.codex_advanced_details_panel)
         self.codex_diagnose_button.setEnabled(self._on_diagnose_codex_link is not None)
         self.codex_diagnose_button.clicked.connect(self._diagnose_codex_link)
@@ -975,6 +1002,7 @@ class SettingsCenterDialog(QDialog):
 
         self.codex_link_enabled_input.toggled.connect(self._update_codex_link_controls)
         self.set_codex_link_runtime(self._codex_link_source, self._codex_log_status)
+        self.set_codex_availability(self._codex_availability)
         self.set_codex_plugin_status(self._codex_plugin_status)
         self._update_codex_link_controls()
 
@@ -1011,6 +1039,65 @@ class SettingsCenterDialog(QDialog):
         if self._on_diagnose_codex_link is not None:
             self.codex_diagnostic_result_label.setText(str(self._on_diagnose_codex_link()))
 
+    def _choose_codex_home(self) -> None:
+        if self._on_set_codex_home_override is None:
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "选择 Codex 数据目录",
+            str(self._codex_availability.selected_home or self._codex_home_path),
+        )
+        if not selected:
+            return
+        try:
+            home = normalize_selected_codex_home(Path(selected))
+            availability = self._on_set_codex_home_override(home)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.codex_diagnostic_result_label.setText(f"无法使用所选目录：{error}")
+            return
+        self._settings = replace(self._settings, codex_home_override=str(home))
+        self.set_codex_availability(availability)
+
+    def _restore_codex_home_auto(self) -> None:
+        if self._on_set_codex_home_override is None:
+            return
+        try:
+            availability = self._on_set_codex_home_override(None)
+        except (OSError, RuntimeError, ValueError) as error:
+            self.codex_diagnostic_result_label.setText(f"无法恢复自动查找：{error}")
+            return
+        self._settings = replace(self._settings, codex_home_override=None)
+        self.set_codex_availability(availability)
+
+    def set_codex_availability(self, availability: CodexLinkAvailability) -> None:
+        self._codex_availability = availability
+        if availability.selected_home is not None:
+            self._codex_home_path = availability.selected_home
+        choose_states = {
+            CodexAvailabilityState.NOT_DETECTED,
+            CodexAvailabilityState.DATA_ONLY,
+            CodexAvailabilityState.UNREADABLE,
+            CodexAvailabilityState.INCOMPATIBLE,
+        }
+        callback_available = self._on_set_codex_home_override is not None
+        self.codex_choose_home_button.setVisible(
+            callback_available and availability.state in choose_states
+        )
+        self.codex_reselect_home_button.setVisible(callback_available)
+        self.codex_restore_auto_home_button.setVisible(
+            callback_available and availability.manual_override
+        )
+        sessions = availability.sessions_path or self._codex_home_path / "sessions"
+        evidence = "、".join(availability.evidence) or "无"
+        reason = availability.technical_reason or "无"
+        self.codex_paths_label.setText(
+            f"Codex Home：{self._codex_home_path}\n"
+            f"会话目录：{sessions}\n"
+            f"发现证据：{evidence}\n"
+            f"技术原因：{reason}"
+        )
+        self._refresh_codex_runtime_label()
+
     def set_codex_link_runtime(self, source: str, log_status: CodexLogSourceStatus) -> None:
         self._codex_link_source = source
         self._codex_log_status = log_status
@@ -1041,12 +1128,8 @@ class SettingsCenterDialog(QDialog):
             message = "执行遇到问题"
         elif self._codex_task_state == "review":
             message = "任务已完成"
-        elif self._codex_log_status.state == "incompatible" and self._codex_link_source not in {"hook", "log"}:
-            message = "暂不可用"
-        elif self._codex_link_source in {"hook", "log", "waiting"} or self._codex_log_status.state == "active":
-            message = "联动正常"
         else:
-            message = "等待新的 Codex 任务"
+            message = self._codex_availability.message
         self.codex_link_runtime_label.setText(message)
 
     def _handle_codex_plugin_primary(self) -> None:

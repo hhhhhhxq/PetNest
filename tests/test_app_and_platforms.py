@@ -7,7 +7,10 @@ import hashlib
 import os
 import socket
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
+from threading import Event
+from time import monotonic
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -22,8 +25,12 @@ from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.codex_link import CodexHookManager
+from petnest.core.codex_discovery import (
+    CodexAvailabilityState,
+    CodexLinkAvailability,
+)
 from petnest.core.codex_plugin import CodexPluginStatus
-from petnest.core.codex_session_log import CodexLogSourceStatus
+from petnest.core.codex_session_log import CodexLogSourceStatus, CodexSessionLogWatcher
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_update import RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
@@ -54,6 +61,9 @@ class _CodexLogWatcher:
         self.stopped = 0
         self.events: list[PetEvent] = []
         self.status = CodexLogSourceStatus("stopped", "未启动")
+        self.configured_home: Path | None = None
+        self.root = Path("C:/unused-codex-home/sessions")
+        self.global_state_path = self.root.parent / ".codex-global-state.json"
 
     @property
     def is_running(self) -> bool:
@@ -62,6 +72,12 @@ class _CodexLogWatcher:
     def start(self) -> None:
         self.started += 1
         self.status = CodexLogSourceStatus("waiting", "等待新的 Codex 任务")
+
+    def reconfigure(self, codex_home: Path) -> None:
+        home = codex_home.expanduser().resolve()
+        self.configured_home = home
+        self.root = home / "sessions"
+        self.global_state_path = home / ".codex-global-state.json"
 
     def stop(self) -> None:
         self.stopped += 1
@@ -77,6 +93,7 @@ class _CodexLogWatcher:
 class _CodexPluginManager:
     def __init__(self, status: CodexPluginStatus | None = None) -> None:
         self.status = status or CodexPluginStatus.missing()
+        self.codex_home: Path | None = None
         self.inspected = 0
         self.configured = 0
         self.removed = 0
@@ -94,6 +111,22 @@ class _CodexPluginManager:
         self.removed += 1
         self.status = CodexPluginStatus.missing()
         return self.status
+
+    def has_install_receipt(self) -> bool:
+        return self.status.installed
+
+    def set_codex_home(self, codex_home: Path) -> None:
+        self.codex_home = codex_home.expanduser().resolve()
+
+
+class _CodexDiscoveryService:
+    def __init__(self, *results: CodexLinkAvailability) -> None:
+        self.results = list(results)
+        self.calls: list[Path | None] = []
+
+    def discover(self, manual_home: Path | None) -> CodexLinkAvailability:
+        self.calls.append(manual_home)
+        return self.results.pop(0) if len(self.results) > 1 else self.results[0]
 
 
 def _free_loopback_port() -> int:
@@ -1078,7 +1111,7 @@ def test_application_shutdown_stops_server_and_persists_window_position(
     assert application.external_server is None
 
 
-def test_codex_link_alone_starts_authenticated_loopback_server_without_editing_hooks(
+def test_codex_link_alone_does_not_start_hook_server_or_edit_hooks(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
     port = _free_loopback_port()
@@ -1111,10 +1144,9 @@ def test_codex_link_alone_starts_authenticated_loopback_server_without_editing_h
 
     application.start()
 
-    assert application.external_server is not None
-    assert application.external_server.is_running
+    assert application.external_server is None
     assert hook_manager.hooks_path.read_text(encoding="utf-8") == original_hooks
-    assert hook_manager.metadata_path.is_file()
+    assert not hook_manager.metadata_path.exists()
     application.shutdown()
 
 
@@ -1128,6 +1160,7 @@ def test_codex_hook_reaches_pet_and_ui_on_qt_main_thread(qtbot: pytest.QtBot, tm
         port=port,
         command_prefix=("PetNest.exe",),
     )
+    hook_manager.install()
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",
@@ -1150,6 +1183,7 @@ def test_codex_hook_reaches_pet_and_ui_on_qt_main_thread(qtbot: pytest.QtBot, tm
     assert application.window.current_action == "waiting"
     assert application.window.codex_status_text == "Codex 正在等待你处理"
     assert application.codex_hook_status.state == "connected"
+    assert application.codex_availability.state is CodexAvailabilityState.ACTIVE
     application.shutdown()
 
 
@@ -1163,6 +1197,7 @@ def test_disabling_codex_link_clears_state_and_stops_unneeded_server(qtbot: pyte
         port=port,
         command_prefix=("PetNest.exe",),
     )
+    hook_manager.install()
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",
@@ -1270,6 +1305,19 @@ def test_failed_precise_connection_does_not_stop_basic_codex_log_link(
 ) -> None:
     watcher = _CodexLogWatcher()
     plugin = _CodexPluginManager(CodexPluginStatus.error("CET 不兼容"))
+    home = tmp_path / "codex-home"
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("app-server",),
+            home,
+            home / "sessions",
+            False,
+            True,
+        )
+    )
     settings_manager = SettingsManager(tmp_path / "settings.json")
     settings_manager.save(Settings(codex_link_enabled=True, codex_link_log_fallback_enabled=True))
     create_sample_pet(tmp_path / "pets" / "sample_pet")
@@ -1278,6 +1326,7 @@ def test_failed_precise_connection_does_not_stop_basic_codex_log_link(
         settings_manager=settings_manager,
         codex_log_watcher=watcher,
         codex_plugin_manager=plugin,
+        codex_discovery=discovery,
         enable_tray=False,
     )
     qtbot.addWidget(application.window)
@@ -1302,6 +1351,581 @@ def test_failed_precise_connection_does_not_stop_basic_codex_log_link(
     application.shutdown()
 
 
+def test_codex_discovery_starts_only_verified_log_source(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "verified-codex-home"
+    availability = CodexLinkAvailability(
+        CodexAvailabilityState.READY,
+        "联动已准备好，等待新的任务",
+        True,
+        ("app-server",),
+        home,
+        home / "sessions",
+        False,
+        True,
+    )
+    discovery = _CodexDiscoveryService(availability)
+    watcher = _CodexLogWatcher()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(
+        Settings(
+            codex_link_enabled=True,
+            external_event_port=_free_loopback_port(),
+            work_countdown_enabled=False,
+        )
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert discovery.calls == [None]
+    assert watcher.configured_home == home.resolve()
+    assert watcher.started == 1
+    assert application.codex_log_timer.isActive()
+    assert not application.codex_discovery_timer.isActive()
+    assert application.external_server is None
+    application.shutdown()
+
+
+def test_codex_not_detected_retries_without_fast_log_poll_or_hook_server(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    availability = CodexLinkAvailability(
+        CodexAvailabilityState.NOT_DETECTED,
+        "未检测到 Codex，安装或启动后会自动连接",
+        False,
+    )
+    discovery = _CodexDiscoveryService(availability)
+    watcher = _CodexLogWatcher()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert application.codex_discovery_timer.interval() == 30_000
+    assert application.codex_discovery_timer.isActive()
+    assert watcher.started == 0
+    assert not application.codex_log_timer.isActive()
+    assert application.external_server is None
+    assert application.window.codex_status_text is None
+    application.shutdown()
+
+
+def test_default_app_home_probe_does_not_block_qt_startup(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    home = tmp_path / "app-server-home"
+    current = date.today()
+    day = home / "sessions" / f"{current:%Y}" / f"{current:%m}" / f"{current:%d}"
+    day.mkdir(parents=True)
+    (day / "rollout-current.jsonl").write_text(
+        json.dumps({"type": "session_meta", "payload": {"session_id": "session-current"}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "turn-current"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    entered = Event()
+    release = Event()
+
+    def slow_app_home() -> Path:
+        entered.set()
+        release.wait(5.0)
+        return home
+
+    monkeypatch.setattr("petnest.app._fetch_codex_home_for_discovery", slow_app_home)
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    started_at = monotonic()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    elapsed = monotonic() - started_at
+
+    assert elapsed < 1.5
+    assert entered.wait(1.0)
+    release.set()
+    qtbot.waitUntil(
+        lambda: application.codex_availability.selected_home == home.resolve(),
+        timeout=3_000,
+    )
+    assert application.codex_availability.state is CodexAvailabilityState.READY
+    application.shutdown()
+
+
+def test_codex_waiting_for_sessions_runs_watcher_and_keeps_discovery_retry(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "empty-codex-home"
+    availability = CodexLinkAvailability(
+        CodexAvailabilityState.WAITING_FOR_SESSIONS,
+        "已检测到 Codex，等待创建本地任务",
+        True,
+        ("desktop",),
+        home,
+        home / "sessions",
+        False,
+        True,
+    )
+    discovery = _CodexDiscoveryService(availability)
+    watcher = _CodexLogWatcher()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert watcher.started == 1
+    assert application.codex_log_timer.isActive()
+    assert application.codex_discovery_timer.isActive()
+    application.shutdown()
+
+
+def test_disabled_codex_link_does_not_run_discovery(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.NOT_DETECTED,
+            "未检测到 Codex",
+            False,
+        )
+    )
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=False, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert discovery.calls == []
+    assert not application.codex_discovery_timer.isActive()
+    assert not application.codex_log_timer.isActive()
+    application.shutdown()
+
+
+def test_manual_codex_home_is_persisted_applied_and_restored(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    manual = tmp_path / "manual-home"
+    automatic = tmp_path / "automatic-home"
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.NOT_DETECTED,
+            "未检测到 Codex",
+            False,
+        ),
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("manual",),
+            manual,
+            manual / "sessions",
+            True,
+            True,
+        ),
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("app-server",),
+            automatic,
+            automatic / "sessions",
+            False,
+            True,
+        ),
+    )
+    watcher = _CodexLogWatcher()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    selected = application._set_codex_home_override(manual)
+
+    assert selected.manual_override is True
+    assert discovery.calls[-1] == manual
+    assert watcher.configured_home == manual.resolve()
+    assert manager.load().codex_home_override == str(manual)
+
+    restored = application._set_codex_home_override(None)
+
+    assert restored.manual_override is False
+    assert discovery.calls[-1] is None
+    assert watcher.configured_home == automatic.resolve()
+    assert manager.load().codex_home_override is None
+    application.shutdown()
+
+
+def test_invalid_manual_codex_home_is_not_persisted(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    invalid = tmp_path / "ordinary-folder"
+    invalid.mkdir()
+    unavailable = CodexLinkAvailability(
+        CodexAvailabilityState.NOT_DETECTED,
+        "所选目录不是 Codex 数据目录",
+        False,
+        ("manual",),
+        invalid,
+        invalid / "sessions",
+        True,
+        False,
+        "未找到 sessions 或 Codex 配置标记",
+    )
+    discovery = _CodexDiscoveryService(unavailable)
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    with pytest.raises(ValueError, match="Codex 数据目录"):
+        application._set_codex_home_override(invalid)
+
+    assert manager.load().codex_home_override is None
+    assert application.settings.codex_home_override is None
+    application.shutdown()
+
+
+def test_discovered_profile_rechecks_legacy_hook_before_starting_server(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    port = _free_loopback_port()
+    first = tmp_path / "first-home"
+    second = tmp_path / "second-home"
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(
+        Settings(
+            codex_link_enabled=True,
+            external_event_port=port,
+            work_countdown_enabled=False,
+        )
+    )
+    hook_manager = CodexHookManager(
+        first,
+        manager.path.parent,
+        port=port,
+        command_prefix=("PetNest.exe",),
+    )
+    hook_manager.set_codex_home(second)
+    hook_manager.install()
+    hook_manager.set_codex_home(first)
+    availability = CodexLinkAvailability(
+        CodexAvailabilityState.READY,
+        "联动已准备好，等待新的任务",
+        True,
+        ("app-server",),
+        second,
+        second / "sessions",
+        False,
+        True,
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_hook_manager=hook_manager,
+        codex_discovery=_CodexDiscoveryService(availability),
+        codex_log_watcher=_CodexLogWatcher(),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert application.codex_hook_status.installed is True
+    assert application.external_server is not None
+    assert application.external_server.is_running
+    application.shutdown()
+
+
+def test_incompatible_manual_profile_still_syncs_hook_and_plugin_home(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "incompatible-home"
+    selected.mkdir()
+    unavailable = CodexLinkAvailability(
+        CodexAvailabilityState.NOT_DETECTED,
+        "未检测到 Codex",
+        False,
+    )
+    incompatible = CodexLinkAvailability(
+        CodexAvailabilityState.INCOMPATIBLE,
+        "当前 Codex 版本暂不支持基础联动",
+        True,
+        ("manual",),
+        selected,
+        selected / "sessions",
+        True,
+        False,
+        "未知格式",
+    )
+    discovery = _CodexDiscoveryService(unavailable, incompatible)
+    watcher = _CodexLogWatcher()
+    plugin = _CodexPluginManager()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    hook = CodexHookManager(
+        tmp_path / "initial-home",
+        manager.path.parent,
+        port=_free_loopback_port(),
+        command_prefix=("PetNest.exe",),
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_hook_manager=hook,
+        codex_plugin_manager=plugin,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    availability = application._set_codex_home_override(selected)
+
+    assert availability.state is CodexAvailabilityState.INCOMPATIBLE
+    assert watcher.configured_home == selected.resolve()
+    assert watcher.started == 0
+    assert hook.codex_home == selected.resolve()
+    assert plugin.codex_home == selected.resolve()
+    assert manager.load().codex_home_override == str(selected)
+    application.shutdown()
+
+
+def test_removing_precise_plugin_restores_basic_discovery(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    not_detected = CodexLinkAvailability(
+        CodexAvailabilityState.NOT_DETECTED,
+        "未检测到 Codex，安装或启动后会自动连接",
+        False,
+    )
+    discovery = _CodexDiscoveryService(not_detected)
+    plugin = _CodexPluginManager(CodexPluginStatus.pending())
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(
+        Settings(
+            codex_link_enabled=True,
+            external_event_port=_free_loopback_port(),
+            work_countdown_enabled=False,
+        )
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_plugin_manager=plugin,
+        codex_discovery=discovery,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    application.codex_availability = replace(
+        not_detected,
+        state=CodexAvailabilityState.ACTIVE,
+        message="联动正常",
+        codex_detected=True,
+    )
+    application.codex_discovery_timer.stop()
+    calls_before = len(discovery.calls)
+
+    status = application._remove_codex_plugin()
+
+    assert status.installed is False
+    assert len(discovery.calls) == calls_before + 1
+    assert application.codex_availability.state is CodexAvailabilityState.NOT_DETECTED
+    assert application.codex_discovery_timer.isActive()
+    application.shutdown()
+
+
+def test_discovery_and_log_events_drive_plain_runtime_states(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "codex-home"
+    availability = CodexLinkAvailability(
+        CodexAvailabilityState.READY,
+        "联动已准备好，等待新的任务",
+        True,
+        ("app-server",),
+        home,
+        home / "sessions",
+        False,
+        True,
+    )
+    watcher = _CodexLogWatcher()
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=_CodexDiscoveryService(availability),
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    application._show_settings_center("codex_link")
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    assert dialog.codex_link_runtime_label.text() == "联动已准备好，等待新的任务"
+
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+            },
+        )
+    )
+    application._poll_codex_logs()
+    assert dialog.codex_link_runtime_label.text() == "Codex 正在工作"
+    assert application.codex_availability.state is CodexAvailabilityState.ACTIVE
+
+    watcher.events.append(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={
+                "hook_event_name": "Stop",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+            },
+        )
+    )
+    application._poll_codex_logs()
+    assert dialog.codex_link_runtime_label.text() == "任务已完成"
+    application._settings_center_dialog.reject()
+    application.shutdown()
+
+
+def test_runtime_incompatible_log_stops_fast_poll_and_retries_discovery(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    today = date(2026, 8, 20)
+    home = tmp_path / "codex-home"
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("app-server",),
+            home,
+            home / "sessions",
+            False,
+            True,
+        )
+    )
+    watcher = CodexSessionLogWatcher(home / "sessions", today=lambda: today)
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        codex_discovery=discovery,
+        codex_log_watcher=watcher,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    day = home / "sessions" / "2026" / "08" / "20"
+    day.mkdir(parents=True)
+    (day / "rollout-bad.jsonl").write_text(
+        json.dumps({"type": "session_meta", "payload": {"session_id": "session-1"}})
+        + "\n"
+        + json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    application._poll_codex_logs()
+
+    assert application.codex_availability.state is CodexAvailabilityState.INCOMPATIBLE
+    assert not application.codex_log_timer.isActive()
+    assert application.codex_discovery_timer.isActive()
+    assert application.codex_link.snapshot.state == "idle"
+    application.shutdown()
+
+
 def test_codex_log_fallback_starts_with_link_and_stops_when_disabled(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
@@ -1316,11 +1940,25 @@ def test_codex_log_fallback_starts_with_link_and_stops_when_disabled(
         )
     )
     watcher = _CodexLogWatcher()
+    home = tmp_path / "codex-home"
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("app-server",),
+            home,
+            home / "sessions",
+            False,
+            True,
+        )
+    )
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",
         settings_manager=settings_manager,
         codex_log_watcher=watcher,
+        codex_discovery=discovery,
         enable_tray=False,
     )
     qtbot.addWidget(application.window)
@@ -1349,11 +1987,25 @@ def test_codex_log_events_drive_pet_and_hook_upgrades_runtime_source(
         )
     )
     watcher = _CodexLogWatcher()
+    home = tmp_path / "codex-home"
+    discovery = _CodexDiscoveryService(
+        CodexLinkAvailability(
+            CodexAvailabilityState.READY,
+            "联动已准备好，等待新的任务",
+            True,
+            ("app-server",),
+            home,
+            home / "sessions",
+            False,
+            True,
+        )
+    )
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",
         settings_manager=settings_manager,
         codex_log_watcher=watcher,
+        codex_discovery=discovery,
         enable_tray=False,
     )
     qtbot.addWidget(application.window)

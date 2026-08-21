@@ -216,6 +216,18 @@ class CodexLogSourceProbe:
                 technical_reason="Codex Home 不存在",
             )
         if not sessions.exists():
+            if candidate.manual and not _has_codex_home_marker(home):
+                return CodexLinkAvailability(
+                    state=CodexAvailabilityState.NOT_DETECTED,
+                    message="所选目录不是 Codex 数据目录",
+                    codex_detected=False,
+                    evidence=(candidate.source,),
+                    selected_home=home,
+                    sessions_path=sessions,
+                    manual_override=True,
+                    can_watch=False,
+                    technical_reason="未找到 sessions 或 Codex 配置标记",
+                )
             return CodexLinkAvailability(
                 state=CodexAvailabilityState.WAITING_FOR_SESSIONS,
                 message="等待 Codex 创建本地任务",
@@ -331,6 +343,17 @@ def _is_link_like(path: Path) -> bool:
         return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
     except OSError:
         return True
+
+
+def _has_codex_home_marker(home: Path) -> bool:
+    for name in ("config.toml", "auth.json", ".codex-global-state.json", "history.jsonl"):
+        path = home / name
+        try:
+            if path.is_file() and not _is_link_like(path):
+                return True
+        except OSError:
+            continue
+    return False
 ```
 
 - [ ] **步骤 4：运行发现测试验证通过**
@@ -522,7 +545,8 @@ class CodexHomeDiscovery:
 
 实现要求：
 
-- app-server 成功返回值、`CODEX_HOME`、默认 `~/.codex` 全部进入候选后按来源优先级排序；
+- 没有显式 profile 时，app-server 成功返回值和默认 `~/.codex` 全部进入候选后按来源优先级排序；
+- PetNest 手动目录优先于所有来源并作为硬覆盖；`CODEX_HOME` 是高优先级自动候选，但损坏时不能遮蔽可用 app-server profile；
 - 候选使用规范化绝对路径去重；
 - app-server 异常只增加脱敏诊断，不阻止其他候选；
 - 手动目录存在时只返回手动候选；
@@ -1038,7 +1062,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolate_codex_home_from_real_user(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "isolated-codex-home"))
+    isolated_home = tmp_path / "isolated-user-home"
+    monkeypatch.setenv("CODEX_HOME", str(isolated_home / ".codex-profile"))
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
+    monkeypatch.setenv("HOME", str(isolated_home))
+
+    def unavailable_app_home() -> Path:
+        raise RuntimeError("Codex app-server disabled in isolated tests")
+
+    monkeypatch.setattr("petnest.app._fetch_codex_home_for_discovery", unavailable_app_home)
 ```
 
 显式测试 `CODEX_HOME` 的用例可在测试体内再次 `monkeypatch.setenv` 覆盖该值。

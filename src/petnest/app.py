@@ -37,7 +37,6 @@ from petnest.core.codex_usage import (
     CodexUsageClient,
     codex_account_observation_path,
     codex_device_usage_path,
-    locate_codex_home,
 )
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
 from petnest.core.codex_link import (
@@ -45,6 +44,14 @@ from petnest.core.codex_link import (
     CodexHookStatus,
     CodexLinkCoordinator,
     CodexLinkSnapshot,
+)
+from petnest.core.codex_discovery import (
+    CodexAvailabilityState,
+    CodexDiscoveryService,
+    CodexHomeDiscovery,
+    CodexInstallationDetector,
+    CodexLinkAvailability,
+    CodexLogSourceProbe,
 )
 from petnest.core.codex_plugin import CodexPluginManager, CodexPluginStatus
 from petnest.core.codex_session_log import CodexSessionLogWatcher
@@ -107,6 +114,7 @@ REMOTE_RESOURCE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 REMOTE_RESOURCE_RESULT_POLL_INTERVAL_MS = 200
 APP_UPDATE_RESULT_POLL_INTERVAL_MS = 200
 APP_UPDATE_STARTUP_DELAY_MS = 2_500
+CODEX_DISCOVERY_RETRY_INTERVAL_MS = 30_000
 APP_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 APP_UPDATE_MANIFEST_URLS = {
     "win32": "https://github.com/hhhhhhxq/PetNest/releases/latest/download/app-update.json",
@@ -123,6 +131,27 @@ _CURSOR_STYLE_ROLES = (
     "resize_diag_1",
     "resize_diag_2",
 )
+
+
+def _fetch_codex_home_for_discovery() -> Path:
+    return CodexUsageClient().fetch_codex_home()
+
+
+def _initial_codex_home() -> Path:
+    configured = os.environ.get("CODEX_HOME")
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser().absolute()
+    return (Path.home() / ".codex").absolute()
+
+
+def _availability_selects_profile(availability: CodexLinkAvailability) -> bool:
+    return availability.selected_home is not None and availability.state in {
+        CodexAvailabilityState.WAITING_FOR_SESSIONS,
+        CodexAvailabilityState.UNREADABLE,
+        CodexAvailabilityState.INCOMPATIBLE,
+        CodexAvailabilityState.READY,
+        CodexAvailabilityState.ACTIVE,
+    }
 
 
 def bundled_pets_directory() -> Path:
@@ -210,6 +239,7 @@ class PetNest:
         cursor_controller: CursorController | None = None,
         codex_hook_manager: CodexHookManager | None = None,
         codex_plugin_manager: CodexPluginManager | None = None,
+        codex_discovery: CodexDiscoveryService | None = None,
         codex_log_watcher: CodexSessionLogWatcher | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
@@ -218,7 +248,7 @@ class PetNest:
             raise RuntimeError("创建 PetNest 前必须先创建 QApplication")
         self.settings_manager = settings_manager or SettingsManager()
         self.settings = self.settings_manager.load()
-        located_codex_home = locate_codex_home()
+        located_codex_home = _initial_codex_home()
         self.codex_hook_manager = codex_hook_manager or CodexHookManager(
             located_codex_home,
             self.settings_manager.path.parent,
@@ -232,6 +262,30 @@ class PetNest:
             hook_manager=self.codex_hook_manager,
         )
         self.codex_plugin_status = CodexPluginStatus.missing()
+        self._uses_default_codex_discovery = codex_discovery is None
+        self._codex_app_home_cache: Path | None = None
+        self._codex_app_home_probe_complete = False
+        self._codex_app_home_probe_after = 0.0
+        self._codex_discovery_results: Queue[tuple[Path | None, str | None]] = Queue()
+        self._codex_discovery_worker: Thread | None = None
+        self.codex_discovery = codex_discovery or CodexDiscoveryService(
+            CodexInstallationDetector(
+                platform_name=sys.platform,
+                environment=os.environ,
+                user_home=Path.home(),
+            ),
+            CodexHomeDiscovery(
+                environment=os.environ,
+                user_home=Path.home(),
+                app_home_provider=lambda: self._codex_app_home_cache,
+            ),
+            CodexLogSourceProbe(),
+        )
+        self.codex_availability = CodexLinkAvailability(
+            CodexAvailabilityState.DETECTING,
+            "正在查找 Codex",
+            False,
+        )
         self.codex_log_watcher = codex_log_watcher or CodexSessionLogWatcher(
             self.codex_hook_manager.codex_home / "sessions"
         )
@@ -434,6 +488,12 @@ class PetNest:
         self.codex_log_timer = QTimer(self.window)
         self.codex_log_timer.setInterval(250)
         self.codex_log_timer.timeout.connect(self._poll_codex_logs)
+        self.codex_discovery_timer = QTimer(self.window)
+        self.codex_discovery_timer.setInterval(CODEX_DISCOVERY_RETRY_INTERVAL_MS)
+        self.codex_discovery_timer.timeout.connect(self._refresh_codex_discovery)
+        self.codex_discovery_result_timer = QTimer(self.window)
+        self.codex_discovery_result_timer.setInterval(APP_UPDATE_RESULT_POLL_INTERVAL_MS)
+        self.codex_discovery_result_timer.timeout.connect(self._drain_codex_discovery_results)
         self.codex_review_animation_timer = QTimer(self.window)
         self.codex_review_animation_timer.setSingleShot(True)
         self.codex_review_animation_timer.timeout.connect(self._finish_codex_review_animation)
@@ -491,8 +551,8 @@ class PetNest:
     def start(self) -> None:
         """显示窗口并按设置启动可选本地事件服务。"""
         self.platform_adapter.start()
+        self._refresh_codex_discovery()
         self._configure_external_event_server()
-        self._configure_codex_log_watcher()
         self._configure_system_idle_timer()
         self._configure_lan_service()
         self._configure_remote_interaction_service()
@@ -686,6 +746,7 @@ class PetNest:
         codex_log_configuration_changed = (
             settings.codex_link_enabled != self.settings.codex_link_enabled
             or settings.codex_link_log_fallback_enabled != self.settings.codex_link_log_fallback_enabled
+            or settings.codex_home_override != self.settings.codex_home_override
         )
         previous_cursor_pending = self.settings.cursor_restore_pending
         self.window.set_scale(settings.scale)
@@ -708,12 +769,12 @@ class PetNest:
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
+        if codex_log_configuration_changed:
+            self._refresh_codex_discovery()
         if external_event_configuration_changed:
             self._configure_external_event_server(restart=True)
         elif codex_bubble_configuration_changed:
             self._handle_codex_snapshot(self.codex_link.snapshot)
-        if codex_log_configuration_changed:
-            self._configure_codex_log_watcher()
         if self.tray is not None:
             self.tray.set_always_on_top_enabled(settings.always_on_top)
         if idle_configuration_changed:
@@ -858,16 +919,20 @@ class PetNest:
         """由设置页显式触发；应用启动绝不自动修改 Codex 配置。"""
         self.codex_hook_manager.set_port(self.settings.external_event_port)
         self.codex_hook_status = self.codex_hook_manager.install()
+        self._configure_external_event_server()
         return self.codex_hook_status
 
     def _remove_codex_hook(self) -> CodexHookStatus:
         self.codex_hook_status = self.codex_hook_manager.remove()
+        self._configure_external_event_server()
+        self._refresh_codex_discovery()
         return self.codex_hook_status
 
     def _configure_codex_plugin(self) -> CodexPluginStatus:
         """启用或修复可识别的 PetNest 状态插件。"""
         self.codex_hook_manager.set_port(self.settings.external_event_port)
         self.codex_plugin_status = self.codex_plugin_manager.install_or_repair()
+        self._configure_external_event_server()
         return self.codex_plugin_status
 
     def _recheck_codex_plugin(self) -> CodexPluginStatus:
@@ -877,6 +942,8 @@ class PetNest:
 
     def _remove_codex_plugin(self) -> CodexPluginStatus:
         self.codex_plugin_status = self.codex_plugin_manager.remove()
+        self._configure_external_event_server()
+        self._refresh_codex_discovery()
         return self.codex_plugin_status
 
     def _codex_action_availability(self) -> dict[str, str]:
@@ -909,6 +976,15 @@ class PetNest:
         if consumed and event.event_name == "codex.hook":
             if event.source == "codex-hook":
                 self.codex_link_source = "hook"
+                self.codex_availability = replace(
+                    self.codex_availability,
+                    state=CodexAvailabilityState.ACTIVE,
+                    message="联动正常",
+                    codex_detected=True,
+                    evidence=tuple(dict.fromkeys((*self.codex_availability.evidence, "plugin-hook"))),
+                    selected_home=self.codex_availability.selected_home or self.codex_hook_manager.codex_home,
+                )
+                self.codex_discovery_timer.stop()
                 self.codex_plugin_status = CodexPluginStatus.enabled()
                 mark_confirmed = getattr(self.codex_plugin_manager, "mark_confirmed", None)
                 if callable(mark_confirmed):
@@ -930,7 +1006,11 @@ class PetNest:
         return consumed
 
     def _configure_codex_log_watcher(self) -> None:
-        enabled = self.settings.codex_link_enabled and self.settings.codex_link_log_fallback_enabled
+        enabled = (
+            self.settings.codex_link_enabled
+            and self.settings.codex_link_log_fallback_enabled
+            and self.codex_availability.can_watch
+        )
         if enabled:
             if not self.codex_log_watcher.is_running:
                 self.codex_log_watcher.start()
@@ -945,16 +1025,130 @@ class PetNest:
                 self.codex_link_source = "none"
         self._refresh_codex_link_runtime_view()
 
+    def _refresh_codex_discovery(self) -> None:
+        if self._shutdown:
+            return
+        if not self.settings.codex_link_enabled:
+            self.codex_availability = CodexLinkAvailability(
+                CodexAvailabilityState.DISABLED,
+                "联动已关闭",
+                False,
+            )
+            self.codex_discovery_timer.stop()
+            self._configure_codex_log_watcher()
+            return
+        raw_override = getattr(self.settings, "codex_home_override", None)
+        override = Path(raw_override) if isinstance(raw_override, str) and raw_override else None
+        if override is None and not os.environ.get("CODEX_HOME"):
+            self._schedule_codex_app_home_probe()
+        try:
+            availability = self.codex_discovery.discover(override)
+        except Exception as error:  # noqa: BLE001 - 自动发现失败不能影响桌宠启动。
+            LOGGER.warning("Codex 自动发现失败", exc_info=True)
+            availability = CodexLinkAvailability(
+                CodexAvailabilityState.NOT_DETECTED,
+                "暂时无法检查 Codex，稍后会自动重试",
+                False,
+                technical_reason=str(error)[:500],
+            )
+        self.codex_availability = availability
+        if _availability_selects_profile(availability):
+            assert availability.selected_home is not None
+            self._apply_codex_home(availability.selected_home)
+        self._configure_codex_log_watcher()
+        self._configure_external_event_server()
+        if availability.state in {CodexAvailabilityState.READY, CodexAvailabilityState.ACTIVE}:
+            self.codex_discovery_timer.stop()
+        else:
+            self.codex_discovery_timer.start()
+        self._refresh_codex_link_runtime_view()
+
+    def _schedule_codex_app_home_probe(self) -> None:
+        if (
+            not self._uses_default_codex_discovery
+            or self._codex_app_home_probe_complete
+            or self._codex_discovery_worker is not None
+            or monotonic() < self._codex_app_home_probe_after
+        ):
+            return
+        worker = Thread(
+            target=self._codex_app_home_probe_worker,
+            daemon=True,
+            name="petnest-codex-home-probe",
+        )
+        self._codex_discovery_worker = worker
+        self.codex_discovery_result_timer.start()
+        worker.start()
+
+    def _codex_app_home_probe_worker(self) -> None:
+        try:
+            home = _fetch_codex_home_for_discovery().expanduser().absolute()
+        except Exception as error:  # noqa: BLE001 - worker returns a bounded diagnostic to the UI thread.
+            self._codex_discovery_results.put((None, str(error)[:500]))
+        else:
+            self._codex_discovery_results.put((home, None))
+
+    def _drain_codex_discovery_results(self) -> None:
+        result: tuple[Path | None, str | None] | None = None
+        while True:
+            try:
+                result = self._codex_discovery_results.get_nowait()
+            except Empty:
+                break
+        if result is None:
+            return
+        self._codex_discovery_worker = None
+        self.codex_discovery_result_timer.stop()
+        home, error = result
+        if home is not None:
+            self._codex_app_home_cache = home
+            self._codex_app_home_probe_complete = True
+        else:
+            self._codex_app_home_cache = None
+            self._codex_app_home_probe_complete = False
+            self._codex_app_home_probe_after = monotonic() + CODEX_DISCOVERY_RETRY_INTERVAL_MS / 1000
+            if error:
+                LOGGER.debug("Codex app-server Home 探测暂不可用：%s", error)
+        if not self._shutdown:
+            self._refresh_codex_discovery()
+
+    def _apply_codex_home(self, codex_home: Path) -> None:
+        resolved = codex_home.expanduser().resolve()
+        self.codex_log_watcher.reconfigure(resolved)
+        self.codex_hook_manager.set_codex_home(resolved)
+        self.codex_hook_status = self.codex_hook_manager.inspect()
+        self.codex_plugin_manager.set_codex_home(resolved)
+
     def _poll_codex_logs(self) -> None:
         if self._shutdown or not self.settings.codex_link_enabled:
             return
-        for event in self.codex_log_watcher.poll():
+        events = self.codex_log_watcher.poll()
+        for event in events:
             self.event_bus.publish(event)
+        if events and self.codex_availability.state is not CodexAvailabilityState.ACTIVE:
+            self.codex_availability = replace(
+                self.codex_availability,
+                state=CodexAvailabilityState.ACTIVE,
+                message="联动正常",
+            )
+        if self.codex_log_watcher.status.state == "incompatible":
+            reason = self.codex_log_watcher.status.message
+            self.codex_availability = replace(
+                self.codex_availability,
+                state=CodexAvailabilityState.INCOMPATIBLE,
+                message="当前 Codex 版本暂不支持基础联动",
+                can_watch=False,
+                technical_reason=reason,
+            )
+            self.codex_log_timer.stop()
+            self.codex_log_watcher.stop()
+            self.codex_discovery_timer.start()
         self._refresh_codex_link_runtime_view()
 
     def _refresh_codex_link_runtime_view(self) -> None:
         dialog = self._settings_center_dialog
         if dialog is not None and hasattr(dialog, "set_codex_link_runtime"):
+            dialog.set_codex_availability(self.codex_availability)
             dialog.set_codex_link_runtime(self.codex_link_source, self.codex_log_watcher.status)
 
     def _handle_codex_snapshot(self, snapshot: CodexLinkSnapshot) -> None:
@@ -1020,6 +1214,8 @@ class PetNest:
         self._show_settings_center("mouse_behavior")
 
     def _show_settings_center(self, initial_section: str) -> None:
+        if self.settings.codex_link_enabled:
+            self._refresh_codex_discovery()
         dialog = self._settings_center_dialog
         if dialog is not None:
             dialog.select_section(initial_section)
@@ -1051,7 +1247,9 @@ class PetNest:
             codex_log_status=self.codex_log_watcher.status,
             codex_action_availability=self._codex_action_availability(),
             codex_plugin_status=self.codex_plugin_status,
+            codex_availability=self.codex_availability,
             codex_home_path=codex_home,
+            on_set_codex_home_override=self._set_codex_home_override,
             on_configure_codex_plugin=self._configure_codex_plugin,
             on_recheck_codex_plugin=self._recheck_codex_plugin,
             on_remove_codex_plugin=self._remove_codex_plugin,
@@ -1074,6 +1272,34 @@ class PetNest:
         dialog.accepted.connect(lambda: self.apply_settings(dialog.updated_settings()))
         dialog.finished.connect(lambda _result: self._clear_settings_center(dialog))
         dialog.open()
+
+    def _set_codex_home_override(self, home: Path | None) -> CodexLinkAvailability:
+        if home is not None:
+            availability = self.codex_discovery.discover(home)
+            self.codex_availability = availability
+            if availability.state is CodexAvailabilityState.NOT_DETECTED:
+                self._refresh_codex_link_runtime_view()
+                raise ValueError(availability.message)
+            self.settings = replace(self.settings, codex_home_override=str(home))
+            self.settings_manager.save(self.settings)
+            if _availability_selects_profile(availability):
+                assert availability.selected_home is not None
+                self._apply_codex_home(availability.selected_home)
+            self._configure_codex_log_watcher()
+            self._configure_external_event_server()
+            if availability.state in {CodexAvailabilityState.READY, CodexAvailabilityState.ACTIVE}:
+                self.codex_discovery_timer.stop()
+            else:
+                self.codex_discovery_timer.start()
+            self._refresh_codex_link_runtime_view()
+            return availability
+        self.settings = replace(
+            self.settings,
+            codex_home_override=None,
+        )
+        self.settings_manager.save(self.settings)
+        self._refresh_codex_discovery()
+        return self.codex_availability
 
     def _clear_settings_center(self, dialog: SettingsDialog) -> None:
         if self._settings_center_dialog is dialog:
@@ -1492,6 +1718,8 @@ class PetNest:
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止程序启动更新计时器", self.app_update_startup_timer.stop)
         self._run_shutdown_step("停止 Codex 日志轮询计时器", self.codex_log_timer.stop)
+        self._run_shutdown_step("停止 Codex 自动发现计时器", self.codex_discovery_timer.stop)
+        self._run_shutdown_step("停止 Codex 发现结果计时器", self.codex_discovery_result_timer.stop)
         self._run_shutdown_step("停止 Codex review 动画计时器", self.codex_review_animation_timer.stop)
         self._run_shutdown_step("停止 Codex 日志回退", self.codex_log_watcher.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
@@ -1519,7 +1747,13 @@ class PetNest:
             LOGGER.exception("PetNest 退出时无法%s", name)
 
     def _configure_external_event_server(self, *, restart: bool = False) -> None:
-        needed = self.settings.external_event_server_enabled or self.settings.codex_link_enabled
+        precise_source_configured = (
+            self.codex_hook_status.installed
+            or self.codex_plugin_manager.has_install_receipt()
+        )
+        needed = self.settings.external_event_server_enabled or (
+            self.settings.codex_link_enabled and precise_source_configured
+        )
         if self.external_server is not None and (restart or not needed):
             server, self.external_server = self.external_server, None
             server.stop()

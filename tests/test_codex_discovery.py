@@ -132,19 +132,46 @@ def test_home_discovery_keeps_app_server_candidate_when_stale_default_exists(tmp
     assert [item.source for item in candidates] == ["app-server", "default"]
 
 
-def test_environment_home_precedes_app_server_and_duplicates_are_removed(tmp_path: Path) -> None:
+def test_environment_home_precedes_app_server_without_hiding_other_candidates(tmp_path: Path) -> None:
     configured = tmp_path / "configured"
+    actual = tmp_path / "actual"
     configured.mkdir()
+    actual.mkdir()
     discovery = CodexHomeDiscovery(
         environment={"CODEX_HOME": str(configured)},
         user_home=tmp_path,
-        app_home_provider=lambda: configured,
+        app_home_provider=lambda: actual,
     )
 
     candidates = discovery.candidates(None)
 
     assert candidates[0] == CodexHomeCandidate(configured.resolve(), "environment", False)
-    assert len([item for item in candidates if item.home == configured.resolve()]) == 1
+    assert any(item == CodexHomeCandidate(actual.resolve(), "app-server", False) for item in candidates)
+
+
+def test_broken_environment_home_does_not_hide_compatible_app_server_profile(tmp_path: Path) -> None:
+    configured = tmp_path / "missing-configured"
+    actual = tmp_path / "actual"
+    _write_session(_session_path(actual))
+    service = CodexDiscoveryService(
+        CodexInstallationDetector(
+            platform_name="linux",
+            environment={"CODEX_HOME": str(configured)},
+            user_home=tmp_path,
+            which=lambda _name: None,
+        ),
+        CodexHomeDiscovery(
+            environment={"CODEX_HOME": str(configured)},
+            user_home=tmp_path,
+            app_home_provider=lambda: actual,
+        ),
+        CodexLogSourceProbe(today=lambda: TODAY),
+    )
+
+    availability = service.discover(None)
+
+    assert availability.state is CodexAvailabilityState.READY
+    assert availability.selected_home == actual.resolve()
 
 
 def test_windows_detector_prefers_desktop_exe_over_path_cmd(tmp_path: Path) -> None:
@@ -173,6 +200,11 @@ def test_macos_detector_finds_system_and_user_app_bundles(tmp_path: Path) -> Non
     user_app = user_root / "Codex.app"
     system_app.mkdir(parents=True)
     user_app.mkdir(parents=True)
+    for app in (system_app, user_app):
+        executable = app / "Contents" / "MacOS" / "Codex"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"executable")
+        executable.chmod(0o755)
     detector = CodexInstallationDetector(
         platform_name="darwin",
         environment={},
@@ -187,6 +219,20 @@ def test_macos_detector_finds_system_and_user_app_bundles(tmp_path: Path) -> Non
         system_app.resolve(),
         user_app.resolve(),
     }
+
+
+def test_macos_empty_app_bundle_is_not_strong_install_evidence(tmp_path: Path) -> None:
+    app_root = tmp_path / "Applications"
+    (app_root / "Codex.app").mkdir(parents=True)
+    detector = CodexInstallationDetector(
+        platform_name="darwin",
+        environment={},
+        user_home=tmp_path,
+        application_roots=(app_root,),
+        which=lambda _name: None,
+    )
+
+    assert not any(item.kind == "desktop" for item in detector.detect())
 
 
 def _service(tmp_path: Path, *, app_home: Path | None) -> CodexDiscoveryService:
@@ -254,9 +300,98 @@ def test_stale_data_without_install_evidence_is_not_reported_as_detected_codex(t
 def test_manual_home_without_sessions_is_accepted_and_waits_for_first_task(tmp_path: Path) -> None:
     manual = tmp_path / "manual-home"
     manual.mkdir()
+    (manual / "config.toml").write_text("model = 'test'\n", encoding="utf-8")
 
     availability = _service(tmp_path, app_home=None).discover(manual)
 
     assert availability.state is CodexAvailabilityState.WAITING_FOR_SESSIONS
     assert availability.can_watch is True
     assert availability.message == "已选择 Codex 数据目录，等待 Codex 创建本地任务"
+
+
+def test_arbitrary_empty_manual_folder_is_rejected_as_not_codex_home(tmp_path: Path) -> None:
+    manual = tmp_path / "ordinary-folder"
+    manual.mkdir()
+
+    availability = _service(tmp_path, app_home=None).discover(manual)
+
+    assert availability.state is CodexAvailabilityState.NOT_DETECTED
+    assert availability.manual_override is True
+    assert availability.can_watch is False
+    assert "Codex 配置标记" in availability.technical_reason
+
+
+def test_newest_incompatible_session_is_not_hidden_by_older_compatible_file(tmp_path: Path) -> None:
+    home = tmp_path / ".codex"
+    yesterday = home / "sessions" / "2026" / "08" / "20" / "rollout-old.jsonl"
+    yesterday.parent.mkdir(parents=True)
+    _write_session(yesterday)
+    newest = _session_path(home, "rollout-new.jsonl")
+    newest.write_text(
+        json.dumps({"type": "session_meta", "payload": {}}) + "\n",
+        encoding="utf-8",
+    )
+
+    availability = CodexLogSourceProbe(today=lambda: TODAY).probe(
+        CodexHomeCandidate(home, "default", False)
+    )
+
+    assert availability.state is CodexAvailabilityState.INCOMPATIBLE
+    assert "rollout-new.jsonl" in availability.technical_reason
+
+
+def test_probe_reports_unreadable_when_session_directory_cannot_be_enumerated(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / ".codex"
+    day = home / "sessions" / "2026" / "08" / "21"
+    day.mkdir(parents=True)
+
+    def deny_glob(_path: Path, _pattern: str):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "glob", deny_glob)
+    availability = CodexLogSourceProbe(today=lambda: TODAY).probe(
+        CodexHomeCandidate(home, "default", False)
+    )
+
+    assert availability.state is CodexAvailabilityState.UNREADABLE
+
+
+def test_probe_rejects_codex_home_symlink(tmp_path: Path) -> None:
+    actual = tmp_path / "actual"
+    _write_session(_session_path(actual))
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(actual, target_is_directory=True)
+    except OSError:
+        return
+
+    availability = CodexLogSourceProbe(today=lambda: TODAY).probe(
+        CodexHomeCandidate(linked, "manual", True)
+    )
+
+    assert availability.state is CodexAvailabilityState.UNREADABLE
+    assert "链接" in availability.technical_reason
+
+
+def test_probe_rejects_intermediate_session_symlink(tmp_path: Path) -> None:
+    home = tmp_path / ".codex"
+    outside = tmp_path / "outside-year"
+    target_day = outside / "08" / "21"
+    target_day.mkdir(parents=True)
+    _write_session(target_day / "rollout-outside.jsonl")
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    try:
+        (sessions / "2026").symlink_to(outside, target_is_directory=True)
+    except OSError:
+        return
+
+    availability = CodexLogSourceProbe(today=lambda: TODAY).probe(
+        CodexHomeCandidate(home, "default", False)
+    )
+
+    assert availability.state is CodexAvailabilityState.UNREADABLE
+    assert "链接" in availability.technical_reason

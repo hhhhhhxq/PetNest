@@ -168,6 +168,28 @@ def test_today_and_previous_day_are_scanned_but_older_days_are_not(tmp_path: Pat
     assert [event.payload["session_id"] for event in events] == ["session-y"]
 
 
+def test_runtime_watcher_ignores_intermediate_session_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    outside_year = tmp_path / "outside-year"
+    outside_day = outside_year / "08" / "20"
+    outside_day.mkdir(parents=True)
+    (outside_day / "rollout-outside.jsonl").write_bytes(
+        _meta("session-outside") + _event("task_started", "turn-outside")
+    )
+    root.mkdir()
+    try:
+        (root / "2026").symlink_to(outside_year, target_is_directory=True)
+    except OSError:
+        return
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    watcher.start()
+
+    with (outside_day / "rollout-outside.jsonl").open("ab") as stream:
+        stream.write(_event("task_started", "turn-after-start"))
+
+    assert watcher.poll() == ()
+
+
 def test_stop_clears_offsets_and_disables_polling(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
@@ -189,6 +211,20 @@ def test_unrecognized_session_metadata_degrades_to_incompatible(tmp_path: Path) 
     path.write_bytes(
         _line("session_meta", {"future_session_key": "session-future"})
         + _event("task_started", "turn-future")
+    )
+
+    assert watcher.poll() == ()
+    assert watcher.status.state == "incompatible"
+
+
+def test_status_event_without_turn_id_degrades_to_incompatible(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    watcher.start()
+    path = _day(root) / "rollout-missing-turn.jsonl"
+    path.write_bytes(
+        _meta("session-missing-turn")
+        + _line("event_msg", {"type": "task_started"})
     )
 
     assert watcher.poll() == ()

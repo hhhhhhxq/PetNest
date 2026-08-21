@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from enum import StrEnum
 import json
+import os
 from pathlib import Path
 import shutil
 
@@ -75,7 +76,18 @@ class CodexLogSourceProbe:
         self._max_probe_bytes = max(1024, int(max_probe_bytes))
 
     def probe(self, candidate: CodexHomeCandidate) -> CodexLinkAvailability:
-        home = candidate.home.expanduser().resolve()
+        requested_home = candidate.home.expanduser().absolute()
+        if _is_link_like(requested_home):
+            return CodexLinkAvailability(
+                state=CodexAvailabilityState.UNREADABLE,
+                message="无法读取 Codex 本地日志",
+                codex_detected=False,
+                evidence=(candidate.source,),
+                selected_home=requested_home,
+                manual_override=candidate.manual,
+                technical_reason="Codex Home 是不安全的链接或 junction",
+            )
+        home = requested_home.resolve()
         sessions = home / "sessions"
         if not home.is_dir():
             return CodexLinkAvailability(
@@ -98,32 +110,46 @@ class CodexLogSourceProbe:
                 technical_reason="sessions 不是安全的普通目录",
             )
         if not sessions.exists():
-            return self._waiting_result(candidate, home, sessions)
-        files = self._candidate_files(sessions)
-        if not files:
-            return self._waiting_result(candidate, home, sessions)
-        reasons: list[str] = []
-        states: list[CodexAvailabilityState] = []
-        for path in files:
-            state, reason = self._probe_file(path)
-            if state is CodexAvailabilityState.READY:
+            if candidate.manual and not _has_codex_home_marker(home):
                 return CodexLinkAvailability(
-                    state=CodexAvailabilityState.READY,
-                    message="联动已准备好，等待新的任务",
+                    state=CodexAvailabilityState.NOT_DETECTED,
+                    message="所选目录不是 Codex 数据目录",
                     codex_detected=False,
                     evidence=(candidate.source,),
                     selected_home=home,
                     sessions_path=sessions,
-                    manual_override=candidate.manual,
-                    can_watch=True,
+                    manual_override=True,
+                    can_watch=False,
+                    technical_reason="未找到 sessions 或 Codex 配置标记",
                 )
-            states.append(state)
-            reasons.append(reason)
-        state = (
-            CodexAvailabilityState.UNREADABLE
-            if CodexAvailabilityState.UNREADABLE in states
-            else CodexAvailabilityState.INCOMPATIBLE
-        )
+            return self._waiting_result(candidate, home, sessions)
+        try:
+            files = self._candidate_files(sessions)
+        except OSError as error:
+            return CodexLinkAvailability(
+                state=CodexAvailabilityState.UNREADABLE,
+                message="无法读取 Codex 本地日志",
+                codex_detected=False,
+                evidence=(candidate.source,),
+                selected_home=home,
+                sessions_path=sessions,
+                manual_override=candidate.manual,
+                technical_reason=str(error)[:500],
+            )
+        if not files:
+            return self._waiting_result(candidate, home, sessions)
+        state, reason = self._probe_file(files[0])
+        if state is CodexAvailabilityState.READY:
+            return CodexLinkAvailability(
+                state=CodexAvailabilityState.READY,
+                message="联动已准备好，等待新的任务",
+                codex_detected=False,
+                evidence=(candidate.source,),
+                selected_home=home,
+                sessions_path=sessions,
+                manual_override=candidate.manual,
+                can_watch=True,
+            )
         message = (
             "无法读取 Codex 本地日志"
             if state is CodexAvailabilityState.UNREADABLE
@@ -138,7 +164,7 @@ class CodexLogSourceProbe:
             sessions_path=sessions,
             manual_override=candidate.manual,
             can_watch=False,
-            technical_reason="; ".join(reason for reason in reasons[:3] if reason),
+            technical_reason=reason,
         )
 
     @staticmethod
@@ -166,18 +192,17 @@ class CodexLogSourceProbe:
         )
         files: list[Path] = []
         for directory in directories:
-            if not directory.is_dir() or _is_link_like(directory):
+            if not _path_chain_is_safe(sessions.parent, directory):
+                raise OSError(f"会话目录包含不安全的链接或 junction：{directory}")
+            if not directory.is_dir():
                 continue
-            try:
-                files.extend(
-                    path
-                    for path in directory.glob("*.jsonl")
-                    if path.is_file() and not _is_link_like(path)
-                )
-            except OSError:
-                continue
-        files.sort(key=lambda path: str(path).casefold())
-        return tuple(files[-self._max_files :])
+            files.extend(
+                path
+                for path in directory.glob("*.jsonl")
+                if path.is_file() and not _is_link_like(path)
+            )
+        files.sort(key=lambda path: (_modified_ns(path), str(path).casefold()), reverse=True)
+        return tuple(files[: self._max_files])
 
     def _probe_file(self, path: Path) -> tuple[CodexAvailabilityState, str]:
         try:
@@ -280,7 +305,16 @@ class CodexInstallationDetector:
         found: list[CodexInstallEvidence] = []
         for root in roots:
             app = root / "Codex.app"
-            if app.is_dir() and not _is_link_like(app):
+            executable_root = app / "Contents" / "MacOS"
+            try:
+                executables = tuple(
+                    path
+                    for path in executable_root.iterdir()
+                    if path.is_file() and not _is_link_like(path) and os.access(path, os.X_OK)
+                )
+            except OSError:
+                executables = ()
+            if app.is_dir() and not _is_link_like(app) and executables:
                 found.append(CodexInstallEvidence("desktop", "Codex.app", app.resolve()))
         return tuple(found)
 
@@ -322,11 +356,11 @@ class CodexHomeDiscovery:
         candidates: list[CodexHomeCandidate] = []
         seen: set[Path] = set()
         for path, source in raw:
-            resolved = path.expanduser().resolve()
-            if resolved in seen:
+            absolute = path.expanduser().absolute()
+            if absolute in seen:
                 continue
-            seen.add(resolved)
-            candidates.append(CodexHomeCandidate(resolved, source, False))
+            seen.add(absolute)
+            candidates.append(CodexHomeCandidate(absolute, source, False))
         return tuple(candidates)
 
 
@@ -445,12 +479,23 @@ class CodexDiscoveryService:
 
 def normalize_selected_codex_home(path: Path) -> Path:
     """Accept either Codex Home or its sessions child and return the Home path."""
-    resolved = path.expanduser().resolve()
-    return resolved.parent if resolved.name.casefold() == "sessions" else resolved
+    absolute = path.expanduser().absolute()
+    return absolute.parent if absolute.name.casefold() == "sessions" else absolute
 
 
 def _bounded_identifier(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= 200
+
+
+def _has_codex_home_marker(home: Path) -> bool:
+    for name in ("config.toml", "auth.json", ".codex-global-state.json", "history.jsonl"):
+        path = home / name
+        try:
+            if path.is_file() and not _is_link_like(path):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _modified_ns(path: Path) -> int:
@@ -488,6 +533,21 @@ def _is_link_like(path: Path) -> bool:
         return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
     except OSError:
         return True
+
+
+def _path_chain_is_safe(root: Path, path: Path) -> bool:
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError:
+        return False
+    current = root.absolute()
+    if _is_link_like(current):
+        return False
+    for part in relative.parts:
+        current /= part
+        if _is_link_like(current):
+            return False
+    return True
 
 
 __all__ = [

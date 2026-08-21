@@ -13,6 +13,13 @@ def test_defaults_are_available_without_a_file(tmp_path) -> None:
     assert settings == Settings()
 
 
+def test_new_users_allow_codex_link_without_installing_plugin(tmp_path) -> None:
+    settings = SettingsManager(tmp_path / "settings.json").load()
+
+    assert settings.codex_link_enabled is True
+    assert settings.codex_home_override is None
+
+
 def test_new_users_have_system_idle_actions_enabled_with_short_thresholds(tmp_path) -> None:
     settings = SettingsManager(tmp_path / "settings.json").load()
 
@@ -241,7 +248,7 @@ def test_schema_23_adds_codex_link_preferences_with_safe_defaults(tmp_path) -> N
 
     assert loaded.schema_version == Settings.SCHEMA_VERSION
     assert loaded.scale == 1.25
-    assert loaded.codex_link_enabled is False
+    assert loaded.codex_link_enabled is True
     assert loaded.codex_link_show_attention_bubbles is True
     assert loaded.codex_link_show_review_bubbles is True
 
@@ -279,7 +286,7 @@ def test_codex_link_preferences_round_trip_and_reject_non_booleans(tmp_path) -> 
         malformed.codex_link_show_attention_bubbles,
         malformed.codex_link_show_review_bubbles,
         malformed.codex_link_log_fallback_enabled,
-    ) == (False, True, True, True)
+    ) == (True, True, True, True)
 
 
 def test_schema_24_adds_enabled_codex_log_fallback(tmp_path) -> None:
@@ -291,6 +298,28 @@ def test_schema_24_adds_enabled_codex_log_fallback(tmp_path) -> None:
     assert loaded.schema_version == Settings.SCHEMA_VERSION
     assert loaded.codex_link_enabled is True
     assert loaded.codex_link_log_fallback_enabled is True
+
+
+def test_schema_25_preserves_explicitly_disabled_link_and_adds_auto_home(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema_version": 25, "codex_link_enabled": False}),
+        encoding="utf-8",
+    )
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == 26
+    assert loaded.codex_link_enabled is False
+    assert loaded.codex_home_override is None
+
+
+def test_codex_home_override_round_trips_and_rejects_non_strings(tmp_path) -> None:
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(codex_home_override="D:/CodexProfile"))
+
+    assert manager.load().codex_home_override == "D:/CodexProfile"
+    assert Settings.from_dict({"codex_home_override": ["bad"]}).codex_home_override is None
 
 
 def test_work_finish_state_round_trips_and_malformed_values_are_discarded(tmp_path) -> None:

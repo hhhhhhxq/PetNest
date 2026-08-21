@@ -14,6 +14,10 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from petnest.core.codex_plugin import CodexPluginStatus
+from petnest.core.codex_discovery import (
+    CodexAvailabilityState,
+    CodexLinkAvailability,
+)
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
@@ -211,6 +215,110 @@ def test_codex_link_page_shows_real_task_state_in_plain_language(qtbot) -> None:
     assert dialog.codex_link_runtime_label.text() == "需要你处理"
     dialog.set_codex_task_state("review")
     assert dialog.codex_link_runtime_label.text() == "任务已完成"
+
+
+def _codex_availability(
+    state: CodexAvailabilityState,
+    *,
+    home: Path | None = None,
+    manual: bool = False,
+) -> CodexLinkAvailability:
+    messages = {
+        CodexAvailabilityState.NOT_DETECTED: "未检测到 Codex，安装或启动后会自动连接",
+        CodexAvailabilityState.READY: "联动已准备好，等待新的任务",
+    }
+    return CodexLinkAvailability(
+        state=state,
+        message=messages[state],
+        codex_detected=state is CodexAvailabilityState.READY,
+        selected_home=home,
+        sessions_path=home / "sessions" if home is not None else None,
+        manual_override=manual,
+        can_watch=state is CodexAvailabilityState.READY,
+    )
+
+
+def test_codex_page_shows_not_detected_without_claiming_link_is_normal(qtbot) -> None:
+    availability = _codex_availability(CodexAvailabilityState.NOT_DETECTED)
+    dialog = SettingsDialog(
+        Settings(codex_link_enabled=True),
+        codex_availability=availability,
+        on_set_codex_home_override=lambda _home: availability,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.codex_link_runtime_label.text() == availability.message
+    assert "联动正常" not in dialog.codex_link_runtime_label.text()
+    assert not dialog.codex_choose_home_button.isHidden()
+
+
+def test_codex_page_hides_manual_choice_in_ready_main_flow(qtbot, tmp_path: Path) -> None:
+    home = tmp_path / "codex-home"
+    availability = _codex_availability(CodexAvailabilityState.READY, home=home)
+    dialog = SettingsDialog(
+        Settings(),
+        codex_availability=availability,
+        on_set_codex_home_override=lambda _home: availability,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.codex_choose_home_button.isHidden()
+    dialog.codex_advanced_details_button.click()
+    assert not dialog.codex_reselect_home_button.isHidden()
+    assert dialog.codex_restore_auto_home_button.isHidden()
+
+
+def test_selecting_sessions_folder_passes_normalized_home_to_callback(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    selected = tmp_path / ".codex" / "sessions"
+    selected.mkdir(parents=True)
+    calls: list[Path | None] = []
+    ready = _codex_availability(CodexAvailabilityState.READY, home=selected.parent, manual=True)
+    monkeypatch.setattr(
+        "petnest.ui.settings_center_dialog.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(selected),
+    )
+    dialog = SettingsDialog(
+        Settings(),
+        codex_availability=_codex_availability(CodexAvailabilityState.NOT_DETECTED),
+        on_set_codex_home_override=lambda home: calls.append(home) or ready,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+
+    qtbot.mouseClick(dialog.codex_choose_home_button, Qt.MouseButton.LeftButton)
+
+    assert calls == [selected.parent.resolve()]
+    assert dialog.updated_settings().codex_home_override == str(selected.parent.resolve())
+    assert dialog.codex_link_runtime_label.text() == "联动已准备好，等待新的任务"
+
+
+def test_restoring_auto_discovery_clears_manual_home(qtbot, tmp_path: Path) -> None:
+    home = tmp_path / "manual-home"
+    calls: list[Path | None] = []
+    automatic = _codex_availability(CodexAvailabilityState.NOT_DETECTED)
+    dialog = SettingsDialog(
+        Settings(codex_home_override=str(home)),
+        codex_availability=_codex_availability(
+            CodexAvailabilityState.READY,
+            home=home,
+            manual=True,
+        ),
+        on_set_codex_home_override=lambda value: calls.append(value) or automatic,
+        initial_section="codex_link",
+    )
+    qtbot.addWidget(dialog)
+    dialog.codex_advanced_details_button.click()
+
+    qtbot.mouseClick(dialog.codex_restore_auto_home_button, Qt.MouseButton.LeftButton)
+
+    assert calls == [None]
+    assert dialog.updated_settings().codex_home_override is None
 
 
 def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:

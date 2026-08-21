@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 25
+    SCHEMA_VERSION = 26
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -51,10 +51,11 @@ class Settings:
     lan_group_chat_notifications_enabled: bool = True
     lan_alert_group_joined: bool = False
     codex_usage_unlocked: bool = False
-    codex_link_enabled: bool = False
+    codex_link_enabled: bool = True
     codex_link_show_attention_bubbles: bool = True
     codex_link_show_review_bubbles: bool = True
     codex_link_log_fallback_enabled: bool = True
+    codex_home_override: str | None = None
     remote_interaction_enabled: bool = True
     system_idle_enabled: bool = True
     system_idle_seconds: int = 300
@@ -112,13 +113,16 @@ class Settings:
                 values[name] = None
         values["work_finish_state"] = _work_finish_state(values.get("work_finish_state"))
         for name, default in (
-            ("codex_link_enabled", False),
+            ("codex_link_enabled", True),
             ("codex_link_show_attention_bubbles", True),
             ("codex_link_show_review_bubbles", True),
             ("codex_link_log_fallback_enabled", True),
         ):
             if not isinstance(values.get(name, default), bool):
                 values[name] = default
+        codex_home_override = values.get("codex_home_override")
+        if not isinstance(codex_home_override, str) or not codex_home_override.strip():
+            values["codex_home_override"] = None
         if "animation_overrides" in values:
             values["animation_overrides"] = _animation_overrides(values["animation_overrides"])
         return cls(**values)

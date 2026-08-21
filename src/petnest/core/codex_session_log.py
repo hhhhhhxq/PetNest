@@ -181,7 +181,7 @@ class CodexSessionLogWatcher:
         path = self.global_state_path
         try:
             stat = path.stat()
-            if not path.is_file() or path.is_symlink() or stat.st_size > 2 * 1024 * 1024:
+            if not path.is_file() or _is_link_like(path) or stat.st_size > 2 * 1024 * 1024:
                 return None
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -220,9 +220,16 @@ class CodexSessionLogWatcher:
             return None
         session_id = cursor.session_id or self._session_id_from_name(path)
         turn_id = payload.get("turn_id")
+        event_name = payload.get("type")
+        if event_name in {"task_started", "task_complete", "turn_aborted"} and not _bounded_id(turn_id):
+            cursor.compatible = False
+            self._status = CodexLogSourceStatus(
+                "incompatible",
+                f"当前 Codex 会话日志的 {event_name} 缺少 turn_id，已停止状态猜测",
+            )
+            return None
         if not _bounded_id(session_id) or not _bounded_id(turn_id):
             return None
-        event_name = payload.get("type")
         sanitized: dict[str, object] = {
             "session_id": str(session_id),
             "turn_id": str(turn_id),
@@ -243,11 +250,11 @@ class CodexSessionLogWatcher:
         directories = tuple(self.root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}" for day in (current - timedelta(days=1), current))
         candidates: list[Path] = []
         for directory in directories:
-            if not directory.is_dir() or directory.is_symlink():
+            if not _path_chain_is_safe(self.root.parent, directory) or not directory.is_dir():
                 continue
             try:
                 files = directory.glob("*.jsonl")
-                candidates.extend(path for path in files if path.is_file() and not path.is_symlink())
+                candidates.extend(path for path in files if path.is_file() and not _is_link_like(path))
             except OSError:
                 continue
         candidates.sort(key=lambda item: str(item).casefold())
@@ -277,6 +284,28 @@ class CodexSessionLogWatcher:
 
 def _bounded_id(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= 200
+
+
+def _is_link_like(path: Path) -> bool:
+    try:
+        return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    except OSError:
+        return True
+
+
+def _path_chain_is_safe(root: Path, path: Path) -> bool:
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError:
+        return False
+    current = root.absolute()
+    if _is_link_like(current):
+        return False
+    for part in relative.parts:
+        current /= part
+        if _is_link_like(current):
+            return False
+    return True
 
 
 __all__ = ["CodexLogSourceStatus", "CodexSessionLogWatcher"]
