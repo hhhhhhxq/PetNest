@@ -37,6 +37,14 @@ class _FileCursor:
     compatible: bool = True
 
 
+@dataclass(slots=True)
+class _RecoveredTurn:
+    path: Path
+    session_id: str
+    turn_id: str
+    expires_at: float
+
+
 class CodexSessionLogWatcher:
     """以固定偏移增量读取当前用户今天和前一天的 Codex JSONL。"""
 
@@ -50,7 +58,12 @@ class CodexSessionLogWatcher:
         max_read_bytes: int = 2 * 1024 * 1024,
         max_line_bytes: int = 1024 * 1024,
         monotonic_time: Callable[[], float] = monotonic,
+        utc_now: Callable[[], datetime] | None = None,
         unread_stable_seconds: float = 1.0,
+        startup_recovery_window_seconds: float = 120.0,
+        recovered_lease_seconds: float = 300.0,
+        startup_recovery_max_files: int = 8,
+        startup_recovery_max_bytes: int = 2 * 1024 * 1024,
     ) -> None:
         self.root = root.expanduser().resolve()
         self._today = today
@@ -63,9 +76,20 @@ class CodexSessionLogWatcher:
         self._max_read_bytes = max(1024, int(max_read_bytes))
         self._max_line_bytes = max(1024, int(max_line_bytes))
         self._monotonic_time = monotonic_time
+        self._utc_now = utc_now or (lambda: datetime.now(UTC))
         self._unread_stable_seconds = max(0.0, float(unread_stable_seconds))
+        self._startup_recovery_window_seconds = max(
+            0.0, float(startup_recovery_window_seconds)
+        )
+        self._recovered_lease_seconds = max(1.0, float(recovered_lease_seconds))
+        self._startup_recovery_max_files = max(1, int(startup_recovery_max_files))
+        self._startup_recovery_max_bytes = max(
+            self._max_line_bytes, int(startup_recovery_max_bytes)
+        )
         self._running = False
         self._cursors: dict[Path, _FileCursor] = {}
+        self._pending_recovery_events: list[PetEvent] = []
+        self._recovered_turns: dict[tuple[str, str], _RecoveredTurn] = {}
         self._unread_ids: set[str] = set()
         self._unread_baselined = False
         self._pending_unread_since: dict[str, float] = {}
@@ -81,9 +105,11 @@ class CodexSessionLogWatcher:
         return self._running
 
     def start(self) -> None:
-        """从当前 EOF 建立基线，绝不把历史 turn 当成新状态。"""
+        """从当前 EOF 建立基线，并保守恢复刚启动且明确未结束的 turn。"""
         self._running = True
         self._cursors.clear()
+        self._pending_recovery_events.clear()
+        self._recovered_turns.clear()
         initial_unread = self._read_unread_ids()
         self._unread_baselined = initial_unread is not None
         self._unread_ids = initial_unread or set()
@@ -97,14 +123,17 @@ class CodexSessionLogWatcher:
             self._cursors[path] = _FileCursor(
                 offset=stat.st_size,
                 modified_ns=stat.st_mtime_ns,
-                session_id=self._session_id(path),
+                session_id=self._session_id_from_name(path),
             )
+        self._recover_recent_running_turns()
         message = "等待新的 Codex 任务" if self.root.exists() else "等待 Codex 创建本机会话目录"
         self._status = CodexLogSourceStatus("waiting", message)
 
     def stop(self) -> None:
         self._running = False
         self._cursors.clear()
+        self._pending_recovery_events.clear()
+        self._recovered_turns.clear()
         self._unread_ids.clear()
         self._unread_baselined = False
         self._pending_unread_since.clear()
@@ -129,7 +158,9 @@ class CodexSessionLogWatcher:
         """读取本轮新增完整行并返回脱敏状态事件。"""
         if not self._running:
             return ()
-        emitted: list[PetEvent] = list(self._poll_unread_events())
+        emitted: list[PetEvent] = list(self._pending_recovery_events)
+        self._pending_recovery_events.clear()
+        emitted.extend(self._poll_unread_events())
         for path in self._candidate_files():
             try:
                 stat = path.stat()
@@ -157,6 +188,8 @@ class CodexSessionLogWatcher:
                     data = stream.read(self._max_read_bytes)
             except OSError:
                 continue
+            if data:
+                self._refresh_recovered_turns(path)
             cursor.offset += len(data)
             cursor.modified_ns = stat.st_mtime_ns
             buffer = cursor.pending + data
@@ -169,13 +202,178 @@ class CodexSessionLogWatcher:
                     continue
                 event = self._parse_line(path, cursor, raw_line)
                 if event is not None:
+                    emitted.extend(self._reconcile_recovered_turn(event, path))
                     emitted.append(event)
+        emitted.extend(self._expire_recovered_turns())
         if emitted:
-            now = datetime.now(UTC)
+            now = self._utc_now()
             self._status = CodexLogSourceStatus("active", "已联动 · 本地日志回退", now)
         elif self.root.exists() and self._status.state not in {"active", "incompatible"}:
             self._status = CodexLogSourceStatus("waiting", "等待新的 Codex 任务")
         return tuple(emitted)
+
+    def _recover_recent_running_turns(self) -> None:
+        if self._startup_recovery_window_seconds <= 0:
+            return
+        candidates = sorted(
+            self._cursors,
+            key=lambda path: self._cursors[path].modified_ns,
+            reverse=True,
+        )[: self._startup_recovery_max_files]
+        if not candidates:
+            return
+        per_file_bytes = max(1024, self._startup_recovery_max_bytes // len(candidates))
+        total_remaining = self._startup_recovery_max_bytes
+        now = self._utc_now()
+        lower_bound = now - timedelta(seconds=self._startup_recovery_window_seconds)
+        for path in candidates:
+            if total_remaining <= 0:
+                break
+            cursor = self._cursors[path]
+            read_limit = min(per_file_bytes, total_remaining, cursor.offset)
+            total_remaining -= read_limit
+            if read_limit <= 0:
+                continue
+            record = self._latest_lifecycle_record(path, cursor, read_limit)
+            if record is None:
+                continue
+            event_name, session_id, turn_id, timestamp = record
+            if event_name != "task_started" or not (lower_bound <= timestamp <= now):
+                continue
+            key = (session_id, turn_id)
+            self._recovered_turns[key] = _RecoveredTurn(
+                path=path,
+                session_id=session_id,
+                turn_id=turn_id,
+                expires_at=self._monotonic_time() + self._recovered_lease_seconds,
+            )
+            self._pending_recovery_events.append(
+                PetEvent(
+                    "codex.hook",
+                    source="codex-log",
+                    payload={
+                        "hook_event_name": "UserPromptSubmit",
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                    },
+                )
+            )
+
+    def _latest_lifecycle_record(
+        self,
+        path: Path,
+        cursor: _FileCursor,
+        read_limit: int,
+    ) -> tuple[str, str, str, datetime] | None:
+        if _is_link_like(path) or not _path_chain_is_safe(self.root.parent, path):
+            return None
+        start = max(0, cursor.offset - read_limit)
+        try:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                data = stream.read(read_limit)
+        except OSError:
+            return None
+        if data and not data.endswith(b"\n"):
+            return None
+        lines = data.split(b"\n")
+        if start > 0 and lines:
+            lines.pop(0)
+        session_id = cursor.session_id or self._session_id_from_name(path)
+        latest: tuple[str, str, str, datetime] | None = None
+        for raw_line in lines:
+            if not raw_line:
+                continue
+            if len(raw_line) > self._max_line_bytes:
+                return None
+            try:
+                document = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            if not isinstance(document, dict):
+                return None
+            payload = document.get("payload")
+            if document.get("type") == "session_meta":
+                if not isinstance(payload, dict):
+                    return None
+                candidate_id = payload.get("session_id")
+                if not _bounded_id(candidate_id):
+                    return None
+                session_id = str(candidate_id)
+                cursor.session_id = session_id
+                continue
+            if document.get("type") != "event_msg":
+                continue
+            if not isinstance(payload, dict):
+                return None
+            event_name = payload.get("type")
+            turn_id = payload.get("turn_id")
+            if event_name not in {"task_started", "task_complete", "turn_aborted"}:
+                continue
+            if not _bounded_id(session_id) or not _bounded_id(turn_id):
+                return None
+            timestamp = _parse_timestamp(document.get("timestamp"))
+            if timestamp is None:
+                return None
+            latest = (str(event_name), str(session_id), str(turn_id), timestamp)
+        return latest
+
+    def _refresh_recovered_turns(self, path: Path) -> None:
+        expires_at = self._monotonic_time() + self._recovered_lease_seconds
+        for recovered in self._recovered_turns.values():
+            if recovered.path == path:
+                recovered.expires_at = expires_at
+
+    def _reconcile_recovered_turn(
+        self,
+        event: PetEvent,
+        path: Path,
+    ) -> tuple[PetEvent, ...]:
+        event_name = event.payload.get("hook_event_name")
+        session_id = event.payload.get("session_id")
+        turn_id = event.payload.get("turn_id")
+        if not isinstance(session_id, str) or not isinstance(turn_id, str):
+            return ()
+        key = (session_id, turn_id)
+        if event_name in {"Stop", "TurnAborted"}:
+            self._recovered_turns.pop(key, None)
+            return ()
+        if event_name != "UserPromptSubmit":
+            return ()
+        stale = [
+            recovered_key
+            for recovered_key, recovered in self._recovered_turns.items()
+            if recovered.path == path and recovered_key != key
+        ]
+        events = tuple(
+            self._recovered_abort_event(self._recovered_turns.pop(item))
+            for item in stale
+        )
+        return events
+
+    def _expire_recovered_turns(self) -> tuple[PetEvent, ...]:
+        now = self._monotonic_time()
+        expired = [
+            key
+            for key, value in self._recovered_turns.items()
+            if value.expires_at <= now
+        ]
+        return tuple(
+            self._recovered_abort_event(self._recovered_turns.pop(key))
+            for key in expired
+        )
+
+    @staticmethod
+    def _recovered_abort_event(recovered: _RecoveredTurn) -> PetEvent:
+        return PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={
+                "hook_event_name": "TurnAborted",
+                "session_id": recovered.session_id,
+                "turn_id": recovered.turn_id,
+            },
+        )
 
     def _poll_unread_events(self) -> tuple[PetEvent, ...]:
         current = self._read_unread_ids()
@@ -295,33 +493,21 @@ class CodexSessionLogWatcher:
     def _candidate_files(self) -> tuple[Path, ...]:
         current = self._today()
         directories = tuple(self.root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}" for day in (current - timedelta(days=1), current))
-        candidates: list[Path] = []
+        candidates: list[tuple[int, str, Path]] = []
         for directory in directories:
             if not _path_chain_is_safe(self.root.parent, directory) or not directory.is_dir():
                 continue
             try:
                 files = directory.glob("*.jsonl")
-                candidates.extend(path for path in files if path.is_file() and not _is_link_like(path))
+                for path in files:
+                    if not path.is_file() or _is_link_like(path):
+                        continue
+                    stat = path.stat()
+                    candidates.append((stat.st_mtime_ns, str(path).casefold(), path))
             except OSError:
                 continue
-        candidates.sort(key=lambda item: str(item).casefold())
-        return tuple(candidates[-self._max_files :])
-
-    def _session_id(self, path: Path) -> str | None:
-        from_name = self._session_id_from_name(path)
-        if from_name is not None:
-            return from_name
-        try:
-            with path.open("rb") as stream:
-                raw_line = stream.readline(self._max_line_bytes + 1)
-            if len(raw_line) > self._max_line_bytes:
-                return None
-            document = json.loads(raw_line.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None
-        payload = document.get("payload") if isinstance(document, dict) else None
-        session_id = payload.get("session_id") if document.get("type") == "session_meta" and isinstance(payload, dict) else None
-        return str(session_id) if _bounded_id(session_id) else None
+        candidates.sort()
+        return tuple(item[2] for item in candidates[-self._max_files :])
 
     @staticmethod
     def _session_id_from_name(path: Path) -> str | None:
@@ -331,6 +517,18 @@ class CodexSessionLogWatcher:
 
 def _bounded_id(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= 200
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or len(value) > 100:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _is_link_like(path: Path) -> bool:
