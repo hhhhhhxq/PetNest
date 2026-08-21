@@ -34,3 +34,15 @@ def test_tray_visibility_action_labels_visible_window_as_hide(qtbot, tmp_path: P
     tray.sync_visibility_action()
 
     assert tray.toggle_visibility_action.text() == "隐藏"
+
+
+def test_tray_omits_cursor_style_and_manual_resource_update_entries(qtbot, tmp_path: Path) -> None:
+    window = PetWindow(_package(tmp_path))
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window)
+
+    texts = [action.text() for action in tray.menu.actions()]
+
+    assert all("鼠标样式" not in text and "资源更新" not in text for text in texts)
+    assert not hasattr(tray, "cursor_styles_action")
+    assert not hasattr(tray, "resource_update_action")

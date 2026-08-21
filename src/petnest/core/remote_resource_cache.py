@@ -316,6 +316,7 @@ class RemoteResourceCache:
         *,
         progress: Callable[[int], object] | None = None,
         on_resource_applied: Callable[[str], object] | None = None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None = None,
     ) -> ResourceManifest:
         """Fetch and verify a catalog, requiring every resource to succeed.
 
@@ -323,7 +324,11 @@ class RemoteResourceCache:
         failure.  The update coordinator uses :meth:`sync_partial` so
         independent resources can be activated one by one.
         """
-        result = self.sync_partial(progress=progress, on_resource_applied=on_resource_applied)
+        result = self.sync_partial(
+            progress=progress,
+            on_resource_applied=on_resource_applied,
+            on_resource_started=on_resource_started,
+        )
         if result.failures:
             details = "；".join(f"{failure.identifier}: {failure.error}" for failure in result.failures)
             raise RemoteResourceError(f"部分资源更新失败：{details}")
@@ -334,6 +339,7 @@ class RemoteResourceCache:
         *,
         progress: Callable[[int], object] | None = None,
         on_resource_applied: Callable[[str], object] | None = None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None = None,
     ) -> ResourceSyncResult:
         """Synchronize resources independently and activate each successful one."""
         try:
@@ -347,7 +353,13 @@ class RemoteResourceCache:
         progress_reporter = _ProgressReporter(sum(file.size for file in manifest.files), progress)
         staging = self.root / "staging" / uuid.uuid4().hex
         with self._sync_lock:
-            return self._sync_partial_locked(manifest, staging, progress_reporter, on_resource_applied)
+            return self._sync_partial_locked(
+                manifest,
+                staging,
+                progress_reporter,
+                on_resource_applied,
+                on_resource_started,
+            )
 
     def _sync_partial_locked(
         self,
@@ -355,6 +367,7 @@ class RemoteResourceCache:
         staging: Path,
         progress: "_ProgressReporter",
         on_resource_applied: Callable[[str], object] | None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None,
     ) -> ResourceSyncResult:
         current_root = self.current_root
         active_manifest = self.load_current_manifest() if current_root is not None else None
@@ -431,6 +444,7 @@ class RemoteResourceCache:
                     # The archive is only an optimization for a truly cold
                     # cache. Once any local generation or bundled seed exists,
                     # per-resource requests preserve independent failures.
+                    self._notify_resource_started(on_resource_started, None)
                     self._download_archive(staging, manifest, progress)
                     prepared = {identifier: () for identifier in prepared}
                 except RemoteResourceHTTPError as error:
@@ -462,6 +476,7 @@ class RemoteResourceCache:
                 previous = old_resources.get(resource.identifier)
                 if pending:
                     try:
+                        self._notify_resource_started(on_resource_started, resource)
                         self._download_manifest_files(pending, staging, progress)
                     except (OSError, RemoteResourceError, URLError) as error:
                         self._remove_staged_resource(staging, resource)
@@ -548,6 +563,19 @@ class RemoteResourceCache:
             callback(identifier)
         except Exception:  # noqa: BLE001 - UI notification must not fail the sync.
             LOGGER.exception("远程资源 %s 已提交，但无法通知应用刷新", identifier)
+
+    @staticmethod
+    def _notify_resource_started(
+        callback: Callable[[RemoteResource | None], object] | None,
+        resource: RemoteResource | None,
+    ) -> None:
+        if callback is None:
+            return
+        try:
+            callback(resource)
+        except Exception:  # noqa: BLE001 - UI notification must not fail the sync.
+            identifier = resource.identifier if resource is not None else "archive"
+            LOGGER.exception("远程资源 %s 开始获取，但无法通知应用", identifier)
 
     def _prepare_staging_root(self, staging: Path) -> None:
         """Validate the staging directory and remove only stale run artifacts."""

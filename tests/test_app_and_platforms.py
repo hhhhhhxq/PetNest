@@ -32,7 +32,8 @@ from petnest.core.codex_discovery import (
 from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_session_log import CodexLogSourceStatus, CodexSessionLogWatcher
 from petnest.core.remote_resource_cache import RemoteResourceCache
-from petnest.core.remote_resource_update import RemoteResourceCheckResult
+from petnest.core.remote_resource_manifest import ResourceManifest
+from petnest.core.remote_resource_update import RemoteResourceApplyResult, RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
 from petnest.models.event import EventName, PetEvent
 from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, InteractionKind, LanPeer
@@ -1004,7 +1005,7 @@ def test_resource_directory_uses_verified_legacy_cache(tmp_path: Path) -> None:
     assert resource_directory_for_cache(cache) == tmp_path / "resources"
 
 
-def test_tray_resource_update_action_shows_and_clears_blue_badge(
+def test_tray_omits_resource_update_and_cursor_style_actions(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
     create_sample_pet(tmp_path / "pets" / "sample_pet")
@@ -1016,26 +1017,14 @@ def test_tray_resource_update_action_shows_and_clears_blue_badge(
     assert application.tray is not None
     qtbot.addWidget(application.window)
 
-    application.tray.set_resource_update_available(True)
-    assert not application.tray.resource_update_action.text().startswith("●")
-    assert application.tray.resource_update_action.text() == "立即检查资源更新"
-    assert not application.tray.resource_update_action.icon().isNull()
-
-    application.tray.set_resource_update_available(False)
-    assert not application.tray.resource_update_action.text().startswith("●")
-    assert application.tray.resource_update_action.icon().isNull()
-
-    application.tray.set_resource_update_loading(True)
-    assert not application.tray.resource_update_action.isEnabled()
-    assert "正在下载" in application.tray.resource_update_action.text()
-    application.tray.set_resource_update_progress(43)
-    assert "43%" in application.tray.resource_update_action.text()
-    application.tray.set_resource_update_loading(False)
-    assert application.tray.resource_update_action.isEnabled()
+    texts = [action.text() for action in application.tray.menu.actions()]
+    assert all("鼠标样式" not in text and "资源更新" not in text for text in texts)
+    assert not hasattr(application.tray, "cursor_styles_action")
+    assert not hasattr(application.tray, "resource_update_action")
     application.shutdown()
 
 
-def test_manual_resource_action_bypasses_check_throttle(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_only_resource_sections_schedule_a_throttled_check(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     application = PetNest(
         pets_root=tmp_path / "pets",
@@ -1044,15 +1033,16 @@ def test_manual_resource_action_bypasses_check_throttle(qtbot: pytest.QtBot, tmp
     )
     qtbot.addWidget(application.window)
     checks: list[bool] = []
-    application._schedule_resource_check = lambda force: checks.append(force)  # type: ignore[method-assign]
+    application._schedule_resource_check = lambda force=False: checks.append(force)  # type: ignore[method-assign]
 
-    application._handle_resource_update_action()
+    application._handle_resource_section_opened("display")
+    application._handle_resource_section_opened("mouse_behavior")
 
-    assert checks == [True]
+    assert checks == [False]
     application.shutdown()
 
 
-def test_manual_resource_check_starts_download_when_update_is_found(
+def test_contextual_resource_check_starts_download_when_update_is_found(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
     create_sample_pet(tmp_path / "pets" / "sample_pet")
@@ -1067,10 +1057,193 @@ def test_manual_resource_check_starts_download_when_update_is_found(
 
     application._handle_resource_check_result(
         RemoteResourceCheckResult(True, False, True, catalog_version="2026.8.13"),
-        manual=True,
     )
 
     assert applies == [True]
+    application.shutdown()
+
+
+def test_draining_a_check_result_releases_its_worker_before_scheduling_apply(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    worker_token = object()
+    application._resource_worker = worker_token  # type: ignore[assignment]
+    released_before_apply: list[bool] = []
+    application._schedule_resource_apply = lambda: released_before_apply.append(  # type: ignore[method-assign]
+        application._resource_worker is None
+    )
+    application._resource_results.put(
+        (
+            "check",
+            worker_token,
+            RemoteResourceCheckResult(True, False, True, catalog_version="2026.8.13"),
+        )
+    )
+
+    application._drain_resource_results()
+
+    assert released_before_apply == [True]
+    application.shutdown()
+
+
+def test_resource_stage_changes_keep_overall_progress_monotonic(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    resource = ResourceManifest.from_dict(
+        {
+            "schema_version": 1,
+            "catalog_version": "2026.8.13",
+            "resources": [
+                {
+                    "id": "spark",
+                    "type": "interaction_effect",
+                    "version": "1.0.0",
+                    "files": [
+                        {
+                            "path": "resources/effects/spark/frame.png",
+                            "size": 1,
+                            "sha256": "0" * 64,
+                        }
+                    ],
+                    "metadata": {"name": "星光"},
+                }
+            ],
+        }
+    ).resources[0]
+
+    class _ProgressCoordinator:
+        def apply(self, *, progress, on_resource_applied, on_resource_started):
+            del on_resource_applied
+            progress(65)
+            on_resource_started(resource)
+            progress(70)
+            return RemoteResourceApplyResult(True, "2026.8.13")
+
+    application.remote_resource_update = _ProgressCoordinator()  # type: ignore[assignment]
+
+    application._resource_apply_worker()
+
+    percentages: list[int] = []
+    while not application._resource_results.empty():
+        kind, _worker, payload = application._resource_results.get_nowait()
+        if kind == "progress":
+            percentages.append(payload[0])
+    assert percentages == [65, 65, 70]
+    application.shutdown()
+
+
+def test_resource_section_applies_an_already_known_update_without_checking(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    checks: list[bool] = []
+    applies: list[bool] = []
+    application.remote_resource_update.state = replace(
+        application.remote_resource_update.state,
+        update_available=True,
+    )
+    application._schedule_resource_check = lambda force=False: checks.append(force)  # type: ignore[method-assign]
+    application._schedule_resource_apply = lambda: applies.append(True)  # type: ignore[method-assign]
+
+    application._handle_resource_section_opened("countdown")
+
+    assert checks == []
+    assert applies == [True]
+    application.shutdown()
+
+
+def test_resource_progress_updates_the_open_settings_page_with_resource_context(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._schedule_resource_check = lambda force=False: None  # type: ignore[method-assign]
+    application.show_cursor_style_dialog()
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+
+    application._handle_resource_progress((43, "interaction_effect", "星光", False))
+
+    assert dialog.resource_status_label.text() == "正在获取互动动效「星光」… 43%"
+    application.shutdown()
+
+
+def test_reopening_settings_replays_an_active_resource_download(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    class _AliveWorker:
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    application._resource_worker = _AliveWorker()  # type: ignore[assignment]
+    application._resource_status = "downloading"
+    application._resource_progress = (43, "interaction_effect", "星光", False)
+    application.show_cursor_style_dialog()
+    first = application._settings_center_dialog
+    assert first is not None
+    first.reject()
+    assert application._settings_center_dialog is None
+
+    application.show_cursor_style_dialog()
+    reopened = application._settings_center_dialog
+
+    assert reopened is not None and reopened is not first
+    assert reopened.resource_status_label.text() == "正在获取互动动效「星光」… 43%"
+    application._resource_worker = None
+    application.shutdown()
+
+
+def test_start_does_not_check_resources_until_a_relevant_page_opens(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    checks: list[bool] = []
+    application._schedule_resource_check = lambda force=False: checks.append(force)  # type: ignore[method-assign]
+
+    application.start()
+
+    assert checks == []
+    assert not hasattr(application, "resource_update_timer")
     application.shutdown()
 
 

@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QPoint, QSignalBlocker, QTime, Qt, QRect, QSize, Signal
+from PySide6.QtCore import QEventLoop, QPoint, QSignalBlocker, QTime, QTimer, Qt, QRect, QSize, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -255,6 +255,8 @@ class MinuteStepTimeEdit(_FocusWheelMixin, QTimeEdit):
 class SettingsCenterDialog(QDialog):
     """一个窗口承载桌宠显示、行为、联动、倒计时和更新设置。"""
 
+    resource_section_opened = Signal(str)
+
     _PREFERRED_SIZE = QSize(1180, 760)
     _ROOMY_MINIMUM_SIZE = QSize(1000, 680)
     _SCREEN_MARGIN = 16
@@ -267,6 +269,7 @@ class SettingsCenterDialog(QDialog):
         ("countdown", "工作倒计时"),
         ("app_update", "应用与更新"),
     )
+    _RESOURCE_SECTION_KEYS = frozenset({"mouse_behavior", "countdown"})
     _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
     def __init__(
@@ -443,6 +446,16 @@ class SettingsCenterDialog(QDialog):
         self.page_description.setWordWrap(True)
         content_layout.addWidget(self.page_title)
         content_layout.addWidget(self.page_description)
+        self.resource_status_label = QLabel(content_pane)
+        self.resource_status_label.setObjectName("mutedLabel")
+        self.resource_status_label.setWordWrap(True)
+        self.resource_status_label.hide()
+        self._resource_status_active = False
+        self.resource_status_hide_timer = QTimer(self)
+        self.resource_status_hide_timer.setSingleShot(True)
+        self.resource_status_hide_timer.setInterval(3000)
+        self.resource_status_hide_timer.timeout.connect(self.clear_resource_status)
+        content_layout.addWidget(self.resource_status_label)
 
         self.page_stack = QStackedWidget(content_pane)
         self.page_stack.setObjectName("settingsPageStack")
@@ -538,7 +551,11 @@ class SettingsCenterDialog(QDialog):
 
     def select_section(self, section: str) -> None:
         """供托盘不同入口激活同一窗口时切换分类。"""
-        self.section_list.setCurrentRow(self._section_index(section))
+        index = self._section_index(section)
+        if self.section_list.currentRow() == index:
+            self._emit_resource_section(index)
+            return
+        self.section_list.setCurrentRow(index)
 
     def _change_section(self, index: int) -> None:
         if index < 0:
@@ -556,6 +573,67 @@ class SettingsCenterDialog(QDialog):
             "查看当前版本，并在需要时手动检查新的 PetNest 安装包",
         )
         self.page_description.setText(descriptions[index])
+
+        self._refresh_resource_status_visibility()
+        self._emit_resource_section(index)
+
+    def _emit_resource_section(self, index: int) -> None:
+        if not 0 <= index < len(self._SECTION_NAMES):
+            return
+        key = self._SECTION_NAMES[index][0]
+        if key in self._RESOURCE_SECTION_KEYS:
+            self.resource_section_opened.emit(key)
+
+    def _refresh_resource_status_visibility(self) -> None:
+        index = self.section_list.currentRow()
+        key = self._SECTION_NAMES[index][0] if 0 <= index < len(self._SECTION_NAMES) else ""
+        self.resource_status_label.setVisible(
+            self._resource_status_active and key in self._RESOURCE_SECTION_KEYS
+        )
+
+    def _set_resource_status(self, message: str) -> None:
+        self.resource_status_hide_timer.stop()
+        self._resource_status_active = True
+        self.resource_status_label.setText(message)
+        self._refresh_resource_status_visibility()
+
+    def clear_resource_status(self) -> None:
+        self.resource_status_hide_timer.stop()
+        self._resource_status_active = False
+        self.resource_status_label.hide()
+
+    def set_resource_checking(self) -> None:
+        self._set_resource_status("正在获取最新资源信息…")
+
+    def set_resource_downloading(
+        self,
+        progress: int,
+        *,
+        resource_type: str | None = None,
+        display_name: str | None = None,
+        archive: bool = False,
+    ) -> None:
+        percentage = max(0, min(100, int(progress)))
+        if archive:
+            subject = "初始资源包"
+        else:
+            subject = {
+                "cursor_theme": "鼠标主题",
+                "interaction_effect": "互动动效",
+                "countdown_background": "倒计时背景",
+            }.get(resource_type, "新资源")
+            if isinstance(display_name, str):
+                normalized_name = " ".join(display_name.split())[:64]
+                if normalized_name:
+                    subject = f"{subject}「{normalized_name}」"
+        self._set_resource_status(f"正在获取{subject}… {percentage}%")
+
+    def set_resource_ready(self) -> None:
+        self._set_resource_status("新资源已就绪")
+        self.resource_status_hide_timer.start()
+
+    def set_resource_error(self) -> None:
+        self._set_resource_status("新资源获取失败，将稍后自动重试")
 
     @staticmethod
     def _page(title: str, description: str, parent: QWidget) -> tuple[QWidget, QVBoxLayout]:
@@ -773,6 +851,19 @@ class SettingsCenterDialog(QDialog):
                 label,
                 QLabel("主题样式" if style and role in style.roles and supported else "使用系统默认", self._role_group),
             )
+
+    def set_cursor_styles(self, styles: list[CursorStyle]) -> None:
+        selected = self.cursor_style_input.currentData()
+        blocker = QSignalBlocker(self.cursor_style_input)
+        self._cursor_styles = list(styles)
+        self.cursor_style_input.clear()
+        self.cursor_style_input.addItem("系统默认", None)
+        for style in self._cursor_styles:
+            self.cursor_style_input.addItem(style.display_name, style.identifier)
+        selected_index = self.cursor_style_input.findData(selected)
+        self.cursor_style_input.setCurrentIndex(max(0, selected_index))
+        del blocker
+        self._update_cursor_controls()
 
     def _build_idle_page(self) -> QWidget:
         page, layout = self._page("系统空闲", "在一段时间没有操作时，让桌宠进入无聊或睡觉动作。", self)

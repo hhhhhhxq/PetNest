@@ -218,9 +218,11 @@ def test_sync_uses_verified_github_archive_when_worker_exposes_it(tmp_path: Path
         return _Response(archive_bytes)
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
+    started: list[object | None] = []
 
-    cache.sync()
+    cache.sync(on_resource_started=started.append)
 
+    assert started == [None]
     assert cache.current_root is not None
     assert (cache.current_root / relative).read_bytes() == content
 
@@ -299,6 +301,7 @@ def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
     second_path = "resources/cursors/demo/busy.cur"
     manifest_bytes = _manifest([_payload(first_path, first), _payload(second_path, second)])
     progress: list[int] = []
+    started: list[object | None] = []
 
     def opener(request: Request, timeout: float = 0) -> _Response:
         del timeout
@@ -313,8 +316,12 @@ def test_sync_reports_verified_byte_progress(tmp_path: Path) -> None:
 
     cache = RemoteResourceCache(tmp_path, "https://resources.example", opener=opener)
 
-    cache.sync(progress=progress.append)
+    cache.sync(progress=progress.append, on_resource_started=started.append)
 
+    assert started[0] is None
+    assert started[-1] is not None
+    assert getattr(started[-1], "type") == "cursor_theme"
+    assert getattr(started[-1], "metadata")["name"] == "Demo"
     assert progress
     assert progress[-1] == 100
     assert progress == sorted(progress)

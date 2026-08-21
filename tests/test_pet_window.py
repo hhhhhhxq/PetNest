@@ -908,16 +908,16 @@ def test_tray_current_pet_title_can_follow_switches(qtbot: pytest.QtBot, tmp_pat
     assert tray.current_pet_action.text() == "当前宠物：平安"
 
 
-def test_cursor_style_action_is_enabled_on_macos(
+def test_cursor_style_action_is_omitted_on_macos(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "darwin")
     window = _window(tmp_path)
     qtbot.addWidget(window)
-    tray = PetTrayIcon(window, on_cursor_styles=lambda: None)
+    tray = PetTrayIcon(window)
 
-    assert tray.cursor_styles_action.text() == "鼠标样式…"
-    assert tray.cursor_styles_action.isEnabled()
+    assert not hasattr(tray, "cursor_styles_action")
+    assert all("鼠标样式" not in action.text() for action in tray.menu.actions())
 
 
 def test_application_icon_uses_the_dedicated_app_asset(qtbot: pytest.QtBot) -> None:

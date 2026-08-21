@@ -11,7 +11,7 @@ from typing import Any, Callable, Protocol
 import uuid
 
 from petnest.core.remote_resource_cache import ResourceSyncResult
-from petnest.core.remote_resource_manifest import ResourceManifest
+from petnest.core.remote_resource_manifest import RemoteResource, ResourceManifest
 
 
 class _ResourceCache(Protocol):
@@ -24,6 +24,7 @@ class _ResourceCache(Protocol):
         *,
         progress: Callable[[int], object] | None = None,
         on_resource_applied: Callable[[str], object] | None = None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None = None,
     ) -> ResourceManifest: ...
 
     def sync_partial(
@@ -31,6 +32,7 @@ class _ResourceCache(Protocol):
         *,
         progress: Callable[[int], object] | None = None,
         on_resource_applied: Callable[[str], object] | None = None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None = None,
     ) -> ResourceSyncResult: ...
 
 
@@ -139,6 +141,7 @@ class RemoteResourceUpdateCoordinator:
         *,
         progress: Callable[[int], object] | None = None,
         on_resource_applied: Callable[[str], object] | None = None,
+        on_resource_started: Callable[[RemoteResource | None], object] | None = None,
     ) -> RemoteResourceApplyResult:
         if not self.update_available:
             return RemoteResourceApplyResult(False, self.state.remote_catalog_version)
@@ -150,6 +153,8 @@ class RemoteResourceUpdateCoordinator:
                     kwargs["progress"] = progress
                 if on_resource_applied is not None:
                     kwargs["on_resource_applied"] = on_resource_applied
+                if on_resource_started is not None:
+                    kwargs["on_resource_started"] = on_resource_started
                 result = sync_partial(**kwargs)
                 return self._apply_partial_result(result)
             kwargs = {}
@@ -157,6 +162,8 @@ class RemoteResourceUpdateCoordinator:
                 kwargs["progress"] = progress
             if on_resource_applied is not None:
                 kwargs["on_resource_applied"] = on_resource_applied
+            if on_resource_started is not None:
+                kwargs["on_resource_started"] = on_resource_started
             manifest = self.cache.sync(**kwargs)
         except Exception as error:  # noqa: BLE001 - retain the badge for a retry.
             message = str(error) or error.__class__.__name__

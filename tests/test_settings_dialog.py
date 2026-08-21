@@ -19,6 +19,7 @@ from petnest.core.codex_discovery import (
     CodexLinkAvailability,
 )
 from petnest.core.codex_session_log import CodexLogSourceStatus
+from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.models.settings import Settings
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
 
@@ -38,6 +39,92 @@ def test_settings_dialog_is_the_shared_six_section_center(qtbot, tmp_path: Path)
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "statusCard") is not None
     assert dialog.section_list.count() == 6
     assert dialog.section_list.item(3).text() == "Codex 联动"
+
+
+def test_resource_sections_emit_stable_keys_even_when_reselected(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="display")
+    qtbot.addWidget(dialog)
+    opened: list[str] = []
+    dialog.resource_section_opened.connect(opened.append)
+
+    dialog.select_section("mouse_behavior")
+    dialog.select_section("mouse_behavior")
+    dialog.select_section("idle")
+    dialog.select_section("countdown")
+
+    assert opened == ["mouse_behavior", "mouse_behavior", "countdown"]
+
+
+def test_resource_status_uses_precise_non_blocking_messages(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="mouse_behavior")
+    qtbot.addWidget(dialog)
+
+    dialog.set_resource_checking()
+    assert dialog.resource_status_label.text() == "正在获取最新资源信息…"
+    assert not dialog.resource_status_label.isHidden()
+
+    dialog.set_resource_downloading(43, resource_type="interaction_effect", display_name="星光")
+    assert dialog.resource_status_label.text() == "正在获取互动动效「星光」… 43%"
+
+    dialog.set_resource_downloading(44, archive=True)
+    assert dialog.resource_status_label.text() == "正在获取初始资源包… 44%"
+
+    dialog.set_resource_downloading(45, resource_type="countdown_background")
+    assert dialog.resource_status_label.text() == "正在获取倒计时背景… 45%"
+
+    dialog.set_resource_error()
+    assert dialog.resource_status_label.text() == "新资源获取失败，将稍后自动重试"
+
+    dialog.set_resource_ready()
+    assert dialog.resource_status_label.text() == "新资源已就绪"
+    assert dialog.resource_status_hide_timer.interval() == 3000
+    assert dialog.resource_status_hide_timer.isActive()
+    dialog.resource_status_hide_timer.timeout.emit()
+    assert dialog.resource_status_label.isHidden()
+
+
+def test_resource_status_is_hidden_outside_resource_sections(qtbot) -> None:
+    dialog = SettingsDialog(Settings(), initial_section="mouse_behavior")
+    qtbot.addWidget(dialog)
+    dialog.set_resource_checking()
+
+    dialog.select_section("display")
+
+    assert dialog.resource_status_label.isHidden()
+
+
+def test_refreshing_cursor_styles_preserves_the_unsaved_selection(qtbot, tmp_path: Path) -> None:
+    def style(identifier: str, name: str) -> CursorStyle:
+        root = tmp_path / identifier
+        return CursorStyle(
+            identifier,
+            name,
+            root / "preview.png",
+            root / "arrow.cur",
+            (0, 0),
+            None,
+            {"arrow": root / "arrow.cur"},
+        )
+
+    first = style("first", "第一套")
+    second = style("second", "第二套")
+    third = style("third", "第三套")
+    dialog = SettingsDialog(
+        Settings(cursor_style_enabled=True, cursor_style_id="first"),
+        cursor_styles=[first, second],
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+    dialog.cursor_style_input.setCurrentIndex(dialog.cursor_style_input.findData("second"))
+
+    dialog.set_cursor_styles([second, third])
+
+    assert dialog.cursor_style_input.currentData() == "second"
+    assert [dialog.cursor_style_input.itemData(index) for index in range(dialog.cursor_style_input.count())] == [
+        None,
+        "second",
+        "third",
+    ]
 
 
 def test_codex_link_page_keeps_plain_controls_and_persists_preferences(qtbot) -> None:

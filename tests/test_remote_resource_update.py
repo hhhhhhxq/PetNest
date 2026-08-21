@@ -68,6 +68,24 @@ class _PartialFakeCache:
         return self.result
 
 
+@dataclass
+class _CallbackFakeCache:
+    remote: ResourceManifest
+    current: ResourceManifest
+    result: ResourceSyncResult
+    received_callback: object | None = None
+
+    def fetch_manifest(self) -> ResourceManifest:
+        return self.remote
+
+    def load_current_manifest(self) -> ResourceManifest:
+        return self.current
+
+    def sync_partial(self, **kwargs: object) -> ResourceSyncResult:
+        self.received_callback = kwargs.get("on_resource_started")
+        return self.result
+
+
 def _clock(start: datetime):
     value = start
 
@@ -189,3 +207,21 @@ def test_partial_apply_reports_a_changed_view_even_without_applied_resources(tmp
     assert result.updated_resource_ids == ()
     assert result.resource_view_changed is True
     assert coordinator.update_available is True
+
+
+def test_apply_passes_resource_started_callback_to_cache(tmp_path: Path) -> None:
+    old = _manifest(b"old")
+    remote = _manifest(b"new")
+    cache = _CallbackFakeCache(
+        remote=remote,
+        current=old,
+        result=ResourceSyncResult(manifest=remote, applied_resource_ids=("demo",)),
+    )
+    coordinator = RemoteResourceUpdateCoordinator(cache, tmp_path / "state.json")
+    coordinator.check()
+    started: list[object | None] = []
+    callback = started.append
+
+    coordinator.apply(on_resource_started=callback)
+
+    assert cache.received_callback is callback
