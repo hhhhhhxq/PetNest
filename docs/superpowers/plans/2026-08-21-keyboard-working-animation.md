@@ -93,7 +93,7 @@ def test_review_finishes_to_keyboard_working_without_marking_review_read() -> No
     assert coordinator.codex_state == "review"
 
 
-def test_repeated_keyboard_activity_does_not_restart_working() -> None:
+def test_repeated_keyboard_activity_reasserts_without_changing_effective_state() -> None:
     published: list[PetEvent] = []
     coordinator = WorkActivityCoordinator(published.append)
 
@@ -101,7 +101,11 @@ def test_repeated_keyboard_activity_does_not_restart_working() -> None:
     coordinator.keyboard_activity_started()
     coordinator.keyboard_activity_started()
 
-    assert [event.event_name for event in published] == ["agent.working"]
+    assert [event.event_name for event in published] == [
+        "agent.working",
+        "agent.working",
+        "agent.working",
+    ]
 ```
 
 - [ ] **步骤 2：运行测试并确认模块缺失**
@@ -152,6 +156,8 @@ class WorkActivityCoordinator:
 
     def keyboard_activity_started(self) -> None:
         if self.keyboard_active:
+            if self._desired_event() == "agent.working":
+                self._publish(PetEvent("agent.working", source="work-activity", priority=40))
             return
         self.keyboard_active = True
         self._emit_effective(priority=40)
@@ -436,6 +442,9 @@ class WindowsKeyboardActivityMonitor:
 - 消息循环使用 `GetMessageW/TranslateMessage/DispatchMessageW`；
 - `request_stop()` 调用 `PostThreadMessageW(thread_id, WM_QUIT, 0, 0)`；
 - finally 调用 `UnhookWindowsHookEx`；
+- 为 GetModuleHandleW、Set/Call/UnhookWindowsHookEx、PostThreadMessageW 声明 64 位安全 ctypes 签名；
+- session 持有取消 Event，安装前后均检查；
+- start/stop join 超时且线程仍存活时保留 session/thread 引用，标记 stopping 并禁止重复安装；
 - `sys.platform != "win32"` 时 session 安装失败但模块可安全导入。
 
 原生 session 使用以下完整边界实现，类型签名在模块导入时不触发 Win32 调用：

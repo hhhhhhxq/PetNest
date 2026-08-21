@@ -67,6 +67,8 @@ Windows 实现使用 `SetWindowsHookExW(WH_KEYBOARD_LL)`，在独立 daemon 线�
 - Hook 安装失败时返回 `False` 并提供脱敏状态；
 - `stop()` 使用线程消息结束循环、调用 `UnhookWindowsHookEx`，并做有界 join；
 - 重复 start/stop 必须幂等；
+- HHOOK/HMODULE 相关 Win32 API 必须声明 64 位安全 ctypes 签名；
+- 会话持有取消 Event；安装或停止超时后若线程仍存活，monitor 保留引用并禁止重复 Hook；
 - 非 Windows 环境导入该模块不得执行 Win32 调用。
 
 原生 Hook 回调在后台线程执行，不能直接操作 Qt 或宠物状态。应用层使用 `_KeyboardActivityRelay(QObject)` 的无参数 Signal，将活动排队送回 Qt 主线程。
@@ -87,7 +89,7 @@ codex_review_animation_finished: bool
 - 接收键盘活动开始和超时释放；
 - 根据优先级决定唯一的最终宠物事件；
 - 不处理气泡、未读、日志或 Hook；
-- 只在有效状态变化时发布，避免每次按键重启动画。
+- 有效状态变化时发布；连续按键在 working 已生效时不会重启动画，但允许重新请求 working，使被 drag/click 或最短播放保护拒绝的首次请求能够恢复。
 
 CodexLinkCoordinator 仍负责多个任务的 running/waiting/failed/review 聚合，但其宠物事件发布函数改为传入 `WorkActivityCoordinator.handle_codex_event`；仲裁器再把最终事件发送给 EventBus。
 
@@ -134,6 +136,7 @@ idle / hover
 - 键盘功能关闭时，现有 `GetLastInputInfo → system.wake` 行为完全不变；
 - 键盘功能开启且第一次按键发生在 bored/sleep 状态时，直接进入 working，并抑制由同一次键盘输入产生的 `system.wake` 动画；
 - 鼠标导致的恢复输入仍播放现有 wake；
+- Codex 或键盘工作状态有效期间不进入新的 bored/sleep；来源结束后由下一次空闲检查正常进入；
 - 这样避免 wake 与 working 在一秒系统空闲轮询内互相覆盖，同时符合 working 高于 idle/bored/sleep 的优先级。
 
 ## 键盘活动窗口
@@ -149,7 +152,8 @@ timer 到期：keyboard_active = false
 要求：
 
 - 第一次按键立即生效；
-- 连续按键只刷新 timer，不重复发布 working；
+- 连续按键刷新 timer；当前已经是 working 时，同动作请求由状态机安全忽略，不重启动画；
+- 若首次 working 请求被不可中断动作暂时拒绝，后续按键继续请求，直到允许切换或活动超时；
 - 关闭设置时停止 timer、解除 Hook 并释放键盘来源；
 - 应用退出时先停止原生监听，再销毁 Qt relay；
 - 应用暂停动画不停止活动状态记录，恢复播放后按当前有效状态呈现。

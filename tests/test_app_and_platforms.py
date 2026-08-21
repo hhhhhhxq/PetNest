@@ -9,7 +9,7 @@ import socket
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 from types import SimpleNamespace
 
@@ -130,6 +130,27 @@ class _CodexDiscoveryService:
         return self.results.pop(0) if len(self.results) > 1 else self.results[0]
 
 
+class _KeyboardActivityMonitor:
+    def __init__(self, *, supported: bool = True, start_ok: bool = True) -> None:
+        self.supported = supported
+        self.start_ok = start_ok
+        self.started = 0
+        self.stopped = 0
+        self.callback = None
+        self.status_message = "已关闭" if supported else "当前版本仅支持 Windows"
+
+    def start(self, callback) -> bool:
+        self.started += 1
+        self.callback = callback
+        self.status_message = "监听正常" if self.start_ok else "监听不可用"
+        return self.start_ok
+
+    def stop(self) -> None:
+        self.stopped += 1
+        self.callback = None
+        self.status_message = "已关闭" if self.supported else "当前版本仅支持 Windows"
+
+
 def _free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -145,6 +166,58 @@ def _send_codex_hook(port: int, token: str, event_name: str, *, session: str = "
     }
     with socket.create_connection(("127.0.0.1", port), timeout=1) as client:
         client.sendall(json.dumps(message).encode() + b"\n")
+
+
+def _keyboard_test_application(
+    tmp_path: Path,
+    monitor: _KeyboardActivityMonitor,
+    *,
+    keyboard_enabled: bool,
+    codex_enabled: bool = False,
+    platform_adapter: object | None = None,
+) -> PetNest:
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(
+        Settings(
+            keyboard_working_enabled=keyboard_enabled,
+            codex_link_enabled=codex_enabled,
+            work_countdown_enabled=False,
+            system_idle_enabled=True,
+            system_bored_seconds=1,
+            system_sleep_seconds=2,
+        )
+    )
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    return PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=platform_adapter,
+        keyboard_activity_monitor=monitor,
+        codex_discovery=(
+            _CodexDiscoveryService(
+                CodexLinkAvailability(
+                    CodexAvailabilityState.NOT_DETECTED,
+                    "未检测到 Codex",
+                    False,
+                )
+            )
+            if codex_enabled
+            else None
+        ),
+        enable_tray=False,
+    )
+
+
+def _codex_log_event(event_name: str) -> PetEvent:
+    return PetEvent(
+        "codex.hook",
+        source="codex-log",
+        payload={
+            "hook_event_name": event_name,
+            "session_id": "session-keyboard",
+            "turn_id": "turn-keyboard",
+        },
+    )
 
 
 def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -1431,6 +1504,263 @@ def test_settings_center_detects_configures_and_removes_petnest_codex_plugin(
     assert plugin_manager.removed == 1
     assert dialog.codex_plugin_primary_button.text() == "启用精确连接"
     dialog.reject()
+    application.shutdown()
+
+
+def test_keyboard_monitor_default_off_and_enable_disable_lifecycle(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=False,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+
+    assert monitor.started == 0
+    application.apply_settings(replace(application.settings, keyboard_working_enabled=True))
+    assert monitor.started == 1
+    application.apply_settings(replace(application.settings, keyboard_working_enabled=False))
+    assert monitor.stopped == 1
+    application.shutdown()
+
+
+def test_keyboard_activity_uses_1500ms_window(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(tmp_path, monitor, keyboard_enabled=True)
+    qtbot.addWidget(application.window)
+    application.start()
+    assert monitor.callback is not None
+
+    monitor.callback()
+    qtbot.waitUntil(lambda: application.window.current_action == "working")
+    assert application.keyboard_activity_timer.interval() == 1_500
+    monitor.callback()
+    assert application.window.current_action == "working"
+
+    application._finish_keyboard_activity()
+    assert application.window.current_action == "idle"
+    application.shutdown()
+
+
+def test_second_keypress_restarts_the_full_1500ms_window(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(tmp_path, monitor, keyboard_enabled=True)
+    qtbot.addWidget(application.window)
+    application.start()
+    assert monitor.callback is not None
+
+    monitor.callback()
+    qtbot.wait(1_000)
+    monitor.callback()
+    qtbot.wait(700)
+    assert application.window.current_action == "working"
+
+    qtbot.waitUntil(lambda: application.window.current_action == "idle", timeout=1_200)
+    application.shutdown()
+
+
+def test_worker_thread_keyboard_pulse_is_handled_on_qt_thread(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(tmp_path, monitor, keyboard_enabled=True)
+    qtbot.addWidget(application.window)
+    handled_on: list[QThread] = []
+    application.event_bus.subscribe(
+        lambda event: handled_on.append(QThread.currentThread())
+        if event.source == "work-activity"
+        else None
+    )
+    application.start()
+    assert monitor.callback is not None
+
+    worker = Thread(target=monitor.callback)
+    worker.start()
+    worker.join(timeout=1)
+    qtbot.waitUntil(lambda: application.window.current_action == "working")
+
+    assert handled_on[-1] == application.window.thread()
+    application.shutdown()
+
+
+def test_keyboard_monitor_failure_does_not_activate_working(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor(start_ok=False)
+    application = _keyboard_test_application(tmp_path, monitor, keyboard_enabled=True)
+    qtbot.addWidget(application.window)
+
+    application.start()
+
+    assert monitor.started == 1
+    assert application._keyboard_monitor_running is False
+    assert application.work_activity.keyboard_active is False
+    assert application.window.current_action == "idle"
+    application.shutdown()
+
+
+def test_shutdown_stops_running_keyboard_monitor(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(tmp_path, monitor, keyboard_enabled=True)
+    qtbot.addWidget(application.window)
+    application.start()
+
+    application.shutdown()
+
+    assert monitor.stopped == 1
+    assert application._keyboard_monitor_running is False
+
+
+def test_keyboard_timeout_does_not_cancel_codex_working(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=True,
+        codex_enabled=True,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    application.codex_link.consume(_codex_log_event("UserPromptSubmit"))
+    assert monitor.callback is not None
+    monitor.callback()
+    qtbot.waitUntil(lambda: application.window.current_action == "working")
+
+    application._finish_keyboard_activity()
+
+    assert application.window.current_action == "working"
+    application.shutdown()
+
+
+def test_codex_review_finishes_back_to_active_keyboard(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=True,
+        codex_enabled=True,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    assert monitor.callback is not None
+    monitor.callback()
+    application.codex_link.consume(_codex_log_event("Stop"))
+    assert application.window.current_action == application.package.bindings.get("agent.success", "review")
+    assert application.work_activity.keyboard_active is True
+    assert application.work_activity.effective_event == "agent.success"
+
+    qtbot.wait(60)
+    application._finish_codex_review_animation()
+
+    assert application.work_activity.effective_event == "agent.working"
+    assert application.window.current_action == "working"
+    assert application.codex_link.snapshot.unread_review_count == 1
+    application.shutdown()
+
+
+def test_keyboard_activity_from_sleep_suppresses_duplicate_wake(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    adapter = _IdleAdapter(idle_seconds=3)
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=True,
+        platform_adapter=adapter,
+    )
+    qtbot.addWidget(application.window)
+    system_events: list[str] = []
+    application.event_bus.subscribe(
+        lambda event: system_events.append(event.event_name) if event.source == "system" else None
+    )
+    application.start()
+    assert "system.sleep" in system_events
+    system_events.clear()
+    adapter.idle_seconds = 0
+    assert monitor.callback is not None
+
+    monitor.callback()
+    application._check_system_idle()
+
+    assert application.window.current_action == "working"
+    assert "system.wake" not in system_events
+    application.shutdown()
+
+
+def test_mouse_recovery_without_keyboard_still_plays_wake(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    adapter = _IdleAdapter(idle_seconds=3)
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=True,
+        platform_adapter=adapter,
+    )
+    qtbot.addWidget(application.window)
+    system_events: list[str] = []
+    application.event_bus.subscribe(
+        lambda event: system_events.append(event.event_name) if event.source == "system" else None
+    )
+    application.start()
+    assert "system.sleep" in system_events
+    system_events.clear()
+    adapter.idle_seconds = 0
+
+    application._check_system_idle()
+
+    assert system_events == ["system.wake"]
+    application.shutdown()
+
+
+def test_codex_working_suppresses_system_bored_and_sleep(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    adapter = _IdleAdapter(idle_seconds=0)
+    monitor = _KeyboardActivityMonitor()
+    application = _keyboard_test_application(
+        tmp_path,
+        monitor,
+        keyboard_enabled=False,
+        codex_enabled=True,
+        platform_adapter=adapter,
+    )
+    qtbot.addWidget(application.window)
+    application.start()
+    application.codex_link.consume(_codex_log_event("UserPromptSubmit"))
+    assert application.window.current_action == "working"
+    adapter.idle_seconds = 3
+
+    application._check_system_idle()
+
+    assert application.window.current_action == "working"
+    assert application._system_idle_monitor.state.value == "active"
     application.shutdown()
 
 

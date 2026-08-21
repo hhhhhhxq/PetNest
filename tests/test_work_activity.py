@@ -75,7 +75,7 @@ def test_review_finishes_to_idle_without_keyboard_activity() -> None:
     assert [event.event_name for event in published] == ["agent.idle"]
 
 
-def test_repeated_keyboard_activity_does_not_restart_working() -> None:
+def test_repeated_keyboard_activity_reasserts_working_without_changing_effective_state() -> None:
     published: list[PetEvent] = []
     coordinator = WorkActivityCoordinator(published.append)
 
@@ -83,7 +83,12 @@ def test_repeated_keyboard_activity_does_not_restart_working() -> None:
     coordinator.keyboard_activity_started()
     coordinator.keyboard_activity_started()
 
-    assert [event.event_name for event in published] == ["agent.working"]
+    assert [event.event_name for event in published] == [
+        "agent.working",
+        "agent.working",
+        "agent.working",
+    ]
+    assert coordinator.effective_event == "agent.working"
 
 
 def test_both_sources_must_end_before_idle_is_published() -> None:

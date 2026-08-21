@@ -540,6 +540,28 @@ def test_keyboard_activity_card_warns_when_working_falls_back_to_idle(qtbot) -> 
     assert "缺少“任务进行中”动作" in dialog.keyboard_working_action_warning.text()
 
 
+def test_keyboard_action_warning_refreshes_when_current_pet_changes(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(),
+        keyboard_activity_supported=True,
+        codex_action_availability={"working": "working", "review": "review"},
+        initial_section="mouse_behavior",
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.keyboard_working_action_warning.isHidden()
+
+    dialog.set_codex_action_availability(
+        {
+            "working": "idle（回退）",
+            "waiting": "idle（回退）",
+            "error": "idle（回退）",
+            "review": "review",
+        }
+    )
+
+    assert not dialog.keyboard_working_action_warning.isHidden()
+
+
 def test_mouse_behavior_switches_respond_when_painted_tracks_are_clicked(qtbot) -> None:
     dialog = SettingsDialog(
         Settings(mouse_follow_enabled=False, cursor_style_enabled=False),

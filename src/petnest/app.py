@@ -81,6 +81,7 @@ from petnest.core.remote_interaction_service import FirebaseRemoteInteractionSer
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.core.work_finish_state import WorkFinishState, state_from_dict, state_to_dict
+from petnest.core.work_activity import WorkActivityCoordinator
 from petnest.events.external_event_server import ExternalEventServer
 from petnest.logging_config import configure_logging
 from petnest.core.device_identity import display_name_for
@@ -98,6 +99,7 @@ from petnest.ui.codex_usage_dialog import CodexUsageDialog
 from petnest.ui.danger_alert import DangerAlertConfirmDialog, DangerAlertOverlay
 from petnest.platforms import PlatformEventAdapter, create_platform_adapter
 from petnest.platforms.cursor import CursorController, create_cursor_controller
+from petnest.platforms.keyboard import KeyboardActivityMonitor, create_keyboard_activity_monitor
 from petnest.ui.pet_window import PetWindow
 from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 from petnest.ui.animation_editor_page import AnimationSaveResult
@@ -227,6 +229,12 @@ class _ExternalEventRelay(QObject):
     event_received = Signal(object)
 
 
+class _KeyboardActivityRelay(QObject):
+    """Queue parameterless native keyboard pulses onto the Qt main thread."""
+
+    activity = Signal()
+
+
 class PetNest:
     """第一阶段桌宠运行时，负责有序启动、宠物切换和有序退出。"""
 
@@ -241,6 +249,7 @@ class PetNest:
         codex_plugin_manager: CodexPluginManager | None = None,
         codex_discovery: CodexDiscoveryService | None = None,
         codex_log_watcher: CodexSessionLogWatcher | None = None,
+        keyboard_activity_monitor: KeyboardActivityMonitor | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
     ) -> None:
@@ -376,7 +385,11 @@ class PetNest:
         )
         self._external_event_relay = _ExternalEventRelay(self.window)
         self._external_event_relay.event_received.connect(self._publish_external_event)
-        self.codex_link = CodexLinkCoordinator(self.event_bus.publish, self._handle_codex_snapshot)
+        self.work_activity = WorkActivityCoordinator(self.event_bus.publish)
+        self.codex_link = CodexLinkCoordinator(
+            self.work_activity.handle_codex_event,
+            self._handle_codex_snapshot,
+        )
         self.window.codex_status_activated.connect(self._activate_codex_status)
         self.window.codex_status_bubble.dismissed.connect(self._dismiss_codex_status)
         self.peer_registry = KnownLanPeerRegistry(
@@ -463,6 +476,14 @@ class PetNest:
         self.event_bus.subscribe(self.window.handle_pet_event)
         self.event_bus.subscribe(self._handle_codex_hook_event)
         self.platform_adapter = platform_adapter or create_platform_adapter()
+        self.keyboard_activity_monitor = keyboard_activity_monitor or create_keyboard_activity_monitor()
+        self._keyboard_monitor_running = False
+        self._keyboard_activity_relay = _KeyboardActivityRelay(self.window)
+        self._keyboard_activity_relay.activity.connect(self._handle_keyboard_activity)
+        self.keyboard_activity_timer = QTimer(self.window)
+        self.keyboard_activity_timer.setSingleShot(True)
+        self.keyboard_activity_timer.setInterval(1_500)
+        self.keyboard_activity_timer.timeout.connect(self._finish_keyboard_activity)
         self._system_idle_monitor = self._new_system_idle_monitor(self.settings)
         self.system_idle_timer = QTimer(self.window)
         self.system_idle_timer.setInterval(1_000)
@@ -548,6 +569,7 @@ class PetNest:
     def start(self) -> None:
         """显示窗口并按设置启动可选本地事件服务。"""
         self.platform_adapter.start()
+        self._configure_keyboard_activity()
         self._refresh_codex_discovery()
         self._configure_external_event_server()
         self._configure_system_idle_timer()
@@ -605,6 +627,17 @@ class PetNest:
             LOGGER.exception("切换宠物包失败：%s", identifier)
             return False
         self.package = candidate
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.set_codex_action_availability(
+                self._codex_action_availability()
+            )
+        self.window.handle_pet_event(
+            PetEvent(
+                self.work_activity.effective_event,
+                source="work-activity-restore",
+                priority=100,
+            )
+        )
         self.settings = replace(self.settings, current_pet_id=candidate.identifier, scale=candidate.display.default_scale)
         self.settings_manager.save(self.settings)
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
@@ -658,6 +691,10 @@ class PetNest:
             return False
         self.package = reloaded
         self.packages = [reloaded if item.identifier == reloaded.identifier else item for item in self.packages]
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.set_codex_action_availability(
+                self._codex_action_availability()
+            )
         if self.tray is not None:
             self.tray.set_current_pet_name(self.package.name)
         if sync_result is not None and sync_result.added and self.tray is not None:
@@ -726,6 +763,9 @@ class PetNest:
             or settings.system_bored_seconds != self.settings.system_bored_seconds
             or settings.system_sleep_seconds != self.settings.system_sleep_seconds
         )
+        keyboard_configuration_changed = (
+            settings.keyboard_working_enabled != self.settings.keyboard_working_enabled
+        )
         alert_membership_changed = settings.lan_alert_group_joined != self.settings.lan_alert_group_joined
         external_event_configuration_changed = (
             settings.external_event_server_enabled != self.settings.external_event_server_enabled
@@ -773,6 +813,8 @@ class PetNest:
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
+        if keyboard_configuration_changed:
+            self._configure_keyboard_activity()
         self.settings_manager.save(self.settings)
 
     def _show_pet_context_menu(self, position: QPoint) -> None:
@@ -1200,7 +1242,7 @@ class PetNest:
 
     def _finish_codex_review_animation(self) -> None:
         if self.codex_link.snapshot.state == "review":
-            self.window.handle_pet_event(PetEvent("agent.idle", source="codex-link", priority=100))
+            self.work_activity.finish_codex_review_animation()
 
     def show_cursor_style_dialog(self) -> None:
         """保留托盘独立入口，但定位到设置中心的鼠标分类。"""
@@ -1256,6 +1298,8 @@ class PetNest:
             on_diagnose_codex_link=self._diagnose_codex_link,
             cursor_styles=self.cursor_catalog.discover(),
             supported_roles=supported_roles,
+            keyboard_activity_supported=self.keyboard_activity_monitor.supported,
+            keyboard_activity_status=self.keyboard_activity_monitor.status_message,
             pet_preview_path=preview_path,
             initial_section=initial_section,
         )
@@ -1706,6 +1750,11 @@ class PetNest:
         if server is not None:
             self._run_shutdown_step("停止外部事件服务", server.stop)
         self._run_shutdown_step("停止系统空闲计时器", self.system_idle_timer.stop)
+        self._run_shutdown_step("停止键盘活动计时器", self.keyboard_activity_timer.stop)
+        if self._keyboard_monitor_running:
+            self._run_shutdown_step("停止键盘活动监听", self.keyboard_activity_monitor.stop)
+            self._keyboard_monitor_running = False
+        self._run_shutdown_step("清理键盘工作状态", self.work_activity.reset_keyboard)
         self._run_shutdown_step("停止鼠标跟随计时器", self.mouse_follow_timer.stop)
         self._run_shutdown_step("停止远程资源结果计时器", self.resource_result_timer.stop)
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
@@ -2307,14 +2356,54 @@ class PetNest:
             self.system_idle_timer.stop()
             self._system_idle_monitor.reset()
 
+    def _configure_keyboard_activity(self) -> None:
+        should_run = (
+            self.settings.keyboard_working_enabled
+            and self.keyboard_activity_monitor.supported
+        )
+        if should_run and not self._keyboard_monitor_running:
+            self._keyboard_monitor_running = self.keyboard_activity_monitor.start(
+                self._keyboard_activity_relay.activity.emit
+            )
+            if not self._keyboard_monitor_running:
+                self.keyboard_activity_timer.stop()
+                self.work_activity.reset_keyboard()
+        elif not should_run and self._keyboard_monitor_running:
+            self.keyboard_activity_monitor.stop()
+            self._keyboard_monitor_running = False
+        if not should_run:
+            self.keyboard_activity_timer.stop()
+            self.work_activity.reset_keyboard()
+
+    def _handle_keyboard_activity(self) -> None:
+        if (
+            self._shutdown
+            or not self.settings.keyboard_working_enabled
+            or not self._keyboard_monitor_running
+        ):
+            return
+        self.work_activity.keyboard_activity_started()
+        self.keyboard_activity_timer.start()
+
+    def _finish_keyboard_activity(self) -> None:
+        self.keyboard_activity_timer.stop()
+        self.work_activity.keyboard_activity_stopped()
+
     def _check_system_idle(self) -> None:
         if not self.settings.system_idle_enabled:
             return
         idle_seconds = self.platform_adapter.get_idle_seconds()
         if idle_seconds is None:
             return
+        if (
+            self.work_activity.effective_event != "agent.idle"
+            and idle_seconds >= self._system_idle_monitor.bored_seconds
+        ):
+            return
         event_name = self._system_idle_monitor.update(idle_seconds)
         if event_name is not None:
+            if event_name == "system.wake" and self.work_activity.keyboard_active:
+                return
             self.event_bus.publish(PetEvent(event_name, source="system"))
 
     @staticmethod

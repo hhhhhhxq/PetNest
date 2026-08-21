@@ -1218,6 +1218,30 @@ class SettingsCenterDialog(QDialog):
         )
         self._refresh_codex_runtime_label()
 
+    def set_codex_action_availability(self, availability: Mapping[str, str]) -> None:
+        self._codex_action_availability = dict(availability)
+        for action, label in self.codex_action_status_labels.items():
+            label.setText(self._codex_action_availability.get(action, "idle（回退）"))
+        missing_actions = []
+        if self._codex_action_availability.get("working", "idle（回退）").startswith("idle"):
+            missing_actions.append("任务进行中")
+        if self._codex_action_availability.get("review", "idle（回退）").startswith("idle"):
+            missing_actions.append("任务完成")
+        if missing_actions:
+            quoted = "和".join(f"“{name}”" for name in missing_actions)
+            self.codex_action_warning_label.setText(
+                f"当前宠物缺少{quoted}动作。联动仍会运行，但这些状态会显示为普通待机动作。"
+            )
+            self.codex_action_warning_label.show()
+        else:
+            self.codex_action_warning_label.hide()
+        self.codex_open_pet_actions_button.setVisible(
+            bool(missing_actions) and self._on_open_pet_actions is not None
+        )
+        self.keyboard_working_action_warning.setVisible(
+            self._codex_action_availability.get("working", "idle（回退）").startswith("idle")
+        )
+
     def set_codex_link_runtime(self, source: str, log_status: CodexLogSourceStatus) -> None:
         self._codex_link_source = source
         self._codex_log_status = log_status

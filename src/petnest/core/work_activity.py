@@ -37,6 +37,8 @@ class WorkActivityCoordinator:
 
     def keyboard_activity_started(self) -> None:
         if self.keyboard_active:
+            if self._desired_event() == "agent.working":
+                self._publish(PetEvent("agent.working", source="work-activity", priority=40))
             return
         self.keyboard_active = True
         self._emit_effective(priority=40)
