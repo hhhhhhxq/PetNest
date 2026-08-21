@@ -71,6 +71,10 @@ def test_resource_mode_uses_source_summary_and_selectable_action_table(
         page.resource_action_table.item(row, 0).checkState() == Qt.CheckState.Checked
         for row in range(page.resource_action_table.rowCount())
     )
+    assert page.footer_state().primary_text == (
+        f"安装 {page.resource_action_table.rowCount()} 个动作"
+    )
+    assert "自动恢复" in page.footer_state().status
     names = {
         page.resource_action_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
         for row in range(page.resource_action_table.rowCount())
@@ -87,6 +91,27 @@ def test_resource_mode_uses_source_summary_and_selectable_action_table(
     )
     assert [label.text() for label in idle_labels] == ["idle", "默认待机"]
     assert len(page.resource_action_table.findChildren(QComboBox)) == page.resource_action_table.rowCount()
+
+
+def test_resource_mode_uses_v4_panel_geometry_and_lucide_icons(
+    qtbot: object, tmp_path: Path
+) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+
+    assert page.mode_switch.objectName() == "actionImportModeSwitch"
+    margins = page.mode_switch.layout().contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (5, 5, 5, 5)
+    assert page.resource_source_card.objectName() == "actionImportPanel"
+    assert page.resource_actions_card.objectName() == "actionImportPanel"
+    assert page.resource_source_card.layout().contentsMargins().left() == 11
+    assert page.resource_actions_card.layout().contentsMargins().left() == 11
+    assert page.resource_drop_zone.minimumHeight() == 118
+    assert page.resource_action_table.objectName() == "resourceActionTable"
+    assert not page.resource_source_icon.pixmap().isNull()
+    assert not page.resource_actions_icon.pixmap().isNull()
+    assert not page.source_browse_button.icon().isNull()
 
 
 def test_resource_action_table_checkbox_controls_install_selection(
@@ -128,6 +153,7 @@ def test_resource_action_table_conflict_choice_drives_install_decision(
 
     decisions = page._conflict_decisions(page.selected_action_names())
     assert decisions["idle"].kind.value == "skip"
+    assert "跳过 1 个" in page.footer_state().status
 
 
 def test_action_import_page_installs_selected_action(qtbot: object, tmp_path: Path) -> None:
@@ -299,7 +325,7 @@ def test_action_import_page_has_approved_two_modes(qtbot: object, tmp_path: Path
     assert page.image_mode_button.text() == "用图片制作动作"
     assert isinstance(page.resource_mode_button, QRadioButton)
     assert isinstance(page.image_mode_button, QRadioButton)
-    assert page.resource_mode_button.parentWidget().objectName() == "modeSwitch"
+    assert page.resource_mode_button.parentWidget().objectName() == "actionImportModeSwitch"
     assert page.resource_mode_button.isChecked()
     assert not page.image_mode_button.isChecked()
     assert page.current_mode() == "resource"

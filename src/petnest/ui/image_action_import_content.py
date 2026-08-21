@@ -11,7 +11,7 @@ from typing import ContextManager
 from uuid import uuid4
 
 from PySide6.QtCore import QSize, QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -45,7 +45,8 @@ from petnest.core.image_action_builder import (
 )
 from petnest.models.pet_package import PetPackage
 from petnest.core.package_validator import MAX_TIMELINE_DURATION_MS
-from petnest.ui.animation_preview_widget import AnimationPreviewWidget
+from petnest.ui.animation_preview_widget import AnimationPreviewWidget, CheckerboardLabel
+from petnest.ui.lucide_icons import lucide_icon
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +67,10 @@ class ImageSourceDropZone(QFrame):
         self.setObjectName("imageActionDropZone")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
-        label = QLabel("也可以把 PNG / WebP 拖到帧区域", self)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setObjectName("mutedLabel")
-        layout.addWidget(label)
+        self.hint_label = QLabel("拖动缩略图调整顺序；也可以把 PNG / WebP 拖到帧区域。", self)
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.hint_label.setObjectName("mutedLabel")
+        layout.addWidget(self.hint_label)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         urls = event.mimeData().urls()
@@ -101,19 +102,22 @@ class ImageFrameCard(QFrame):
         super().__init__(parent)
         self._path = frame.path
         self.setObjectName("imageFrameCard")
-        self.setFixedSize(142, 86)
+        self.setFixedSize(142, 82)
 
         layout = QGridLayout(self)
         layout.setContentsMargins(5, 5, 5, 4)
         layout.setHorizontalSpacing(2)
         layout.setVerticalSpacing(2)
 
-        thumbnail = QLabel(self)
-        thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumbnail.setMinimumSize(118, 58)
+        self.thumbnail = CheckerboardLabel("", self)
+        self.thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail.setMinimumSize(118, 58)
+        self.thumbnail.tile_size = 15
+        self.thumbnail.light_color = QColor("#fffaf7")
+        self.thumbnail.dark_color = QColor("#f1e6e0")
         pixmap = QPixmap(str(frame.path))
         if not pixmap.isNull():
-            thumbnail.setPixmap(
+            self.thumbnail.setPixmap(
                 pixmap.scaled(
                     106,
                     58,
@@ -121,13 +125,13 @@ class ImageFrameCard(QFrame):
                     Qt.TransformationMode.SmoothTransformation,
                 )
             )
-        layout.addWidget(thumbnail, 0, 0, 1, 3)
+        layout.addWidget(self.thumbnail, 0, 0, 1, 3)
 
         self.delete_button = QToolButton(self)
         self.delete_button.setObjectName("frameDeleteButton")
         self.delete_button.setText("×")
         self.delete_button.setToolTip("删除这一帧")
-        self.delete_button.setFixedSize(24, 24)
+        self.delete_button.setFixedSize(20, 20)
         self.delete_button.clicked.connect(lambda: self.delete_requested.emit(self._path))
         layout.addWidget(
             self.delete_button,
@@ -193,21 +197,27 @@ class ImageActionImportContent(QWidget):
             self.target_combo.hide()
 
         self.action_section = QFrame(self)
-        self.action_section.setObjectName("settingsCard")
+        self.action_section.setObjectName("actionImportPanel")
         action_section_layout = QVBoxLayout(self.action_section)
-        action_section_layout.setContentsMargins(12, 8, 12, 8)
-        action_section_layout.setSpacing(5)
+        action_section_layout.setContentsMargins(11, 11, 11, 11)
+        action_section_layout.setSpacing(7)
 
         action_row = QHBoxLayout()
+        action_row.setSpacing(7)
+        self.action_icon = QLabel(self.action_section)
+        self.action_icon.setPixmap(
+            lucide_icon("list-tree", color="#4c423d", size=16).pixmap(16, 16)
+        )
+        action_row.addWidget(self.action_icon)
         action_title = QLabel("选择动作", self.action_section)
-        action_title.setObjectName("sectionTitle")
+        action_title.setObjectName("actionImportPanelTitle")
         action_row.addWidget(action_title)
         self.slot_combo = QComboBox(self)
         self._populate_slots()
         self.slot_combo.currentIndexChanged.connect(self._slot_changed)
         action_row.addWidget(self.slot_combo, 1)
         self.action_target_label = QLabel(self)
-        self.action_target_label.setObjectName("mutedLabel")
+        self.action_target_label.setObjectName("actionImportTarget")
         action_row.addWidget(self.action_target_label)
         action_section_layout.addLayout(action_row)
 
@@ -230,27 +240,40 @@ class ImageActionImportContent(QWidget):
         root.addWidget(self.action_section)
 
         self.frame_section = QFrame(self)
-        self.frame_section.setObjectName("settingsCard")
+        self.frame_section.setObjectName("actionImportPanel")
         frame_section_layout = QVBoxLayout(self.frame_section)
-        frame_section_layout.setContentsMargins(12, 9, 12, 9)
-        frame_section_layout.setSpacing(5)
+        frame_section_layout.setContentsMargins(11, 11, 11, 11)
+        frame_section_layout.setSpacing(7)
         frames_heading = QHBoxLayout()
+        frames_heading.setSpacing(7)
+        self.frame_icon = QLabel(self.frame_section)
+        self.frame_icon.setPixmap(
+            lucide_icon("gallery-horizontal", color="#4c423d", size=16).pixmap(16, 16)
+        )
+        frames_heading.addWidget(self.frame_icon)
         frame_title = QLabel("动作帧", self.frame_section)
-        frame_title.setObjectName("sectionTitle")
+        frame_title.setObjectName("actionImportPanelTitle")
         frames_heading.addWidget(frame_title)
         frames_heading.addStretch(1)
         self.frame_count_label = QLabel("0 帧", self.frame_section)
-        self.frame_count_label.setObjectName("mutedLabel")
+        self.frame_count_label.setObjectName("actionImportCount")
         frames_heading.addWidget(self.frame_count_label)
         self.add_files_button = QPushButton("添加图片", self)
+        self.add_files_button.setObjectName("actionImportSecondary")
+        self.add_files_button.setIcon(lucide_icon("images", color="#4c423d", size=14))
         self.add_files_button.clicked.connect(self._choose_files)
         frames_heading.addWidget(self.add_files_button)
         self.choose_folder_button = QPushButton("选择文件夹", self)
+        self.choose_folder_button.setObjectName("actionImportSecondary")
+        self.choose_folder_button.setIcon(
+            lucide_icon("folder-open", color="#4c423d", size=14)
+        )
         self.choose_folder_button.clicked.connect(self._choose_folder)
         frames_heading.addWidget(self.choose_folder_button)
         frame_section_layout.addLayout(frames_heading)
 
         self.drop_zone = ImageSourceDropZone(self)
+        self.drop_zone.setObjectName("actionImportFrameHint")
         self.drop_zone.setMaximumHeight(30)
         self.drop_zone.files_dropped.connect(self._load_dropped)
         frame_section_layout.addWidget(self.drop_zone)
@@ -265,8 +288,8 @@ class ImageActionImportContent(QWidget):
         self.frame_list.setFlow(QListView.Flow.LeftToRight)
         self.frame_list.setWrapping(True)
         self.frame_list.setMovement(QListView.Movement.Snap)
-        self.frame_list.setGridSize(QSize(150, 92))
-        self.frame_list.setSpacing(3)
+        self.frame_list.setGridSize(QSize(150, 89))
+        self.frame_list.setSpacing(7)
         self.frame_list.setMinimumHeight(106)
         self.frame_list.setMaximumHeight(198)
         self.frame_list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
@@ -295,20 +318,37 @@ class ImageActionImportContent(QWidget):
         root.addWidget(self.frame_section, 1)
 
         self.preview_section = QFrame(self)
-        self.preview_section.setObjectName("settingsCard")
-        self.preview_section.setMaximumHeight(230)
+        self.preview_section.setObjectName("actionImportPanel")
+        self.preview_section.setMaximumHeight(245)
         preview_section_layout = QVBoxLayout(self.preview_section)
-        preview_section_layout.setContentsMargins(12, 9, 12, 9)
-        preview_section_layout.setSpacing(5)
+        preview_section_layout.setContentsMargins(11, 11, 11, 11)
+        preview_section_layout.setSpacing(7)
+        preview_heading = QHBoxLayout()
+        preview_heading.setSpacing(7)
+        self.preview_icon = QLabel(self.preview_section)
+        self.preview_icon.setPixmap(
+            lucide_icon("play", color="#4c423d", size=16).pixmap(16, 16)
+        )
+        preview_heading.addWidget(self.preview_icon)
         preview_title = QLabel("实时预览", self.preview_section)
-        preview_title.setObjectName("sectionTitle")
-        preview_section_layout.addWidget(preview_title)
+        preview_title.setObjectName("actionImportPanelTitle")
+        preview_heading.addWidget(preview_title)
+        preview_heading.addStretch(1)
+        preview_section_layout.addLayout(preview_heading)
         self.preview = AnimationPreviewWidget(self.preview_section)
-        self.preview.preview_label.setMinimumSize(220, 150)
+        self.preview.preview_label.setMinimumSize(220, 170)
         self.preview.preview_label.setMaximumHeight(170)
+        self.preview.preview_label.tile_size = 20
+        self.preview.preview_label.light_color = QColor("#fffaf7")
+        self.preview.preview_label.dark_color = QColor("#f0e4de")
         self.preview.preview_play_button.hide()
         preview_section_layout.addWidget(self.preview, 1)
         root.addWidget(self.preview_section)
+
+        self.footer_host = QWidget(self)
+        footer_host_layout = QHBoxLayout(self.footer_host)
+        footer_host_layout.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self.footer_host)
 
         self.status_label = QLabel("请先选择动作并添加图片。", self)
         self.status_label.setObjectName("mutedLabel")
@@ -499,7 +539,7 @@ class ImageActionImportContent(QWidget):
         for index, frame in enumerate(self._draft.frames, start=1):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, frame.path)
-            item.setSizeHint(QSize(150, 154))
+            item.setSizeHint(QSize(142, 82))
             self.frame_list.addItem(item)
             card = ImageFrameCard(frame, index, self.frame_list)
             card.delete_requested.connect(self._delete_frame)

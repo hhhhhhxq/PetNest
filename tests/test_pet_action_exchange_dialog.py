@@ -20,8 +20,9 @@ def test_exchange_dialog_has_store_page_and_single_shell_footer(qtbot: object, t
     assert dialog.page_names() == ["导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作"]
     dialog.select_page("宠物商店")
     assert dialog.current_page() is dialog.pet_store_page
-    assert dialog.primary_button.parentWidget() is dialog.window_shell
-    assert dialog.secondary_button.parentWidget() is dialog.window_shell
+    assert dialog.primary_button.parentWidget() is dialog.footer_bar
+    assert dialog.secondary_button.parentWidget() is dialog.footer_bar
+    assert dialog.footer_bar.parentWidget() is dialog.content
     assert len(dialog.window_shell.findChildren(type(dialog.primary_button), "primaryButton")) == 1
 
 
@@ -90,7 +91,8 @@ def test_action_import_page_does_not_force_dialog_taller_than_standard_size(
     dialog.show()
     qtbot.wait(10)
 
-    assert dialog.height() == 760
+    assert dialog.maximumHeight() == 760
+    assert dialog.minimumHeight() == 680
     assert dialog.minimumSizeHint().height() <= 760
     assert dialog.action_import_page.minimumSizeHint().height() <= 632
 
@@ -137,6 +139,51 @@ def test_exchange_shell_matches_prototype_header_and_page_heading(
     dialog.select_page("导出动作")
     assert not dialog.header_target_label.isVisible()
     assert not dialog.header_target_combo.isVisible()
+
+
+def test_exchange_shell_uses_v4_geometry_and_lucide_navigation(
+    qtbot: object, tmp_path: Path
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("导入动作")
+    dialog.show()
+    qtbot.wait(10)
+
+    assert dialog.top_bar.objectName() == "actionExchangeTopBar"
+    assert dialog.top_bar.height() == 56
+    assert dialog.sidebar.objectName() == "actionExchangeSidebar"
+    assert dialog.sidebar.width() == 145
+    assert dialog.content.objectName() == "actionExchangeMain"
+    assert dialog.content.layout().contentsMargins().left() == 17
+    assert dialog.app_icon.text() == ""
+    assert dialog.app_icon.pixmap() is not None
+    assert not dialog.app_icon.pixmap().isNull()
+    assert all(not dialog.navigation.item(index).icon().isNull() for index in range(dialog.navigation.count()))
+    footer_left = dialog.footer_status_label.mapTo(dialog.window_shell, dialog.footer_status_label.rect().topLeft()).x()
+    sidebar_right = dialog.sidebar.mapTo(dialog.window_shell, dialog.sidebar.rect().topRight()).x()
+    assert footer_left > sidebar_right
+
+
+def test_action_import_footer_moves_inside_the_active_prototype_panel(
+    qtbot: object, tmp_path: Path
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("导入动作")
+
+    assert dialog.footer_bar.parentWidget() is dialog.action_import_page.resource_footer_host
+    assert dialog.action_import_page.resource_footer_host.parentWidget() is dialog.action_import_page.resource_actions_card
+
+    dialog.action_import_page.select_image_mode()
+
+    assert dialog.footer_bar.parentWidget() is dialog.action_import_page.image_content.footer_host
+
+    dialog.select_page("导出动作")
+
+    assert dialog.footer_bar.parentWidget() is dialog.content
 
 
 def test_exchange_dialog_routes_footer_command_to_active_page(qtbot: object, tmp_path: Path, monkeypatch: object) -> None:

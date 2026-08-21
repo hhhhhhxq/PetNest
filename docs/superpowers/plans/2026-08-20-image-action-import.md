@@ -521,4 +521,82 @@ git commit -m feat:image-action-import
 - [x] **步骤 1：在 1220×760 窗口分别截图两个模式**
 - [x] **步骤 2：与 `action-import-redesign-v4.html` 对照模式选中态、帧网格、删除位置、预览顺序、资源摘要、动作表和底部按钮**
 - [x] **步骤 3：运行相关测试、逐文件全量测试、compileall 和 diff check**
-- [ ] **步骤 4：提交、重启 PetNest，并再次截图复核运行版本**
+- [x] **步骤 4：提交、重启 PetNest，并再次截图复核运行版本**
+
+---
+
+### 任务 10：建立原型视觉令牌与 Lucide 图标层
+
+**文件：**
+- 创建：`src/petnest/ui/lucide_icons.py`
+- 创建：`src/petnest/ui/action_import_visual_style.py`
+- 创建：`tests/test_action_import_visual_style.py`
+
+- [x] **步骤 1：先写失败测试**
+
+验证 13 个原型图标均能生成非空 `QIcon`；视觉令牌精确包含原型的背景、文字、强调、边框、圆角、顶栏、侧栏、卡片、帧卡和预览尺寸。
+
+- [x] **步骤 2：运行红灯测试**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_action_import_visual_style.py -q`
+
+预期：模块尚不存在，测试导入失败。
+
+- [x] **步骤 3：实现专用视觉基础层**
+
+内联 Lucide 1.33.0 官方 SVG path 数据，通过 `QSvgRenderer` 生成可着色 `QIcon`；把 v4 CSS 的浅色设计令牌和动作导入专用 QSS 放入独立模块，不修改其他窗口的全局视觉。
+
+- [x] **步骤 4：验证并提交**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_action_import_visual_style.py tests\test_ui_theme.py -q`
+
+### 任务 11：精确还原完整窗口外壳
+
+**文件：**
+- 修改：`src/petnest/ui/pet_action_exchange_dialog.py`
+- 修改：`tests/test_pet_action_exchange_dialog.py`
+
+- [x] **步骤 1：先写失败测试**
+
+验证顶栏 56 px、侧栏 145 px、完整图标导航、内容内距 17 px，以及只在导入动作页显示的目标宠物选择器。
+
+- [x] **步骤 2：实现外壳映射**
+
+使用图标+文本导航行和专用对象名/QSS；移除 emoji 顶栏图标；保持 1220×760 标准窗口且不增加最小高度。
+
+- [x] **步骤 3：运行页面外壳测试**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_pet_action_exchange_dialog.py -q`
+
+### 任务 12：精确还原资源包与图片模式
+
+**文件：**
+- 修改：`src/petnest/ui/action_import_page.py`
+- 修改：`src/petnest/ui/image_action_import_content.py`
+- 修改：`src/petnest/ui/animation_preview_widget.py`
+- 修改：`tests/test_action_import_page.py`
+- 修改：`tests/test_image_action_import_content.py`
+
+- [x] **步骤 1：为关键几何和对象名写失败测试**
+
+覆盖模式条、来源拖放区、摘要、动作列表、动作选择器、82 px 帧卡、20 px 删除按钮、170 px 预览棋盘和主按钮状态。
+
+- [x] **步骤 2：实现资源包模式**
+
+按原型使用上方来源卡和下方动作列表，加入 `package-search`、`package-open`、`list-checks` 图标，精确映射边框、背景、圆角、内距和行高。
+
+- [x] **步骤 3：实现图片模式**
+
+按原型使用 `list-tree`、`gallery-horizontal`、`images`、`folder-open`、`play` 图标；帧卡片、播放设置和预览严格使用令牌尺寸，并保留现有草稿与安装逻辑。
+
+- [x] **步骤 4：运行相关回归**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_action_import_page.py tests\test_image_action_import_content.py tests\test_pet_action_exchange_dialog.py -q`
+
+### 任务 13：同尺寸视觉差异复核与交付
+
+- [x] **步骤 1：用完整窗口在 1220×760 截取资源包和图片模式**
+- [x] **步骤 2：对照 v4 CSS 令牌检查颜色、圆角、间距、字号、图标、控件状态和区域比例**
+- [x] **步骤 3：修正截图中所有可辨识偏差并重新截图**
+- [x] **步骤 4：代码审查、逐文件全量测试、compileall、diff check**
+- [x] **步骤 5：提交并重启主分支 PetNest**

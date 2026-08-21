@@ -16,11 +16,17 @@ from petnest.ui.theme import COLORS
 class CheckerboardLabel(QLabel):
     """在透明帧后绘制棋盘格，避免透明区域与窗口背景混淆。"""
 
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.tile_size = 18
+        self.light_color = QColor("#FBF5F0")
+        self.dark_color = QColor("#F2E7DF")
+
     def paintEvent(self, event: object) -> None:  # noqa: ARG002 - Qt event signature
         painter = QPainter(self)
-        tile = 18
-        light = QColor("#FBF5F0")
-        dark = QColor("#F2E7DF")
+        tile = self.tile_size
+        light = self.light_color
+        dark = self.dark_color
         for y in range(0, self.height(), tile):
             for x in range(0, self.width(), tile):
                 painter.fillRect(x, y, tile, tile, light if (x // tile + y // tile) % 2 == 0 else dark)

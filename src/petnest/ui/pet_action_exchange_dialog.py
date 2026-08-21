@@ -12,9 +12,11 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -25,11 +27,13 @@ from petnest.core.pet_store_service import PetStoreService
 from petnest.core.pet_store_state import PetStoreStateStore
 from petnest.models.pet_package import PetPackage
 from petnest.ui.action_export_page import ActionExportPage
+from petnest.ui.action_import_visual_style import action_import_stylesheet
 from petnest.ui.action_import_page import ActionImportPage
 from petnest.ui.animation_editor_page import AnimationEditorPage, AnimationSaveResult
 from petnest.ui.exchange_page import ExchangePage
 from petnest.ui.pet_import_page import PetImportPage
 from petnest.ui.pet_store_page import PetStorePage
+from petnest.ui.lucide_icons import lucide_icon
 from petnest.ui.theme import dialog_stylesheet
 
 
@@ -41,6 +45,7 @@ class PetActionExchangeDialog(QDialog):
     actions_installed = Signal(str, object)
 
     _PAGE_LABELS = ("导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作")
+    _PAGE_ICONS = ("package-plus", "store", "film", "timer", "package-open")
     _PAGE_SUBTITLES = {
         "导入宠物": "自动识别 PNG、ZIP 或文件夹，并在确认前预览导入内容",
         "宠物商店": "浏览官方精选宠物，领养新伙伴或更新已安装内容",
@@ -67,7 +72,8 @@ class PetActionExchangeDialog(QDialog):
         self.setWindowTitle("宠物与动作")
         self.resize(1220, 760)
         self.setMinimumSize(1180, 680)
-        self.setStyleSheet(dialog_stylesheet())
+        self.setMaximumHeight(760)
+        self.setStyleSheet(dialog_stylesheet() + action_import_stylesheet())
         self._packages = _normalise_packages(packages)
         self._pets_root = Path(pets_root)
         self._is_pet_locked = is_pet_locked or (lambda _identifier: False)
@@ -86,47 +92,73 @@ class PetActionExchangeDialog(QDialog):
         save_callback = save_animation_timelines or _default_save_animation_timelines
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.window_shell = QFrame(self)
-        self.window_shell.setObjectName("windowShell")
+        self.window_shell.setObjectName("actionExchangeShell")
         shell_layout = QVBoxLayout(self.window_shell)
-        shell_layout.setContentsMargins(18, 18, 18, 16)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
 
-        header = QHBoxLayout()
-        self.app_icon = QLabel("🐱", self.window_shell)
-        self.app_icon.setObjectName("appLogo")
+        self.top_bar = QFrame(self.window_shell)
+        self.top_bar.setObjectName("actionExchangeTopBar")
+        self.top_bar.setFixedHeight(56)
+        header = QHBoxLayout(self.top_bar)
+        header.setContentsMargins(18, 0, 18, 0)
+        header.setSpacing(10)
+        self.app_icon = QLabel(self.top_bar)
+        self.app_icon.setObjectName("actionExchangeLogo")
+        self.app_icon.setFixedSize(29, 29)
+        self.app_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.app_icon.setPixmap(lucide_icon("cat", color="#c8613f", size=17).pixmap(17, 17))
         header.addWidget(self.app_icon)
-        self.app_title = QLabel("宠物与动作", self.window_shell)
-        self.app_title.setObjectName("appTitle")
+        self.app_title = QLabel("宠物与动作", self.top_bar)
+        self.app_title.setObjectName("actionExchangeAppTitle")
         header.addWidget(self.app_title)
         header.addStretch(1)
-        self.header_target_label = QLabel("目标宠物", self.window_shell)
-        self.header_target_label.setObjectName("mutedLabel")
+        self.header_target_label = QLabel("目标宠物", self.top_bar)
+        self.header_target_label.setObjectName("actionExchangeTargetLabel")
         header.addWidget(self.header_target_label)
-        shell_layout.addLayout(header)
+        shell_layout.addWidget(self.top_bar)
 
-        body = QHBoxLayout()
-        self.navigation = QListWidget(self.window_shell)
+        body_widget = QWidget(self.window_shell)
+        body = QHBoxLayout(body_widget)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+
+        self.sidebar = QFrame(body_widget)
+        self.sidebar.setObjectName("actionExchangeSidebar")
+        self.sidebar.setFixedWidth(145)
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(11, 11, 11, 11)
+        self.navigation = QListWidget(self.sidebar)
         self.navigation.setObjectName("settingsNavigation")
-        self.navigation.setFixedWidth(150)
-        for label in self._PAGE_LABELS:
-            self.navigation.addItem(QListWidgetItem(label, self.navigation))
-        body.addWidget(self.navigation)
+        for label, icon_name in zip(self._PAGE_LABELS, self._PAGE_ICONS, strict=True):
+            self.navigation.addItem(
+                QListWidgetItem(lucide_icon(icon_name, color="#88776e", size=16), label)
+            )
+        sidebar_layout.addWidget(self.navigation)
+        body.addWidget(self.sidebar)
 
-        content = QWidget(self.window_shell)
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content = QWidget(body_widget)
+        self.content.setObjectName("actionExchangeMain")
+        content_layout = QVBoxLayout(self.content)
+        self.content_layout = content_layout
+        content_layout.setContentsMargins(17, 17, 17, 10)
         content_layout.setSpacing(10)
         page_heading = QHBoxLayout()
-        self.page_title = QLabel(content)
+        page_heading.setSpacing(9)
+        self.page_title = QLabel(self.content)
         self.page_title.setObjectName("pageTitle")
         page_heading.addWidget(self.page_title)
-        self.page_subtitle = QLabel(content)
-        self.page_subtitle.setObjectName("mutedLabel")
+        self.page_subtitle = QLabel(self.content)
+        self.page_subtitle.setObjectName("actionExchangeSubtitle")
         page_heading.addWidget(self.page_subtitle)
         page_heading.addStretch(1)
         content_layout.addLayout(page_heading)
 
-        self.stack = QStackedWidget(content)
+        self.stack = QStackedWidget(self.content)
+        self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         self.pet_import_page = PetImportPage(
             self._packages,
             self._pets_root,
@@ -166,36 +198,48 @@ class PetActionExchangeDialog(QDialog):
             self.stack.addWidget(page)
             page.footer_changed.connect(self._sync_footer)
         self.header_target_combo = self.action_import_page.target_combo
-        self.header_target_combo.setParent(self.window_shell)
+        self.header_target_combo.setParent(self.top_bar)
         self.header_target_combo.show()
         header.addWidget(self.header_target_combo)
         content_layout.addWidget(self.stack, 1)
-        body.addWidget(content, 1)
-        shell_layout.addLayout(body, 1)
+        body.addWidget(self.content, 1)
+        shell_layout.addWidget(body_widget, 1)
 
-        footer = QHBoxLayout()
-        self.footer_status_label = QLabel(self.window_shell)
+        self.footer_bar = QWidget(self.content)
+        self.footer_bar.setObjectName("actionExchangeFooter")
+        footer = QHBoxLayout(self.footer_bar)
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(8)
+        self.footer_status_label = QLabel(self.footer_bar)
         self.footer_status_label.setObjectName("mutedLabel")
         self.footer_status_label.setWordWrap(True)
         footer.addWidget(self.footer_status_label, 1)
-        self.secondary_button = QPushButton(self.window_shell)
+        self.secondary_button = QPushButton(self.footer_bar)
         self.secondary_button.setObjectName("secondaryButton")
         self.secondary_button.clicked.connect(self._trigger_secondary)
         footer.addWidget(self.secondary_button)
-        self.primary_button = QPushButton(self.window_shell)
+        self.primary_button = QPushButton(self.footer_bar)
         self.primary_button.setObjectName("primaryButton")
         self.primary_button.clicked.connect(self._trigger_primary)
         footer.addWidget(self.primary_button)
-        shell_layout.addLayout(footer)
+        content_layout.addWidget(self.footer_bar)
         root.addWidget(self.window_shell)
 
         self.navigation.currentRowChanged.connect(self._on_navigation_changed)
         self.navigation.setCurrentRow(0)
         self._sync_page_header()
+        self._sync_navigation_icons()
+        self._place_footer_bar()
         self._sync_footer()
         self.pet_import_page.pet_installed.connect(self.pet_installed.emit)
         self.pet_store_page.pet_install_ready.connect(self.store_pet_installed.emit)
         self.action_import_page.actions_installed.connect(self.actions_installed.emit)
+        self.action_import_page.footer_host_changed.connect(
+            lambda _host: self._place_footer_bar()
+        )
+        self.setMinimumHeight(680)
+        self.setMaximumHeight(760)
+        self.resize(self.width(), 760)
 
     def page_names(self) -> list[str]:
         return list(self._PAGE_LABELS)
@@ -281,6 +325,8 @@ class PetActionExchangeDialog(QDialog):
         if callable(activate):
             activate()
         self._sync_page_header()
+        self._sync_navigation_icons()
+        self._place_footer_bar()
         self._sync_footer()
 
     def _sync_page_header(self) -> None:
@@ -290,6 +336,25 @@ class PetActionExchangeDialog(QDialog):
         show_target = name == "导入动作"
         self.header_target_label.setVisible(show_target)
         self.header_target_combo.setVisible(show_target)
+
+    def _sync_navigation_icons(self) -> None:
+        for index, icon_name in enumerate(self._PAGE_ICONS):
+            color = "#c7603e" if index == self._active_index else "#88776e"
+            self.navigation.item(index).setIcon(
+                lucide_icon(icon_name, color=color, size=16)
+            )
+
+    def _place_footer_bar(self) -> None:
+        target = (
+            self.action_import_page.active_footer_host()
+            if self.current_page() is self.action_import_page
+            else self.content
+        )
+        self.footer_bar.setParent(target)
+        target_layout = target.layout()
+        if target_layout is not None:
+            target_layout.addWidget(self.footer_bar)
+        self.footer_bar.show()
 
     def _sync_footer(self) -> None:
         state = self.current_page().footer_state()

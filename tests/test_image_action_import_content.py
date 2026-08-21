@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QListView
 
 from petnest.core.action_slots import action_slots
 from petnest.models.pet_package import Canvas
+from petnest.ui.animation_preview_widget import CheckerboardLabel
 from petnest.ui.image_action_import_content import ImageActionImportContent, ImageFrameCard
 from petnest.ui import image_action_import_content as image_content_module
 from tests.test_pet_window import _package
@@ -97,9 +98,13 @@ def test_each_frame_card_has_top_right_delete_and_updates_draft(qtbot, tmp_path:
     card = content.frame_list.itemWidget(content.frame_list.item(0))
 
     assert isinstance(card, ImageFrameCard)
-    assert card.height() <= 90
+    assert card.height() == 82
     assert card.delete_button.objectName() == "frameDeleteButton"
+    assert card.delete_button.size().width() == 20
+    assert card.delete_button.size().height() == 20
     assert card.delete_button.parentWidget() is card
+    assert isinstance(card.thumbnail, CheckerboardLabel)
+    assert card.thumbnail.tile_size == 15
 
     card.delete_button.click()
 
@@ -114,6 +119,34 @@ def test_image_workspace_keeps_prototype_compact_heights(qtbot, tmp_path: Path) 
     assert content.drop_zone.maximumHeight() <= 32
     assert content.frame_list.minimumHeight() <= 110
     assert content.preview.preview_label.minimumHeight() <= 170
+
+
+def test_image_mode_uses_v4_panel_geometry_icons_and_checkerboard(
+    qtbot, tmp_path: Path
+) -> None:
+    content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
+    qtbot.addWidget(content)
+
+    assert content.action_section.objectName() == "actionImportPanel"
+    assert content.frame_section.objectName() == "actionImportPanel"
+    assert content.preview_section.objectName() == "actionImportPanel"
+    assert content.action_section.layout().contentsMargins().left() == 11
+    assert content.frame_section.layout().contentsMargins().left() == 11
+    assert content.preview_section.layout().contentsMargins().left() == 11
+    assert not content.action_icon.pixmap().isNull()
+    assert not content.frame_icon.pixmap().isNull()
+    assert not content.preview_icon.pixmap().isNull()
+    assert not content.add_files_button.icon().isNull()
+    assert not content.choose_folder_button.icon().isNull()
+    assert content.frame_list.spacing() == 7
+    assert content.preview.preview_label.minimumHeight() == 170
+    assert content.preview.preview_label.tile_size == 20
+    assert content.preview.preview_label.light_color.name() == "#fffaf7"
+    assert content.preview.preview_label.dark_color.name() == "#f0e4de"
+    assert (
+        content.preview_section.maximumHeight()
+        >= content.preview_section.minimumSizeHint().height()
+    )
 
 
 def test_adding_more_images_preserves_current_order_and_appends_new_frames(qtbot, tmp_path: Path) -> None:
