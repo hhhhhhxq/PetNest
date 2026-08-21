@@ -92,7 +92,10 @@ class CodexStatusBubble(QWidget):
         self._avoid = QRect(avoid_rect) if avoid_rect is not None else QRect()
         self._is_compact = False
         if snapshot.state in {"idle", "running"}:
-            self.hide()
+            if snapshot.unread_review_count > 0:
+                self._show_unread_badge()
+            else:
+                self.hide()
             return
         self.message_label.setText(snapshot.message)
         self.close_button.show()
@@ -137,6 +140,9 @@ class CodexStatusBubble(QWidget):
         if self._snapshot.unread_review_count <= 0:
             self.hide()
             return
+        self._show_unread_badge()
+
+    def _show_unread_badge(self) -> None:
         count = self._snapshot.unread_review_count
         self.message_label.setText("Codex · 1 个待查看" if count == 1 else f"Codex · {count} 个待查看")
         self.close_button.hide()

@@ -67,6 +67,7 @@ class CodexSessionLogWatcher:
         self._running = False
         self._cursors: dict[Path, _FileCursor] = {}
         self._unread_ids: set[str] = set()
+        self._unread_baselined = False
         self._pending_unread_since: dict[str, float] = {}
         self._confirmed_unread_ids: set[str] = set()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
@@ -83,7 +84,9 @@ class CodexSessionLogWatcher:
         """从当前 EOF 建立基线，绝不把历史 turn 当成新状态。"""
         self._running = True
         self._cursors.clear()
-        self._unread_ids = self._read_unread_ids() or set()
+        initial_unread = self._read_unread_ids()
+        self._unread_baselined = initial_unread is not None
+        self._unread_ids = initial_unread or set()
         self._pending_unread_since.clear()
         self._confirmed_unread_ids.clear()
         for path in self._candidate_files():
@@ -103,6 +106,7 @@ class CodexSessionLogWatcher:
         self._running = False
         self._cursors.clear()
         self._unread_ids.clear()
+        self._unread_baselined = False
         self._pending_unread_since.clear()
         self._confirmed_unread_ids.clear()
         self._status = CodexLogSourceStatus("stopped", "本地日志回退未启动")
@@ -176,6 +180,12 @@ class CodexSessionLogWatcher:
     def _poll_unread_events(self) -> tuple[PetEvent, ...]:
         current = self._read_unread_ids()
         if current is None:
+            return ()
+        if not self._unread_baselined:
+            self._unread_ids = current
+            self._pending_unread_since.clear()
+            self._confirmed_unread_ids.clear()
+            self._unread_baselined = True
             return ()
         now = self._monotonic_time()
         added_ids = current - self._unread_ids

@@ -242,6 +242,28 @@ def test_startup_unread_history_is_baselined_and_never_emitted(tmp_path: Path) -
     assert watcher.poll() == ()
 
 
+def test_late_first_read_of_global_state_only_establishes_baseline(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    state_path = tmp_path / ".codex-global-state.json"
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        global_state_path=state_path,
+        monotonic_time=lambda: now[0],
+        unread_stable_seconds=1.0,
+    )
+    watcher.start()
+
+    _write_unread(state_path, "historical-unread")
+    assert watcher.poll() == ()
+    now[0] = 2.0
+    assert watcher.poll() == ()
+
+    _write_unread(state_path)
+    assert watcher.poll() == ()
+
+
 def test_new_unread_thread_must_remain_stable_before_emitting(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     state_path = tmp_path / ".codex-global-state.json"

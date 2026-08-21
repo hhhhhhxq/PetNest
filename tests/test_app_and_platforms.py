@@ -2395,6 +2395,8 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     application._finish_codex_review_animation()
     assert application.codex_link.snapshot.state == "idle"
     assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.window.codex_status_bubble.isVisible()
+    assert "待查看" in application.window.codex_status_bubble.text()
 
     watcher.events.append(
         PetEvent(

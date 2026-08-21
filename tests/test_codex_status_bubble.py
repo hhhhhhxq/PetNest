@@ -62,6 +62,29 @@ def test_review_collapses_to_unread_badge_then_click_marks_it_read(qtbot) -> Non
     assert not bubble.isVisible()
 
 
+def test_idle_or_running_with_confirmed_unread_keeps_compact_badge_visible(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=30)
+    qtbot.addWidget(bubble)
+
+    bubble.show_snapshot(
+        CodexLinkSnapshot("idle", 0, 1, "Codex 任务已完成，等待查看"),
+        QRect(100, 100, 80, 80),
+    )
+
+    assert bubble.isVisible()
+    assert bubble.is_compact
+    assert bubble.text() == "Codex · 1 个待查看"
+    assert not bubble.dismiss_timer.isActive()
+
+    bubble.show_snapshot(
+        CodexLinkSnapshot("running", 1, 2, "2 个 Codex 任务已完成，等待查看"),
+        QRect(100, 100, 80, 80),
+    )
+    assert bubble.isVisible()
+    assert bubble.is_compact
+    assert bubble.text() == "Codex · 2 个待查看"
+
+
 def test_clicking_compact_message_label_activates_and_hides_bubble(qtbot) -> None:
     bubble = CodexStatusBubble(review_duration_ms=20)
     qtbot.addWidget(bubble)

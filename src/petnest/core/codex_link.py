@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ import shlex
 import shutil
 import socket
 import sys
+from time import monotonic
 from typing import Any
 
 
@@ -89,13 +91,21 @@ class CodexLinkCoordinator:
         self,
         publish: Callable[["PetEvent"], object],
         snapshot_changed: Callable[[CodexLinkSnapshot], object] | None = None,
+        *,
+        monotonic_time: Callable[[], float] = monotonic,
+        completed_session_ttl: float = 5.0,
     ) -> None:
         self._publish = publish
         self._snapshot_changed = snapshot_changed
         self._tasks: dict[tuple[str, str], _CodexTask] = {}
         self._active_turns: dict[str, str] = {}
-        self._completed_sessions: set[str] = set()
+        self._monotonic_time = monotonic_time
+        self._completed_session_ttl = max(0.0, float(completed_session_ttl))
+        self._completed_sessions: dict[str, float] = {}
         self._unread_sessions: set[str] = set()
+        self._completed_turns: set[tuple[str, str]] = set()
+        self._completed_turn_order: deque[tuple[str, str]] = deque()
+        self._max_completed_turns = 4096
         self._snapshot = CodexLinkSnapshot()
 
     @property
@@ -112,6 +122,7 @@ class CodexLinkCoordinator:
         turn_id = _bounded_identifier(payload.get("turn_id"))
         if session_id is None:
             return False
+        self._prune_completed_sessions()
         if hook_name == "ThreadUnread" and event.source == "codex-log":
             changed = session_id not in self._unread_sessions
             self._unread_sessions.add(session_id)
@@ -132,7 +143,7 @@ class CodexLinkCoordinator:
         if hook_name == "ThreadRead" and event.source == "codex-log":
             removed = session_id in self._unread_sessions or session_id in self._completed_sessions
             self._unread_sessions.discard(session_id)
-            self._completed_sessions.discard(session_id)
+            self._completed_sessions.pop(session_id, None)
             for key, task in tuple(self._tasks.items()):
                 if key[0] == session_id and task.state == "review":
                     removed = True
@@ -157,7 +168,7 @@ class CodexLinkCoordinator:
         if hook_name == "SessionEnd":
             removed = session_id in self._unread_sessions or session_id in self._completed_sessions
             self._unread_sessions.discard(session_id)
-            self._completed_sessions.discard(session_id)
+            self._completed_sessions.pop(session_id, None)
             for key in tuple(self._tasks):
                 if key[0] == session_id:
                     removed = True
@@ -169,7 +180,7 @@ class CodexLinkCoordinator:
         provisional_key = (session_id, "__session__")
         if hook_name == "UserPromptSubmit":
             self._unread_sessions.discard(session_id)
-            self._completed_sessions.discard(session_id)
+            self._completed_sessions.pop(session_id, None)
             for old_key, old_task in tuple(self._tasks.items()):
                 if old_key[0] == session_id and old_task.state == "review":
                     del self._tasks[old_key]
@@ -196,7 +207,10 @@ class CodexLinkCoordinator:
         if hook_name == "Stop" and payload.get("stop_hook_active") is True:
             return False
         if hook_name == "Stop":
-            self._completed_sessions.add(session_id)
+            completion_key = (session_id, key[1])
+            if not self._remember_completed_turn(completion_key):
+                return True
+            self._completed_sessions[session_id] = self._monotonic_time()
             task = _CodexTask(
                 "review",
                 session_id in self._unread_sessions,
@@ -215,7 +229,8 @@ class CodexLinkCoordinator:
     def mark_reviews_read(self) -> None:
         """只清除未读徽标，不改变 review 动作状态。"""
         changed = bool(self._unread_sessions)
-        self._completed_sessions.difference_update(self._unread_sessions)
+        for session_id in self._unread_sessions:
+            self._completed_sessions.pop(session_id, None)
         self._unread_sessions.clear()
         for key, task in tuple(self._tasks.items()):
             if task.unread_review:
@@ -255,7 +270,7 @@ class CodexLinkCoordinator:
                 removed = True
                 del self._tasks[key]
                 self._unread_sessions.discard(key[0])
-                self._completed_sessions.discard(key[0])
+                self._completed_sessions.pop(key[0], None)
                 if self._active_turns.get(key[0]) == key[1]:
                     self._active_turns.pop(key[0], None)
         if removed:
@@ -274,7 +289,25 @@ class CodexLinkCoordinator:
         self._active_turns.clear()
         self._completed_sessions.clear()
         self._unread_sessions.clear()
+        self._completed_turns.clear()
+        self._completed_turn_order.clear()
         self._emit_snapshot()
+
+    def _remember_completed_turn(self, key: tuple[str, str]) -> bool:
+        if key in self._completed_turns:
+            return False
+        self._completed_turns.add(key)
+        self._completed_turn_order.append(key)
+        while len(self._completed_turn_order) > self._max_completed_turns:
+            expired = self._completed_turn_order.popleft()
+            self._completed_turns.discard(expired)
+        return True
+
+    def _prune_completed_sessions(self) -> None:
+        cutoff = self._monotonic_time() - self._completed_session_ttl
+        for session_id, completed_at in tuple(self._completed_sessions.items()):
+            if completed_at < cutoff and session_id not in self._unread_sessions:
+                self._completed_sessions.pop(session_id, None)
 
     def _emit_snapshot(
         self,
