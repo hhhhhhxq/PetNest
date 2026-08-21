@@ -2663,10 +2663,17 @@ def test_review_animation_returns_to_context_after_one_cycle_while_unread_remain
             payload={"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"},
         )
     )
+    application.codex_link.consume(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "ThreadUnread", "session_id": "s"},
+        )
+    )
     assert application.codex_review_animation_timer.isActive()
     qtbot.waitUntil(lambda: application.window.current_action == "idle", timeout=500)
 
-    assert application.codex_link.snapshot.state == "review"
+    assert application.codex_link.snapshot.state == "idle"
     assert application.codex_link.snapshot.unread_review_count == 1
     application.shutdown()
 
