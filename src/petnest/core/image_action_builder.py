@@ -17,6 +17,7 @@ from petnest.core.action_pack import ActionPack, SourcePetInfo
 from petnest.core.action_slots import ActionSlot, resolve_slot
 from petnest.core.action_transfer import TransferAction
 from petnest.models.pet_package import PetPackage
+from petnest.core.package_validator import MAX_TIMELINE_DURATION_MS
 
 
 MAX_FRAME_COUNT = 500
@@ -144,6 +145,7 @@ def build_image_action_pack(
     draft: ImageActionDraft,
     *,
     fps: float,
+    frame_durations_ms: Sequence[int] | None = None,
     fit_oversized: bool = False,
     entrance_direction: str | None = None,
 ) -> Iterator[ActionPack]:
@@ -151,6 +153,16 @@ def build_image_action_pack(
         raise ImageActionSourceError("动作 FPS 必须大于 0")
     if not draft.frames:
         raise ImageActionSourceError("动作至少需要一张图片")
+    durations = tuple(frame_durations_ms) if frame_durations_ms is not None else None
+    if durations is not None and (
+        len(durations) != len(draft.frames)
+        or any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in durations)
+        or any(item > MAX_TIMELINE_DURATION_MS for item in durations)
+        or sum(durations) > MAX_TIMELINE_DURATION_MS
+    ):
+        raise ImageActionSourceError(
+            f"逐帧时长必须与动作帧一一对应、均为正整数且总和不超过 {MAX_TIMELINE_DURATION_MS} ms"
+        )
     ordered_paths = tuple(frame.path for frame in draft.frames)
     draft = inspect_image_files(ordered_paths).reordered(ordered_paths)
     _validate_image_install_target(package.root)
@@ -189,6 +201,8 @@ def build_image_action_pack(
             "interruptible": slot.interruptible,
             "scope": slot.scope,
         }
+        if durations is not None:
+            definition["frame_durations_ms"] = list(durations)
         if slot.next_animation is not None:
             definition["next"] = slot.next_animation
         if slot.scope == "fullscreen":

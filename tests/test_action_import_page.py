@@ -9,8 +9,8 @@ from zipfile import ZipFile
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEventLoop
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtCore import QEventLoop, Qt
+from PySide6.QtWidgets import QComboBox, QMessageBox, QRadioButton
 
 from petnest.core.action_installer import ActionInstallError
 from petnest.core.action_pack import export_action_pack
@@ -40,6 +40,94 @@ def test_action_import_page_loads_complete_pet_source(qtbot: object, tmp_path: P
 
     assert "shared" in page.available_action_names()
     assert page.source_kind_label.text() == "完整宠物"
+
+
+def test_resource_mode_uses_source_summary_and_selectable_action_table(
+    qtbot: object, tmp_path: Path
+) -> None:
+    source = build_source(tmp_path)
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+
+    page.resize(1000, 620)
+    page.show()
+    qtbot.wait(10)
+
+    assert page.resource_body_layout.indexOf(page.resource_source_card) == 0
+    assert page.resource_body_layout.indexOf(page.resource_actions_card) == 1
+    assert page.resource_source_card.geometry().bottom() < page.resource_actions_card.geometry().top()
+    assert abs(page.resource_source_card.width() - page.resource_actions_card.width()) <= 2
+    assert page.resource_action_table.columnCount() == 5
+    assert [
+        page.resource_action_table.horizontalHeaderItem(index).text()
+        for index in range(page.resource_action_table.columnCount())
+    ] == ["选择", "动作", "帧数", "适用范围", "安装方式"]
+
+    page.load_source(source)
+
+    assert page.resource_action_table.rowCount() == len(page.available_action_names())
+    assert all(
+        page.resource_action_table.item(row, 0).checkState() == Qt.CheckState.Checked
+        for row in range(page.resource_action_table.rowCount())
+    )
+    names = {
+        page.resource_action_table.item(row, 1).data(Qt.ItemDataRole.UserRole)
+        for row in range(page.resource_action_table.rowCount())
+    }
+    assert "shared" in names
+    idle_row = next(
+        row
+        for row in range(page.resource_action_table.rowCount())
+        if page.resource_action_table.item(row, 1).data(Qt.ItemDataRole.UserRole) == "idle"
+    )
+    assert page.resource_action_table.item(idle_row, 1).text() == ""
+    idle_labels = page.resource_action_table.cellWidget(idle_row, 1).findChildren(
+        type(page.source_kind_label)
+    )
+    assert [label.text() for label in idle_labels] == ["idle", "默认待机"]
+    assert len(page.resource_action_table.findChildren(QComboBox)) == page.resource_action_table.rowCount()
+
+
+def test_resource_action_table_checkbox_controls_install_selection(
+    qtbot: object, tmp_path: Path
+) -> None:
+    source = build_source(tmp_path)
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.load_source(source)
+    shared_row = next(
+        row
+        for row in range(page.resource_action_table.rowCount())
+        if page.resource_action_table.item(row, 1).data(Qt.ItemDataRole.UserRole) == "shared"
+    )
+
+    page.resource_action_table.item(shared_row, 0).setCheckState(Qt.CheckState.Unchecked)
+
+    assert "shared" not in page.selected_action_names()
+    assert page.resource_action_table.cellWidget(shared_row, 4).currentText() == "新增动作"
+
+
+def test_resource_action_table_conflict_choice_drives_install_decision(
+    qtbot: object, tmp_path: Path
+) -> None:
+    source = build_source(tmp_path)
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.load_source(source)
+    idle_row = next(
+        row
+        for row in range(page.resource_action_table.rowCount())
+        if page.resource_action_table.item(row, 1).data(Qt.ItemDataRole.UserRole) == "idle"
+    )
+    mode = page.resource_action_table.cellWidget(idle_row, 4)
+
+    mode.setCurrentIndex(mode.findData("skip"))
+
+    decisions = page._conflict_decisions(page.selected_action_names())
+    assert decisions["idle"].kind.value == "skip"
 
 
 def test_action_import_page_installs_selected_action(qtbot: object, tmp_path: Path) -> None:
@@ -209,9 +297,18 @@ def test_action_import_page_has_approved_two_modes(qtbot: object, tmp_path: Path
 
     assert page.resource_mode_button.text() == "从资源包提取动作"
     assert page.image_mode_button.text() == "用图片制作动作"
+    assert isinstance(page.resource_mode_button, QRadioButton)
+    assert isinstance(page.image_mode_button, QRadioButton)
+    assert page.resource_mode_button.parentWidget().objectName() == "modeSwitch"
+    assert page.resource_mode_button.isChecked()
+    assert not page.image_mode_button.isChecked()
     assert page.current_mode() == "resource"
     assert page.mode_stack.currentWidget() is page.resource_container
     assert page.target_combo.currentData() == target.identifier
+
+    page.select_image_mode()
+    assert page.image_mode_button.isChecked()
+    assert not page.resource_mode_button.isChecked()
 
 
 def test_switching_modes_preserves_resource_and_image_drafts(qtbot: object, tmp_path: Path) -> None:
@@ -231,6 +328,23 @@ def test_switching_modes_preserves_resource_and_image_drafts(qtbot: object, tmp_
     assert page._pack is not None
     page.select_image_mode()
     assert page.image_content.ordered_paths() == (frame.resolve(),)
+
+
+def test_switching_modes_pauses_and_resumes_image_preview(qtbot: object, tmp_path: Path) -> None:
+    target = PackageLoader().load(_write_package(tmp_path / "target"))
+    frame = tmp_path / "frame.png"
+    Image.new("RGBA", (16, 16), (10, 20, 30, 255)).save(frame)
+    page = ActionImportPage([target], tmp_path / "pets")
+    qtbot.addWidget(page)
+    page.select_image_mode()
+    page.image_content.load_files([frame])
+    assert page.image_content.preview.preview_timer.isActive()
+
+    page.select_resource_mode()
+    assert not page.image_content.preview.preview_timer.isActive()
+
+    page.select_image_mode()
+    assert page.image_content.preview.preview_timer.isActive()
 
 
 def test_image_mode_installs_selected_slot_and_clears_only_after_runtime_success(

@@ -231,6 +231,24 @@ def dialog_stylesheet() -> str:
             font-size: 22px;
             font-weight: 700;
         }}
+        QLabel#appLogo {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+            border-radius: 9px;
+            padding: 5px;
+        }}
+        QLabel#appTitle {{
+            color: {c['text']};
+            font-size: 15px;
+            font-weight: 700;
+        }}
+        QLabel#resourceSummaryName {{
+            color: {c['text']};
+            font-weight: 700;
+        }}
+        QLabel#resourceSummaryValue {{
+            color: {c['muted_text']};
+        }}
         QLabel#contentTitle {{
             color: {c['text']};
             font-size: 28px;
@@ -292,6 +310,38 @@ def dialog_stylesheet() -> str:
             background: rgba(255, 253, 249, 228);
             border: 1px solid {c['border']};
             border-radius: 12px;
+        }}
+        QFrame#resourceSourceDropZone {{
+            background: #FFF9F5;
+            border: 1px dashed #DDAE98;
+            border-radius: 10px;
+        }}
+        QFrame#resourceSummaryCard {{
+            background: #FBF1EA;
+            border: none;
+            border-radius: 9px;
+        }}
+        QFrame#imageFrameCard {{
+            background: #FFF9F5;
+            border: 1px solid {c['border']};
+            border-radius: 9px;
+        }}
+        QToolButton#frameDeleteButton {{
+            background: rgba(255, 253, 249, 225);
+            color: {c['muted_text']};
+            border: 1px solid {c['border']};
+            border-radius: 6px;
+        }}
+        QToolButton#frameDeleteButton:hover {{
+            background: #FDE5DF;
+            color: #BD4F43;
+        }}
+        QListWidget#imageActionFrameList, QTableWidget {{
+            background: rgba(255, 253, 249, 155);
+            border: 1px solid {c['border']};
+            border-radius: 10px;
+            gridline-color: transparent;
+            outline: none;
         }}
         QGroupBox {{
             background: rgba(255, 253, 249, 220);

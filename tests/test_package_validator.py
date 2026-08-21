@@ -140,6 +140,19 @@ def test_frame_duration_timeline_must_match_png_frames_and_be_positive(tmp_path:
     assert any("数量" in error or "正整数" in error for error in result.errors)
 
 
+def test_frame_duration_timeline_must_fit_qt_timer_interval(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "oversized-timeline")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["idle"]["frame_durations_ms"] = [2_147_483_647, 1]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("时长" in error and "上限" in error for error in result.errors)
+
+
 def test_empty_animation_directory_is_invalid(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "empty")
     for frame in (root / "animations" / "idle").glob("*.png"):

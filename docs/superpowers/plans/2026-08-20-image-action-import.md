@@ -462,3 +462,63 @@ git commit -m feat:image-action-import
 ```
 
 将功能提交 cherry-pick 到 `F:\Desktop Projects\PetNest` 的 `main`，在主分支运行相关回归，重启 PetNest，并确认 `127.0.0.1:18486` 恢复监听。
+
+---
+
+### 任务 7：按 v4 原型重构图片帧工作区
+
+**文件：**
+- 修改：`src/petnest/ui/image_action_import_content.py`
+- 修改：`tests/test_image_action_import_content.py`
+
+- [x] **步骤 1：先写失败测试**
+
+验证动作选择仍为下拉框；帧控件使用 IconMode/网格布局；每个帧卡片存在右上角删除按钮；拖动后 `ordered_paths()` 同步；播放设置和实时预览位于帧网格之后；页面不存在可见的当前/新动作对比切换。
+
+- [x] **步骤 2：运行红灯测试**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_image_action_import_content.py -q`
+
+预期：旧版垂直列表和右侧预览结构断言失败。
+
+- [x] **步骤 3：实现帧卡片和单列布局**
+
+创建内部 `ImageFrameCard`，包含缩略图、序号、文件名和右上角删除按钮；`QListWidget` 使用 `IconMode`、`Adjust`、`LeftToRight`、`setWrapping(True)` 和内部移动。删除信号按路径更新 `ImageActionDraft`，移动完成后按 item 顺序重建草稿。移除可见的当前动作预览与切换条，仅保留实际动作文本提示和一个实时预览。
+
+- [x] **步骤 4：验证**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_image_action_import_content.py tests\test_action_import_page.py -q`
+
+预期：全部 PASS。
+
+---
+
+### 任务 8：按 v4 原型重构资源包提取页
+
+**文件：**
+- 修改：`src/petnest/ui/action_import_page.py`
+- 修改：`tests/test_action_import_page.py`
+- 修改：`tests/test_pet_action_exchange_dialog.py`
+
+- [x] **步骤 1：先写失败测试**
+
+验证资源模式具有左右两个卡片区域；来源摘要在左；动作表在右；每个动作行包含勾选、动作名、帧数、scope 和安装方式；切换勾选会更新底部数量与安装按钮；原资源识别、冲突决定和事务安装测试保持通过。
+
+- [x] **步骤 2：实现资源动作表**
+
+保留 `action_list` 和 `conflict_table` 兼容属性，但将可见交互合并为 `resource_action_table`。读取来源时按 ActionPack 动作创建行；无冲突显示“新增动作”，冲突行提供“替换现有动作 / 另存为新动作 / 跳过”；另存时自动生成不冲突的动作名。`selected_action_names()` 与 `_conflict_decisions()` 改为从表格行读取。
+
+- [x] **步骤 3：验证**
+
+运行：`.venv\Scripts\python.exe -m pytest tests\test_action_import_page.py tests\test_pet_action_exchange_dialog.py tests\test_action_pack.py tests\test_action_installer.py -q`
+
+预期：全部 PASS。
+
+---
+
+### 任务 9：原型截图复核与收尾
+
+- [x] **步骤 1：在 1220×760 窗口分别截图两个模式**
+- [x] **步骤 2：与 `action-import-redesign-v4.html` 对照模式选中态、帧网格、删除位置、预览顺序、资源摘要、动作表和底部按钮**
+- [x] **步骤 3：运行相关测试、逐文件全量测试、compileall 和 diff check**
+- [ ] **步骤 4：提交、重启 PetNest，并再次截图复核运行版本**

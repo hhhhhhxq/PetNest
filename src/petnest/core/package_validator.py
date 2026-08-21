@@ -15,6 +15,7 @@ from PIL import Image, UnidentifiedImageError
 _NUMBER_PARTS = re.compile(r"(\d+)")
 _REQUIRED_ANIMATION = "idle"
 _ENTRANCE_DIRECTIONS = {"left", "right", "none"}
+MAX_TIMELINE_DURATION_MS = 2_147_483_647
 
 
 class PackageValidationError(ValueError):
@@ -210,6 +211,12 @@ class PackageValidator:
                 result.errors.append(f"动画 {name} 的 frame_durations_ms 数量必须与 PNG 帧数一致")
             elif any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations):
                 result.errors.append(f"动画 {name} 的 frame_durations_ms 必须全部为正整数")
+            elif any(value > MAX_TIMELINE_DURATION_MS for value in durations) or sum(
+                durations
+            ) > MAX_TIMELINE_DURATION_MS:
+                result.errors.append(
+                    f"动画 {name} 的逐帧时长总和超过安全上限 {MAX_TIMELINE_DURATION_MS} ms"
+                )
         multiplier = definition.get("speed_multiplier", 1.0)
         if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier <= 0:
             result.errors.append(f"动画 {name} 的 speed_multiplier 必须大于 0")

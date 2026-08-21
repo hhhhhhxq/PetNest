@@ -6,11 +6,13 @@ from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
+from PySide6.QtGui import QDropEvent
+from PySide6.QtWidgets import QListView
 
 from petnest.core.action_slots import action_slots
 from petnest.models.pet_package import Canvas
-from petnest.ui.image_action_import_content import ImageActionImportContent
+from petnest.ui.image_action_import_content import ImageActionImportContent, ImageFrameCard
 from petnest.ui import image_action_import_content as image_content_module
 from tests.test_pet_window import _package
 
@@ -43,7 +45,27 @@ def test_content_defaults_to_current_pet_and_lists_only_registered_slots(qtbot, 
 
     assert content.target_combo.currentData() == "second"
     assert set(_slot_keys(content)) == {slot.key for slot in action_slots()}
+    assert content.slot_combo.count() == len(action_slots())
+    assert content.slot_combo.maxVisibleItems() >= len(action_slots())
+    assert all(isinstance(content.slot_combo.itemData(index), str) for index in range(content.slot_combo.count()))
     assert all("自定义" not in content.slot_combo.itemText(index) for index in range(content.slot_combo.count()))
+    assert content.slot_combo.findData("system_sleep") < content.slot_combo.findData("move_walk")
+    assert content.slot_combo.findData("work_finish_walk") < content.slot_combo.findData("move_walk")
+    assert "系统空闲 ·" in content.slot_combo.itemText(content.slot_combo.findData("system_sleep"))
+    assert "下班提醒 ·" in content.slot_combo.itemText(content.slot_combo.findData("work_finish_walk"))
+
+
+def test_frames_use_wrapping_icon_grid_and_preview_comes_after_frames(qtbot, tmp_path: Path) -> None:
+    content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
+    qtbot.addWidget(content)
+
+    assert content.frame_list.viewMode() == QListView.ViewMode.IconMode
+    assert content.frame_list.resizeMode() == QListView.ResizeMode.Adjust
+    assert content.frame_list.flow() == QListView.Flow.LeftToRight
+    assert content.frame_list.isWrapping()
+    assert content.layout().indexOf(content.frame_section) < content.layout().indexOf(content.preview_section)
+    assert not hasattr(content, "preview_stack")
+    assert not hasattr(content, "current_preview")
 
 
 def test_loading_and_moving_frames_updates_order_and_preview(qtbot, tmp_path: Path) -> None:
@@ -66,6 +88,34 @@ def test_loading_and_moving_frames_updates_order_and_preview(qtbot, tmp_path: Pa
     assert content.frame_list.item(0).data(Qt.ItemDataRole.UserRole).name == "10.png"
 
 
+def test_each_frame_card_has_top_right_delete_and_updates_draft(qtbot, tmp_path: Path) -> None:
+    content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
+    qtbot.addWidget(content)
+    first = _image(tmp_path / "1.png")
+    second = _image(tmp_path / "2.png")
+    content.load_files([first, second])
+    card = content.frame_list.itemWidget(content.frame_list.item(0))
+
+    assert isinstance(card, ImageFrameCard)
+    assert card.height() <= 90
+    assert card.delete_button.objectName() == "frameDeleteButton"
+    assert card.delete_button.parentWidget() is card
+
+    card.delete_button.click()
+
+    assert content.ordered_paths() == (second.resolve(),)
+    assert content.frame_list.count() == 1
+
+
+def test_image_workspace_keeps_prototype_compact_heights(qtbot, tmp_path: Path) -> None:
+    content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
+    qtbot.addWidget(content)
+
+    assert content.drop_zone.maximumHeight() <= 32
+    assert content.frame_list.minimumHeight() <= 110
+    assert content.preview.preview_label.minimumHeight() <= 170
+
+
 def test_adding_more_images_preserves_current_order_and_appends_new_frames(qtbot, tmp_path: Path) -> None:
     content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
     qtbot.addWidget(content)
@@ -78,6 +128,28 @@ def test_adding_more_images_preserves_current_order_and_appends_new_frames(qtbot
     assert content.ordered_paths() == (first.resolve(), second.resolve())
 
 
+def test_drop_zone_emits_local_image_paths_on_drop(qtbot, tmp_path: Path) -> None:
+    content = ImageActionImportContent((_pet_package(tmp_path / "pet"),), current_pet_id="cat")
+    qtbot.addWidget(content)
+    frame = _image(tmp_path / "dropped.png")
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(frame))])
+    event = QDropEvent(
+        QPointF(10, 10),
+        Qt.DropAction.CopyAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    dropped: list[tuple[Path, ...]] = []
+    content.drop_zone.files_dropped.connect(dropped.append)
+
+    content.drop_zone.dropEvent(event)
+
+    assert event.isAccepted()
+    assert dropped == [(frame,)]
+
+
 def test_existing_bound_action_uses_replace_label_and_current_preview(qtbot, tmp_path: Path) -> None:
     package = _pet_package(tmp_path / "pet")
     content = ImageActionImportContent((package,), current_pet_id=package.identifier)
@@ -87,7 +159,117 @@ def test_existing_bound_action_uses_replace_label_and_current_preview(qtbot, tmp
 
     assert content.action_name() == "click"
     assert content.primary_text() == "替换动作"
-    assert content.current_preview.frame_count == len(package.animations["click"].frames)
+    assert content.action_target_label.text() == "将替换：click"
+
+
+def test_selecting_existing_action_loads_original_frames_and_timing(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    click = replace(
+        package.animations["click"],
+        fps=7.5,
+        frame_durations_ms=tuple(
+            90 + index * 10 for index, _frame in enumerate(package.animations["click"].frames)
+        ),
+    )
+    package = replace(package, animations={**package.animations, "click": click})
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+
+    content.select_slot("mouse_click")
+
+    assert [path.name for path in content.ordered_paths()] == [path.name for path in click.frames]
+    assert all(
+        loaded != source.resolve()
+        for loaded, source in zip(content.ordered_paths(), click.frames, strict=True)
+    )
+    assert content.frame_list.count() == len(click.frames)
+    assert content.preview.frame_count == len(click.frames)
+    assert content.fps() == 7.5
+    assert content.preview._durations == click.frame_durations_ms
+    assert content.can_install() is False
+
+
+def test_switching_actions_never_leaks_another_actions_frames_and_restores_draft(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+    custom = _image(tmp_path / "custom-click.png")
+
+    content.select_slot("mouse_click")
+    content.load_files([custom])
+    content.select_slot("idle")
+
+    assert [path.name for path in content.ordered_paths()] == [
+        path.name for path in package.animations["idle"].frames
+    ]
+
+    content.select_slot("mouse_click")
+
+    assert content.ordered_paths() == (custom.resolve(),)
+    assert content.can_install() is True
+
+
+def test_package_refresh_reloads_clean_original_frames_but_keeps_user_draft(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+    content.select_slot("mouse_click")
+    replacement = _image(tmp_path / "replacement-click.png")
+    refreshed_click = replace(package.animations["click"], frames=(replacement,))
+    refreshed = replace(
+        package,
+        animations={**package.animations, "click": refreshed_click},
+    )
+
+    content.refresh_packages((refreshed,), refreshed.identifier)
+
+    assert [path.name for path in content.ordered_paths()] == [replacement.name]
+
+    custom = _image(tmp_path / "custom-draft.png")
+    content.load_files([custom])
+    content.refresh_packages((package,), package.identifier)
+
+    assert content.ordered_paths() == (custom.resolve(),)
+
+
+def test_existing_frame_workspace_survives_source_revision_cleanup(qtbot, tmp_path: Path) -> None:
+    package = _pet_package(tmp_path / "pet")
+    source_frames = package.animations["click"].frames
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+    content.select_slot("mouse_click")
+    cached_frames = content.ordered_paths()
+
+    for source in source_frames:
+        source.unlink()
+    content.fps_input.setValue(content.fps() + 1)
+
+    assert all(path.is_file() for path in cached_frames)
+    with content.build_pack() as pack:
+        assert len(pack.actions["click"].asset_paths) == len(cached_frames)
+
+
+def test_switching_to_missing_action_clears_cached_preview_and_fit_state(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+    content.select_slot("mouse_click")
+    assert content.preview.frame_count > 0
+
+    content.select_slot("agent_waiting")
+    content.fps_input.setValue(content.fps() + 1)
+
+    assert content.ordered_paths() == ()
+    assert content.preview.frame_count == 0
+    assert content.fit_oversized_checkbox.isHidden()
 
 
 def test_current_binding_alias_is_the_actual_replacement_target(qtbot, tmp_path: Path) -> None:
@@ -139,6 +321,7 @@ def test_success_clears_image_draft_but_failure_state_keeps_it(qtbot, tmp_path: 
     assert content.ordered_paths() == ()
     assert content.frame_list.count() == 0
     assert content.preview.frame_count == 0
+    assert content.frame_count_label.text() == "0 帧"
     assert content.status_label.text() == "动作已安装"
 
 
@@ -192,14 +375,23 @@ def test_switching_target_pet_requires_fresh_oversized_confirmation(qtbot, tmp_p
     content = ImageActionImportContent((first, second), current_pet_id="first")
     qtbot.addWidget(content)
     content.select_slot("mouse_click")
-    content.load_files([_image(tmp_path / "large.png", (40, 16))])
+    large = _image(tmp_path / "large.png", (40, 16))
+    content.load_files([large])
     content.fit_oversized_checkbox.setChecked(True)
 
     content.select_target("second")
 
     assert content.fit_oversized_checkbox.isChecked() is False
     assert content.can_install() is False
-    assert "重新确认" in content.status_label.text()
+    assert [path.name for path in content.ordered_paths()] == [
+        path.name for path in second.animations["click"].frames
+    ]
+
+    content.select_target("first")
+
+    assert content.ordered_paths() == (large.resolve(),)
+    assert content.fit_oversized_checkbox.isChecked() is False
+    assert content.can_install() is False
 
 
 def test_total_duration_is_clamped_to_the_selected_fps_range(qtbot, tmp_path: Path) -> None:
@@ -211,6 +403,44 @@ def test_total_duration_is_clamped_to_the_selected_fps_range(qtbot, tmp_path: Pa
 
     assert content.fps() == 0.5
     assert content.total_duration_input.value() == 2_000
+
+
+def test_existing_slow_frame_timeline_is_not_clamped_by_uniform_fps_range(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    click = replace(
+        package.animations["click"],
+        frame_durations_ms=(10_000, 12_000),
+    )
+    package = replace(package, animations={**package.animations, "click": click})
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+
+    content.select_slot("mouse_click")
+
+    assert content.total_duration_input.maximum() >= 22_000
+    assert content.total_duration_input.value() == 22_000
+
+
+def test_existing_timeline_above_qt_interval_limit_reports_error_instead_of_crashing(
+    qtbot, tmp_path: Path
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    click = replace(
+        package.animations["click"],
+        frame_durations_ms=(2_147_483_647, 1),
+    )
+    package = replace(package, animations={**package.animations, "click": click})
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+
+    content.select_slot("mouse_click")
+
+    assert content.ordered_paths() == ()
+    assert content.preview.frame_count == 0
+    assert "时长" in content.status_label.text()
+    assert "上限" in content.status_label.text()
 
 
 def test_preview_caches_scaled_pixmaps_instead_of_fullscreen_source_size(qtbot, tmp_path: Path) -> None:
@@ -225,7 +455,7 @@ def test_preview_caches_scaled_pixmaps_instead_of_fullscreen_source_size(qtbot, 
     assert content.preview._pixmaps[0].height() <= 360
 
 
-def test_current_fullscreen_action_preview_is_also_scaled(qtbot, tmp_path: Path) -> None:
+def test_current_fullscreen_action_is_not_loaded_into_a_comparison_preview(qtbot, tmp_path: Path) -> None:
     package = _pet_package(tmp_path / "pet")
     large = _image(tmp_path / "current-fullscreen.png", (1200, 600))
     current = replace(
@@ -234,6 +464,8 @@ def test_current_fullscreen_action_preview_is_also_scaled(qtbot, tmp_path: Path)
         frames=(large,),
         scope="fullscreen",
         canvas=Canvas(1200, 600),
+        entrance_direction="left",
+        frame_durations_ms=(137,),
     )
     package = replace(package, animations={**package.animations, "work_finish_walk": current})
     content = ImageActionImportContent((package,), current_pet_id="cat")
@@ -241,9 +473,39 @@ def test_current_fullscreen_action_preview_is_also_scaled(qtbot, tmp_path: Path)
 
     content.select_slot("work_finish_walk")
 
-    assert content.current_preview.frame_count == 1
-    assert content.current_preview._pixmaps[0].width() <= 360
-    assert content.current_preview._pixmaps[0].height() <= 360
+    assert content.action_target_label.text() == "将替换：work_finish_walk"
+    assert [path.name for path in content.ordered_paths()] == [large.name]
+    assert content.preview.frame_count == 1
+    assert content.entrance_direction_combo.currentData() == "left"
+    content.entrance_direction_combo.setCurrentIndex(
+        content.entrance_direction_combo.findData("none")
+    )
+    with content.build_pack() as pack:
+        assert pack.actions["work_finish_walk"].definition["frame_durations_ms"] == [137]
+    assert not hasattr(content, "current_preview")
+
+
+def test_missing_fullscreen_action_resets_direction_to_slot_default(qtbot, tmp_path: Path) -> None:
+    first = _pet_package(tmp_path / "first", identifier="first")
+    frame = _image(tmp_path / "walk.png")
+    walk = replace(
+        first.animations["click"],
+        name="work_finish_walk",
+        frames=(frame,),
+        scope="fullscreen",
+        canvas=Canvas(1200, 600),
+        entrance_direction="left",
+    )
+    first = replace(first, animations={**first.animations, "work_finish_walk": walk})
+    second = _pet_package(tmp_path / "second", identifier="second")
+    content = ImageActionImportContent((first, second), current_pet_id="first")
+    qtbot.addWidget(content)
+    content.select_slot("work_finish_walk")
+    assert content.entrance_direction_combo.currentData() == "left"
+
+    content.select_target("second")
+
+    assert content.entrance_direction_combo.currentData() == "right"
 
 
 def test_inconsistent_existing_fullscreen_canvas_cannot_be_overridden_by_fit_checkbox(

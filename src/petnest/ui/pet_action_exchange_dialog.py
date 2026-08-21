@@ -92,14 +92,16 @@ class PetActionExchangeDialog(QDialog):
         shell_layout.setContentsMargins(18, 18, 18, 16)
 
         header = QHBoxLayout()
-        self.page_title = QLabel(self.window_shell)
-        self.page_title.setObjectName("pageTitle")
-        header.addWidget(self.page_title)
+        self.app_icon = QLabel("🐱", self.window_shell)
+        self.app_icon.setObjectName("appLogo")
+        header.addWidget(self.app_icon)
+        self.app_title = QLabel("宠物与动作", self.window_shell)
+        self.app_title.setObjectName("appTitle")
+        header.addWidget(self.app_title)
         header.addStretch(1)
-        self.page_subtitle = QLabel(self.window_shell)
-        self.page_subtitle.setObjectName("mutedLabel")
-        self.page_subtitle.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header.addWidget(self.page_subtitle)
+        self.header_target_label = QLabel("目标宠物", self.window_shell)
+        self.header_target_label.setObjectName("mutedLabel")
+        header.addWidget(self.header_target_label)
         shell_layout.addLayout(header)
 
         body = QHBoxLayout()
@@ -110,7 +112,21 @@ class PetActionExchangeDialog(QDialog):
             self.navigation.addItem(QListWidgetItem(label, self.navigation))
         body.addWidget(self.navigation)
 
-        self.stack = QStackedWidget(self.window_shell)
+        content = QWidget(self.window_shell)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(10)
+        page_heading = QHBoxLayout()
+        self.page_title = QLabel(content)
+        self.page_title.setObjectName("pageTitle")
+        page_heading.addWidget(self.page_title)
+        self.page_subtitle = QLabel(content)
+        self.page_subtitle.setObjectName("mutedLabel")
+        page_heading.addWidget(self.page_subtitle)
+        page_heading.addStretch(1)
+        content_layout.addLayout(page_heading)
+
+        self.stack = QStackedWidget(content)
         self.pet_import_page = PetImportPage(
             self._packages,
             self._pets_root,
@@ -122,6 +138,7 @@ class PetActionExchangeDialog(QDialog):
             self._packages,
             self._pets_root,
             current_pet_id=desired_id,
+            embed_target_selector=False,
             is_pet_locked=self._is_pet_locked,
             parent=self.stack,
         )
@@ -148,7 +165,12 @@ class PetActionExchangeDialog(QDialog):
             self._hide_embedded_header(page)
             self.stack.addWidget(page)
             page.footer_changed.connect(self._sync_footer)
-        body.addWidget(self.stack, 1)
+        self.header_target_combo = self.action_import_page.target_combo
+        self.header_target_combo.setParent(self.window_shell)
+        self.header_target_combo.show()
+        header.addWidget(self.header_target_combo)
+        content_layout.addWidget(self.stack, 1)
+        body.addWidget(content, 1)
         shell_layout.addLayout(body, 1)
 
         footer = QHBoxLayout()
@@ -265,6 +287,9 @@ class PetActionExchangeDialog(QDialog):
         name = self.current_page_name()
         self.page_title.setText(name)
         self.page_subtitle.setText(self._PAGE_SUBTITLES.get(name, ""))
+        show_target = name == "导入动作"
+        self.header_target_label.setVisible(show_target)
+        self.header_target_combo.setVisible(show_target)
 
     def _sync_footer(self) -> None:
         state = self.current_page().footer_state()

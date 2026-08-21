@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PIL import Image
 from PySide6.QtWidgets import QMessageBox
 
 from petnest.core.package_loader import PackageLoader
@@ -78,6 +79,22 @@ def test_editor_page_keeps_preview_visible_at_standard_dialog_size(qtbot: object
     assert editor.preview_card.width() >= 260
 
 
+def test_action_import_page_does_not_force_dialog_taller_than_standard_size(
+    qtbot: object, tmp_path: Path
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("导入动作")
+    dialog.action_import_page.select_image_mode()
+    dialog.show()
+    qtbot.wait(10)
+
+    assert dialog.height() == 760
+    assert dialog.minimumSizeHint().height() <= 760
+    assert dialog.action_import_page.minimumSizeHint().height() <= 632
+
+
 def test_exchange_dialog_can_route_to_each_page(qtbot: object, tmp_path: Path) -> None:
     package = PackageLoader().load(_write_package(tmp_path / "pet"))
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")
@@ -98,6 +115,28 @@ def test_action_import_page_subtitle_explains_both_modes(qtbot: object, tmp_path
     dialog.select_page("导入动作")
 
     assert dialog.page_subtitle.text() == "从资源包提取动作，或用图片制作可触发动作"
+
+
+def test_exchange_shell_matches_prototype_header_and_page_heading(
+    qtbot: object, tmp_path: Path
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("导入动作")
+    dialog.show()
+    qtbot.wait(10)
+
+    assert dialog.app_title.text() == "宠物与动作"
+    assert dialog.header_target_label.text() == "目标宠物"
+    assert dialog.header_target_combo is dialog.action_import_page.target_combo
+    app_bottom = dialog.app_title.mapTo(dialog.window_shell, dialog.app_title.rect().bottomLeft()).y()
+    page_top = dialog.page_title.mapTo(dialog.window_shell, dialog.page_title.rect().topLeft()).y()
+    assert app_bottom < page_top
+
+    dialog.select_page("导出动作")
+    assert not dialog.header_target_label.isVisible()
+    assert not dialog.header_target_combo.isVisible()
 
 
 def test_exchange_dialog_routes_footer_command_to_active_page(qtbot: object, tmp_path: Path, monkeypatch: object) -> None:
@@ -128,6 +167,27 @@ def test_exchange_dialog_navigation_and_close_respect_leave_guard(
     assert dialog.current_page_name() == "编辑动作"
     dialog.reject()
     assert dialog.isVisible()
+
+
+def test_leaving_or_closing_action_import_page_stops_image_previews(qtbot: object, tmp_path: Path) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    frame = tmp_path / "frame.png"
+    Image.new("RGBA", (16, 16), (10, 20, 30, 255)).save(frame)
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.select_page("导入动作")
+    page = dialog.action_import_page
+    page.select_image_mode()
+    page.image_content.load_files([frame])
+    assert page.image_content.preview.preview_timer.isActive()
+
+    dialog.select_page("导出动作")
+    assert not page.image_content.preview.preview_timer.isActive()
+
+    dialog.select_page("导入动作")
+    assert page.image_content.preview.preview_timer.isActive()
+    dialog.reject()
+    assert not page.image_content.preview.preview_timer.isActive()
 
 
 def test_exchange_dialog_checks_background_store_page_before_close(

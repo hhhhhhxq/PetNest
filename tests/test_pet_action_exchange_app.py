@@ -332,7 +332,7 @@ def test_action_install_handler_reports_rollback_failure(
     application.shutdown()
 
 
-def test_image_action_flow_reloads_current_pet_and_clears_draft_after_success(
+def test_image_action_flow_reloads_current_pet_and_shows_installed_action_after_success(
     qtbot: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     application = _application(tmp_path, qtbot)
@@ -351,7 +351,9 @@ def test_image_action_flow_reloads_current_pet_and_clears_draft_after_success(
 
     assert "click" in application.package.animations
     assert application.package.bindings["mouse.click"] == "click"
-    assert page.image_content.ordered_paths() == ()
+    assert len(page.image_content.ordered_paths()) == 1
+    assert page.image_content.ordered_paths()[0].name == "0001.png"
+    assert page.image_content.can_install() is False
     dialog.close()
     application.shutdown()
 

@@ -7,12 +7,16 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QEventLoop, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,6 +24,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -29,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from petnest.core.action_installer import ActionInstallError, ConflictDecision, install_actions
 from petnest.core.action_pack import ActionPack, ActionPackError, SourcePetInfo, load_action_pack
+from petnest.core.action_slots import action_slots
 from petnest.core.action_transfer import (
     ActionTransferError,
     SourceKind,
@@ -44,6 +50,30 @@ from petnest.ui.image_action_import_content import ImageActionImportContent
 from petnest.ui.theme import dialog_stylesheet
 
 
+class ResourceSourceDropZone(QFrame):
+    source_dropped = Signal(Path)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setObjectName("resourceSourceDropZone")
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        urls = event.mimeData().urls()
+        if len(urls) == 1 and urls[0].isLocalFile():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        urls = event.mimeData().urls()
+        if len(urls) == 1 and urls[0].isLocalFile():
+            self.source_dropped.emit(Path(urls[0].toLocalFile()))
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class ActionImportPage(ExchangePage):
     """选择来源和动作，按目标宠物逐项处理冲突后事务性安装。"""
 
@@ -57,6 +87,7 @@ class ActionImportPage(ExchangePage):
         pets_root: Path,
         *,
         current_pet_id: str | None = None,
+        embed_target_selector: bool = True,
         is_pet_locked: Callable[[str], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -78,7 +109,8 @@ class ActionImportPage(ExchangePage):
         title.setObjectName("pageTitle")
         header.addWidget(title)
         header.addStretch(1)
-        header.addWidget(QLabel("目标宠物", self))
+        self.target_label = QLabel("目标宠物", self)
+        header.addWidget(self.target_label)
         self.target_combo = QComboBox(self)
         for package in self._packages:
             self.target_combo.addItem(package.name, package.identifier)
@@ -87,14 +119,18 @@ class ActionImportPage(ExchangePage):
             target_index = 0
         self.target_combo.setCurrentIndex(target_index)
         header.addWidget(self.target_combo)
+        if not embed_target_selector:
+            self.target_label.hide()
+            self.target_combo.hide()
         layout.addLayout(header)
 
-        mode_row = QHBoxLayout()
-        self.resource_mode_button = QPushButton("从资源包提取动作", self)
-        self.resource_mode_button.setCheckable(True)
+        mode_switch = QFrame(self)
+        mode_switch.setObjectName("modeSwitch")
+        mode_row = QHBoxLayout(mode_switch)
+        mode_row.setContentsMargins(6, 5, 6, 5)
+        self.resource_mode_button = QRadioButton("从资源包提取动作", mode_switch)
         self.resource_mode_button.setChecked(True)
-        self.image_mode_button = QPushButton("用图片制作动作", self)
-        self.image_mode_button.setCheckable(True)
+        self.image_mode_button = QRadioButton("用图片制作动作", mode_switch)
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)
         self.mode_group.addButton(self.resource_mode_button)
@@ -103,7 +139,7 @@ class ActionImportPage(ExchangePage):
         self.image_mode_button.clicked.connect(self.select_image_mode)
         mode_row.addWidget(self.resource_mode_button, 1)
         mode_row.addWidget(self.image_mode_button, 1)
-        layout.addLayout(mode_row)
+        layout.addWidget(mode_switch)
 
         self.mode_stack = QStackedWidget(self)
         self.resource_container = QWidget(self.mode_stack)
@@ -111,41 +147,116 @@ class ActionImportPage(ExchangePage):
         resource_layout.setContentsMargins(0, 0, 0, 0)
         resource_layout.setSpacing(10)
 
-        source_row = QHBoxLayout()
-        self.source_input = QLineEdit(self)
-        self.source_input.setPlaceholderText("选择动作分享包、完整宠物包或旧版下班动画包")
-        source_row.addWidget(self.source_input, 1)
-        browse = QPushButton("选择来源…", self)
-        browse.clicked.connect(self._choose_source)
-        source_row.addWidget(browse)
-        inspect = QPushButton("读取来源", self)
-        inspect.clicked.connect(lambda: self.load_source(Path(self.source_input.text().strip())))
-        source_row.addWidget(inspect)
-        resource_layout.addLayout(source_row)
-        info_row = QHBoxLayout()
-        self.source_kind_label = QLabel("尚未读取来源", self)
-        self.source_kind_label.setObjectName("accentValue")
-        info_row.addWidget(self.source_kind_label)
-        self.source_summary_label = QLabel("", self)
-        self.source_summary_label.setObjectName("mutedLabel")
-        info_row.addWidget(self.source_summary_label)
-        info_row.addStretch(1)
-        resource_layout.addLayout(info_row)
+        self.resource_body_layout = QVBoxLayout()
+        self.resource_body_layout.setSpacing(12)
 
-        body = QHBoxLayout()
+        self.resource_source_card = QFrame(self.resource_container)
+        self.resource_source_card.setObjectName("settingsCard")
+        self.resource_source_card.setMaximumHeight(270)
+        source_card_layout = QVBoxLayout(self.resource_source_card)
+        source_card_layout.setContentsMargins(12, 10, 12, 10)
+        source_card_layout.setSpacing(8)
+        source_title = QLabel("动作来源", self.resource_source_card)
+        source_title.setObjectName("sectionTitle")
+        source_card_layout.addWidget(source_title)
+
+        self.source_input = QLineEdit(self.resource_source_card)
+        self.source_input.setPlaceholderText("选择动作分享包、完整宠物包或旧版下班动画包")
+        self.source_input.hide()
+
+        self.resource_drop_zone = ResourceSourceDropZone(self.resource_source_card)
+        self.resource_drop_zone.setMinimumHeight(96)
+        self.resource_drop_zone.setMaximumHeight(112)
+        drop_layout = QVBoxLayout(self.resource_drop_zone)
+        drop_layout.setContentsMargins(10, 8, 10, 8)
+        drop_layout.setSpacing(3)
+        drop_title = QLabel("拖入动作资源包", self.resource_drop_zone)
+        drop_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_layout.addWidget(drop_title)
+        drop_hint = QLabel("支持动作包 ZIP、完整宠物包、旧版下班动画包", self.resource_drop_zone)
+        drop_hint.setObjectName("mutedLabel")
+        drop_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        drop_layout.addWidget(drop_hint)
+        browse = QPushButton("选择来源", self.resource_drop_zone)
+        browse.clicked.connect(self._choose_source)
+        drop_layout.addWidget(browse, alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.resource_drop_zone.source_dropped.connect(self.load_source)
+        source_card_layout.addWidget(self.resource_drop_zone)
+
+        self.resource_summary_card = QFrame(self.resource_source_card)
+        self.resource_summary_card.setObjectName("resourceSummaryCard")
+        summary_layout = QGridLayout(self.resource_summary_card)
+        summary_layout.setContentsMargins(9, 7, 9, 7)
+        summary_layout.setHorizontalSpacing(12)
+        summary_layout.setVerticalSpacing(4)
+        self.source_name_label = QLabel("尚未读取来源", self.resource_summary_card)
+        self.source_name_label.setObjectName("resourceSummaryName")
+        summary_layout.addWidget(self.source_name_label, 0, 0, 1, 2)
+        summary_layout.addWidget(QLabel("来源类型", self.resource_summary_card), 1, 0)
+        self.source_kind_label = QLabel("尚未读取来源", self.resource_source_card)
+        self.source_kind_label.setObjectName("resourceSummaryValue")
+        summary_layout.addWidget(self.source_kind_label, 1, 1, alignment=Qt.AlignmentFlag.AlignRight)
+        summary_layout.addWidget(QLabel("可提取动作", self.resource_summary_card), 2, 0)
+        self.source_action_count_label = QLabel("—", self.resource_summary_card)
+        self.source_action_count_label.setObjectName("resourceSummaryValue")
+        summary_layout.addWidget(self.source_action_count_label, 2, 1, alignment=Qt.AlignmentFlag.AlignRight)
+        summary_layout.addWidget(QLabel("来源宠物", self.resource_summary_card), 3, 0)
+        self.source_pet_label = QLabel("—", self.resource_summary_card)
+        self.source_pet_label.setObjectName("resourceSummaryValue")
+        summary_layout.addWidget(self.source_pet_label, 3, 1, alignment=Qt.AlignmentFlag.AlignRight)
+        source_card_layout.addWidget(self.resource_summary_card)
+
+        self.source_summary_label = QLabel("", self.resource_source_card)
+        self.source_summary_label.setObjectName("mutedLabel")
+        self.source_summary_label.hide()
+        self.import_bindings = QCheckBox("同时导入相关绑定", self.resource_source_card)
+        source_card_layout.addWidget(self.import_bindings)
+        self.resource_body_layout.addWidget(self.resource_source_card)
+
+        self.resource_actions_card = QFrame(self.resource_container)
+        self.resource_actions_card.setObjectName("settingsCard")
+        actions_card_layout = QVBoxLayout(self.resource_actions_card)
+        actions_card_layout.setContentsMargins(12, 10, 12, 10)
+        actions_card_layout.setSpacing(7)
+        actions_title_row = QHBoxLayout()
+        actions_title = QLabel("选择要导入的动作", self.resource_actions_card)
+        actions_title.setObjectName("sectionTitle")
+        actions_title_row.addWidget(actions_title)
+        actions_title_row.addStretch(1)
+        self.resource_selection_label = QLabel("尚未读取", self.resource_actions_card)
+        self.resource_selection_label.setObjectName("mutedLabel")
+        actions_title_row.addWidget(self.resource_selection_label)
+        actions_card_layout.addLayout(actions_title_row)
+        actions_hint = QLabel("取消不需要的动作；已有同名动作时可选择替换、另存或跳过。", self.resource_actions_card)
+        actions_hint.setObjectName("mutedLabel")
+        actions_hint.setWordWrap(True)
+        actions_card_layout.addWidget(actions_hint)
+        self.resource_action_table = QTableWidget(0, 5, self.resource_actions_card)
+        self.resource_action_table.setHorizontalHeaderLabels(("选择", "动作", "帧数", "适用范围", "安装方式"))
+        self.resource_action_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.resource_action_table.setAlternatingRowColors(True)
+        self.resource_action_table.setShowGrid(False)
+        self.resource_action_table.verticalHeader().hide()
+        self.resource_action_table.verticalHeader().setDefaultSectionSize(48)
+        self.resource_action_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.resource_action_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.resource_action_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.resource_action_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.resource_action_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.resource_action_table.itemChanged.connect(self._resource_table_item_changed)
+        actions_card_layout.addWidget(self.resource_action_table, 1)
+        self.resource_body_layout.addWidget(self.resource_actions_card, 1)
+        resource_layout.addLayout(self.resource_body_layout, 1)
+
+        # Hidden compatibility controls retain the older programmatic API.
         self.action_list = QListWidget(self)
         self.action_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.action_list.itemSelectionChanged.connect(self._refresh_conflicts)
-        body.addWidget(self.action_list, 2)
+        self.action_list.hide()
         self.conflict_table = QTableWidget(0, 3, self)
         self.conflict_table.setHorizontalHeaderLabels(("动作", "处理方式", "重命名为"))
         self.conflict_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.conflict_table.setMinimumWidth(390)
-        body.addWidget(self.conflict_table, 3)
-        resource_layout.addLayout(body, 1)
-
-        self.import_bindings = QCheckBox("同时导入相关绑定", self)
-        info_row.insertWidget(0, self.import_bindings)
+        self.conflict_table.hide()
 
         self.image_content = ImageActionImportContent(
             self._packages,
@@ -190,6 +301,10 @@ class ActionImportPage(ExchangePage):
         self.resource_mode_button.setChecked(resource)
         self.image_mode_button.setChecked(not resource)
         self.mode_stack.setCurrentWidget(self.resource_container if resource else self.image_content)
+        if resource:
+            self.image_content.pause_previews()
+        else:
+            self.image_content.resume_active_preview()
         self._sync_footer()
 
     def available_action_names(self) -> set[str]:
@@ -199,17 +314,29 @@ class ActionImportPage(ExchangePage):
         }
 
     def selected_action_names(self) -> set[str]:
-        return {str(item.data(Qt.ItemDataRole.UserRole)) for item in self.action_list.selectedItems()}
+        return {
+            str(self.resource_action_table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            for row in range(self.resource_action_table.rowCount())
+            if self.resource_action_table.item(row, 0).checkState() == Qt.CheckState.Checked
+        }
 
     def set_action_selection(self, names: Sequence[str]) -> None:
         selected = set(names)
+        self.resource_action_table.blockSignals(True)
         self.action_list.blockSignals(True)
         try:
             for index in range(self.action_list.count()):
                 item = self.action_list.item(index)
                 item.setSelected(str(item.data(Qt.ItemDataRole.UserRole)) in selected)
+            for row in range(self.resource_action_table.rowCount()):
+                item = self.resource_action_table.item(row, 0)
+                name = str(item.data(Qt.ItemDataRole.UserRole))
+                item.setCheckState(
+                    Qt.CheckState.Checked if name in selected else Qt.CheckState.Unchecked
+                )
         finally:
             self.action_list.blockSignals(False)
+            self.resource_action_table.blockSignals(False)
         self._refresh_conflicts()
 
     def load_source(self, source: Path) -> None:
@@ -245,12 +372,21 @@ class ActionImportPage(ExchangePage):
             self.source_input.setText(str(source))
             self.source_kind_label.setText(_source_kind_label(kind))
             self.source_summary_label.setText(f"{pack.name} · {len(pack.actions)} 个动作")
+            self.source_name_label.setText(pack.name)
+            self.source_action_count_label.setText(f"{len(pack.actions)} 个")
+            if pack.source_pet is None:
+                self.source_pet_label.setText("—")
+            else:
+                self.source_pet_label.setText(
+                    f"{pack.source_pet.name} {pack.source_pet.version}"
+                )
             self.action_list.clear()
             for name, action in pack.actions.items():
                 item = QListWidgetItem(f"{name} · {'全屏动作' if action.scope == 'fullscreen' else '普通动作'} · {len(action.asset_paths)} 帧", self.action_list)
                 item.setData(Qt.ItemDataRole.UserRole, name)
                 item.setSelected(True)
             self._status_text = self._DEFAULT_STATUS
+            self._populate_resource_action_table()
             self._refresh_conflicts()
         except Exception as error:
             if not adopted and materialized is not None:
@@ -258,6 +394,9 @@ class ActionImportPage(ExchangePage):
             self._close_pack()
             self.source_kind_label.setText("读取失败")
             self.source_summary_label.setText(str(error))
+            self.source_name_label.setText("读取失败")
+            self.source_action_count_label.setText("—")
+            self.source_pet_label.setText("—")
             self._sync_footer(f"无法读取来源：{error}")
 
     def install_selected(self) -> None:
@@ -343,8 +482,13 @@ class ActionImportPage(ExchangePage):
             self.source_input.clear()
             self.source_kind_label.setText("尚未读取来源")
             self.source_summary_label.clear()
+            self.source_name_label.setText("尚未读取来源")
+            self.source_action_count_label.setText("—")
+            self.source_pet_label.setText("—")
             self.action_list.clear()
             self.conflict_table.setRowCount(0)
+            self.resource_action_table.setRowCount(0)
+            self.resource_selection_label.setText("尚未读取")
             self.import_bindings.setChecked(False)
             self._status_text = message
         self._installing = False
@@ -406,7 +550,102 @@ class ActionImportPage(ExchangePage):
                 lambda _index, editor=rename, mode=decision: editor.setEnabled(mode.currentData() == "rename")
             )
             rename.setEnabled(False)
+        self._refresh_resource_install_modes()
         self._sync_footer()
+
+    def _populate_resource_action_table(self) -> None:
+        self.resource_action_table.blockSignals(True)
+        try:
+            self.resource_action_table.setRowCount(0)
+            if self._pack is None:
+                self.resource_selection_label.setText("尚未读取")
+                return
+            for name, action in self._pack.actions.items():
+                row = self.resource_action_table.rowCount()
+                self.resource_action_table.insertRow(row)
+                selected = QTableWidgetItem()
+                selected.setFlags(selected.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                selected.setCheckState(Qt.CheckState.Checked)
+                selected.setData(Qt.ItemDataRole.UserRole, name)
+                self.resource_action_table.setItem(row, 0, selected)
+                name_item = QTableWidgetItem()
+                name_item.setData(Qt.ItemDataRole.UserRole, name)
+                self.resource_action_table.setItem(row, 1, name_item)
+                name_cell = QWidget(self.resource_action_table)
+                name_layout = QVBoxLayout(name_cell)
+                name_layout.setContentsMargins(5, 2, 5, 2)
+                name_layout.setSpacing(0)
+                name_layout.addWidget(QLabel(name, name_cell))
+                description = QLabel(_action_description(name), name_cell)
+                description.setObjectName("mutedLabel")
+                name_layout.addWidget(description)
+                self.resource_action_table.setCellWidget(row, 1, name_cell)
+                self.resource_action_table.setItem(row, 2, QTableWidgetItem(str(len(action.asset_paths))))
+                scope = "全屏" if action.scope == "fullscreen" else "宠物窗口"
+                self.resource_action_table.setItem(row, 3, QTableWidgetItem(scope))
+        finally:
+            self.resource_action_table.blockSignals(False)
+        self._refresh_resource_install_modes()
+        self._update_resource_selection_label()
+
+    def _resource_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        selected = self.selected_action_names()
+        self.action_list.blockSignals(True)
+        try:
+            for index in range(self.action_list.count()):
+                action_item = self.action_list.item(index)
+                action_item.setSelected(
+                    str(action_item.data(Qt.ItemDataRole.UserRole)) in selected
+                )
+        finally:
+            self.action_list.blockSignals(False)
+        self._update_resource_selection_label()
+        self._refresh_conflicts()
+
+    def _update_resource_selection_label(self) -> None:
+        if self._pack is None:
+            self.resource_selection_label.setText("尚未读取")
+            return
+        self.resource_selection_label.setText(
+            f"已选 {len(self.selected_action_names())} / {len(self._pack.actions)}"
+        )
+
+    def _refresh_resource_install_modes(self) -> None:
+        package = self._target_package()
+        if self._pack is None:
+            return
+        existing_names = tuple(package.animations) if package is not None else ()
+        for row in range(self.resource_action_table.rowCount()):
+            name = str(self.resource_action_table.item(row, 0).data(Qt.ItemDataRole.UserRole))
+            mode = self.resource_action_table.cellWidget(row, 4)
+            if not isinstance(mode, QComboBox):
+                mode = QComboBox(self.resource_action_table)
+                self.resource_action_table.setCellWidget(row, 4, mode)
+            current_data = mode.currentData()
+            conflict = any(
+                _action_name_key(name) == _action_name_key(existing)
+                for existing in existing_names
+            )
+            if conflict:
+                options = (
+                    ("替换现有动作", "replace"),
+                    ("另存为新动作", "rename"),
+                    ("跳过", "skip"),
+                )
+            else:
+                options = (("新增动作", "replace"),)
+            if tuple(mode.itemData(index) for index in range(mode.count())) != tuple(
+                data for _label, data in options
+            ):
+                with QSignalBlocker(mode):
+                    mode.clear()
+                    for label, data in options:
+                        mode.addItem(label, data)
+            index = mode.findData(current_data)
+            if index >= 0:
+                mode.setCurrentIndex(index)
 
     def trigger_primary(self) -> None:
         if self._mode == "image":
@@ -434,10 +673,15 @@ class ActionImportPage(ExchangePage):
     def close_pack(self) -> None:
         """Release a materialized source package before the shell closes."""
 
+        self.image_content.pause_previews()
         self._close_pack()
 
+    def activate(self) -> None:
+        if self._mode == "image":
+            self.image_content.resume_active_preview()
+
     def deactivate(self) -> None:
-        return
+        self.image_content.pause_previews()
 
     def _sync_footer(self, message: str | None = None) -> None:
         if self._mode == "image":
@@ -475,19 +719,36 @@ class ActionImportPage(ExchangePage):
 
     def _conflict_decisions(self, selected: set[str]) -> dict[str, ConflictDecision]:
         decisions: dict[str, ConflictDecision] = {}
-        for row in range(self.conflict_table.rowCount()):
-            name = self.conflict_table.item(row, 0).text()
-            mode = self.conflict_table.cellWidget(row, 1)
-            rename = self.conflict_table.cellWidget(row, 2)
-            if not isinstance(mode, QComboBox) or not isinstance(rename, QLineEdit):
+        for row in range(self.resource_action_table.rowCount()):
+            name = str(
+                self.resource_action_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+            )
+            if name not in selected:
+                continue
+            mode = self.resource_action_table.cellWidget(row, 4)
+            if not isinstance(mode, QComboBox):
                 continue
             if mode.currentData() == "rename":
-                decisions[name] = ConflictDecision.rename(rename.text().strip())
+                decisions[name] = ConflictDecision.rename(self._suggest_renamed_action(name))
             elif mode.currentData() == "skip":
                 decisions[name] = ConflictDecision.skip()
             else:
                 decisions[name] = ConflictDecision.replace()
-        return {name: decision for name, decision in decisions.items() if name in selected}
+        return decisions
+
+    def _suggest_renamed_action(self, name: str) -> str:
+        package = self._target_package()
+        unavailable = {
+            _action_name_key(existing)
+            for existing in (package.animations if package is not None else ())
+        }
+        base = f"{name}_imported"
+        candidate = base
+        suffix = 2
+        while _action_name_key(candidate) in unavailable:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        return candidate
 
     def _choose_source(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(self, "选择动作来源", str(Path.home()), "ZIP 或 JSON (*.zip *.json);;所有文件 (*.*)")
@@ -519,6 +780,14 @@ def _source_kind_label(kind: SourceKind) -> str:
 
 def _action_name_key(name: str) -> str:
     return name.rstrip(" .").casefold()
+
+
+def _action_description(name: str) -> str:
+    slot = next(
+        (candidate for candidate in action_slots() if candidate.canonical_action == name),
+        None,
+    )
+    return slot.label if slot is not None else "未绑定到 PetNest 触发时机"
 
 
 __all__ = ["ActionImportPage"]
