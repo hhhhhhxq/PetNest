@@ -130,6 +130,18 @@ def test_invalid_hooks_json_is_never_overwritten(tmp_path: Path) -> None:
     assert not list(manager.hooks_path.parent.glob("hooks.json.petnest-*.bak"))
 
 
+def test_inspect_reports_invalid_metadata_without_raising(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    manager.install()
+    manager.metadata_path.write_text("{ broken", encoding="utf-8")
+
+    status = manager.inspect()
+
+    assert status.state == "error"
+    assert status.installed is False
+    assert "无法读取 Codex 联动元数据" in status.message
+
+
 def test_hook_manager_can_switch_codex_home_without_moving_petnest_metadata(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     original_metadata_path = manager.metadata_path

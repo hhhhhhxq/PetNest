@@ -391,7 +391,10 @@ class CodexHookManager:
         complete = installed_events == set(CODEX_HOOK_EVENTS)
         if not complete:
             return CodexHookStatus("partial", "PetNest Codex Hook 不完整，可点击安装/修复", False)
-        token = self._read_metadata().token if self.metadata_path.exists() else None
+        try:
+            token = self._read_metadata().token if self.metadata_path.exists() else None
+        except CodexLinkError as error:
+            return CodexHookStatus("error", str(error), False)
         return CodexHookStatus(
             "installed",
             "Hook 已安装；如需精确联动，请在 Codex 设置 → 钩子 → 用户配置中审核",
