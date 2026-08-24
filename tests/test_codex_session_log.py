@@ -60,6 +60,20 @@ def _write_unread(path: Path, *session_ids: str) -> None:
     )
 
 
+class _FakeThreadIndex:
+    def __init__(self, paths: tuple[Path, ...] = ()) -> None:
+        self.paths = paths
+        self.calls = 0
+        self.error: Exception | None = None
+        self.last_status = "ready"
+
+    def recent_rollout_paths(self, *, limit: int = 64) -> tuple[Path, ...]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.paths[:limit]
+
+
 def test_start_baselines_existing_file_without_replaying_history(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     path = _day(root) / "rollout-existing.jsonl"
@@ -276,6 +290,45 @@ def test_file_growth_refreshes_recovered_turn_lease(tmp_path: Path) -> None:
     assert watcher.poll()[0].payload["hook_event_name"] == "TurnAborted"
 
 
+def test_activity_for_another_turn_does_not_refresh_recovered_lease(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-other-turn-growth.jsonl"
+    path.write_bytes(
+        _meta("session-other-turn-growth")
+        + _event("task_started", "turn-original")
+    )
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        monotonic_time=lambda: now[0],
+    )
+    watcher.start()
+    assert watcher.poll()[0].payload["turn_id"] == "turn-original"
+
+    now[0] = 290.0
+    with path.open("ab") as stream:
+        stream.write(
+            _line(
+                "event_msg",
+                {"type": "future_event", "turn_id": "turn-unrelated"},
+            )
+        )
+    assert watcher.poll() == ()
+    now[0] = 300.1
+
+    assert [event.payload for event in watcher.poll()] == [
+        {
+            "hook_event_name": "TurnAborted",
+            "session_id": "session-other-turn-growth",
+            "turn_id": "turn-original",
+        }
+    ]
+
+
 def test_failed_read_of_file_growth_does_not_refresh_recovered_lease(
     tmp_path: Path,
     monkeypatch: object,
@@ -307,6 +360,68 @@ def test_failed_read_of_file_growth_does_not_refresh_recovered_lease(
     now[0] = 300.1
 
     assert watcher.poll()[0].payload["hook_event_name"] == "TurnAborted"
+
+
+def test_growth_without_a_bounded_turn_id_does_not_refresh_recovered_lease(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-untrusted-growth.jsonl"
+    path.write_bytes(
+        _meta("session-untrusted-growth")
+        + _event("task_started", "turn-untrusted-growth")
+    )
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        monotonic_time=lambda: now[0],
+    )
+    watcher.start()
+    assert watcher.poll()[0].payload["hook_event_name"] == "UserPromptSubmit"
+
+    now[0] = 290.0
+    with path.open("ab") as stream:
+        stream.write(_line("event_msg", {"type": "future_event"}))
+    assert watcher.poll() == ()
+    now[0] = 300.1
+
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == [
+        "TurnAborted"
+    ]
+
+
+def test_incompatible_growth_does_not_refresh_recovered_lease(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-incompatible-growth.jsonl"
+    path.write_bytes(
+        _meta("session-incompatible-growth")
+        + _event("task_started", "turn-incompatible-growth")
+    )
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        monotonic_time=lambda: now[0],
+    )
+    watcher.start()
+    assert watcher.poll()[0].payload["hook_event_name"] == "UserPromptSubmit"
+
+    now[0] = 290.0
+    with path.open("ab") as stream:
+        stream.write(_line("session_meta", {"future_session_key": "unsupported"}))
+    assert watcher.poll() == ()
+    now[0] = 299.0
+    with path.open("ab") as stream:
+        stream.write(_line("event_msg", {"type": "future_event", "turn_id": "turn-x"}))
+    assert watcher.poll() == ()
+    now[0] = 300.1
+
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == [
+        "TurnAborted"
+    ]
 
 
 def test_startup_recovery_budget_is_shared_across_latest_eight_files(tmp_path: Path) -> None:
@@ -647,3 +762,461 @@ def test_transient_unread_thread_removed_before_stable_never_emits(tmp_path: Pat
     assert watcher.poll() == ()
     now[0] = 2.0
     assert watcher.poll() == ()
+
+
+def test_incremental_read_rejects_file_swapped_after_safe_stat(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    watcher.start()
+    inside = _day(root) / "rollout-inside.jsonl"
+    inside.write_bytes(_meta("session-inside"))
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(
+        _meta("session-outside") + _event("task_started", "turn-outside")
+    )
+    original_open = Path.open
+
+    def swapped_open(target: Path, *args: object, **kwargs: object) -> object:
+        if target == inside and args and args[0] == "rb":
+            return original_open(outside, *args, **kwargs)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", swapped_open)  # type: ignore[attr-defined]
+
+    assert watcher.poll() == ()
+
+
+def test_incremental_read_stops_at_snapshot_eof_when_file_grows_before_open(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-growth-between-stat-and-open.jsonl"
+    path.write_bytes(_meta("session-growth-between-stat-and-open"))
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    watcher.start()
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "turn-in-snapshot"))
+    original_open = Path.open
+    injected = [False]
+
+    def append_before_open(target: Path, *args: object, **kwargs: object) -> object:
+        if target == path and args and args[0] == "rb" and not injected[0]:
+            injected[0] = True
+            with original_open(path, "ab") as stream:
+                stream.write(_event("task_started", "turn-after-snapshot"))
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", append_before_open)  # type: ignore[attr-defined]
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == [
+        "turn-in-snapshot"
+    ]
+    assert [event.payload["turn_id"] for event in watcher.poll()] == [
+        "turn-after-snapshot"
+    ]
+
+
+def test_startup_recovery_rejects_file_swapped_after_safe_stat(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    inside = _day(root) / "rollout-recovery-inside.jsonl"
+    outside = tmp_path / "recovery-outside.jsonl"
+    outside_data = _meta("session-recovery-outside") + _event(
+        "task_started", "turn-recovery-outside"
+    )
+    outside.write_bytes(outside_data)
+    inside.write_bytes(b"x" * len(outside_data))
+    original_open = Path.open
+
+    def swapped_open(target: Path, *args: object, **kwargs: object) -> object:
+        if target == inside and args and args[0] == "rb":
+            return original_open(outside, *args, **kwargs)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", swapped_open)  # type: ignore[attr-defined]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
+
+    watcher.start()
+
+    assert watcher.poll() == ()
+
+
+def test_indexed_old_file_is_discovered_at_runtime_and_incrementally_completes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    old = _day(root, date(2026, 8, 1)) / "rollout-indexed.jsonl"
+    old.write_bytes(_meta("session-indexed") + _event("task_started", "turn-indexed"))
+    index = _FakeThreadIndex()
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        monotonic_time=lambda: now[0],
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+        index_refresh_seconds=2.0,
+    )
+    watcher.start()
+    assert watcher.poll() == ()
+
+    index.paths = (old,)
+    now[0] = 2.0
+
+    assert [event.payload for event in watcher.poll()] == [
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "session-indexed",
+            "turn_id": "turn-indexed",
+        }
+    ]
+    with old.open("ab") as stream:
+        stream.write(_event("task_complete", "turn-indexed"))
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == ["Stop"]
+
+
+def test_indexed_completed_history_is_never_replayed(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    old = _day(root, date(2026, 8, 1)) / "rollout-completed.jsonl"
+    old.write_bytes(
+        _meta("session-completed")
+        + _event("task_started", "turn-completed", timestamp="2026-08-20T11:59:00Z")
+        + _event("task_complete", "turn-completed", timestamp="2026-08-20T11:59:30Z")
+    )
+    index = _FakeThreadIndex((old,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+    )
+
+    watcher.start()
+
+    assert watcher.poll() == ()
+
+
+def test_start_recovers_recent_unfinished_turn_from_indexed_old_file(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    old = _day(root, date(2026, 8, 1)) / "rollout-running.jsonl"
+    old.write_bytes(_meta("session-running") + _event("task_started", "turn-running"))
+    index = _FakeThreadIndex((old,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+    )
+
+    watcher.start()
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == ["turn-running"]
+
+
+def test_index_and_date_candidate_are_parsed_once(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-00000000-0000-0000-0000-000000000001.jsonl"
+    path.write_bytes(_event("task_complete", "turn-old"))
+    index = _FakeThreadIndex((path,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        thread_index_factory=lambda _home: index,
+    )
+    watcher.start()
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "turn-once"))
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == ["turn-once"]
+
+
+def test_index_failure_does_not_interrupt_date_based_watching(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    index = _FakeThreadIndex()
+    index.error = RuntimeError("database is busy")
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        thread_index_factory=lambda _home: index,
+    )
+    watcher.start()
+    path = _day(root) / "rollout-date-fallback.jsonl"
+    path.write_bytes(_meta("session-date") + _event("task_started", "turn-date"))
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == ["turn-date"]
+    assert watcher.status.state == "active"
+
+
+def test_index_is_only_refreshed_after_its_configured_interval(tmp_path: Path) -> None:
+    index = _FakeThreadIndex()
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        tmp_path / "sessions",
+        today=lambda: TODAY,
+        monotonic_time=lambda: now[0],
+        thread_index_factory=lambda _home: index,
+        index_refresh_seconds=2.0,
+    )
+
+    watcher.start()
+    assert index.calls == 1
+    watcher.poll()
+    assert index.calls == 1
+    now[0] = 1.9
+    watcher.poll()
+    assert index.calls == 1
+    now[0] = 2.0
+    watcher.poll()
+    assert index.calls == 2
+
+
+def test_index_rejects_outside_and_non_jsonl_candidates(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(_meta("session-outside") + _event("task_started", "turn-outside"))
+    non_jsonl = _day(root, date(2026, 8, 1)) / "rollout.txt"
+    non_jsonl.write_bytes(_meta("session-text") + _event("task_started", "turn-text"))
+    index = _FakeThreadIndex((outside, non_jsonl))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        thread_index_factory=lambda _home: index,
+    )
+
+    watcher.start()
+
+    assert watcher.poll() == ()
+
+
+def test_reconfigure_builds_an_index_for_the_new_codex_home(tmp_path: Path) -> None:
+    homes: list[Path] = []
+
+    def make_index(home: Path) -> _FakeThreadIndex:
+        homes.append(home)
+        return _FakeThreadIndex()
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    watcher = CodexSessionLogWatcher(
+        first / "sessions", today=lambda: TODAY, thread_index_factory=make_index
+    )
+    watcher.start()
+    watcher.reconfigure(second)
+
+    assert homes == [first.resolve(), second.resolve()]
+
+
+def test_indexed_and_date_candidates_share_the_max_files_limit(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    today_path = _day(root) / "rollout-today.jsonl"
+    today_path.write_bytes(_meta("session-today") + _event("task_started", "turn-today"))
+    old = _day(root, date(2026, 8, 1)) / "rollout-old.jsonl"
+    old.write_bytes(_meta("session-old") + _event("task_started", "turn-old"))
+    old_stat = old.stat()
+    os.utime(old, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 1_000_000_000))
+    index = _FakeThreadIndex((old,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        max_files=1,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+    )
+
+    watcher.start()
+
+    assert [event.payload["session_id"] for event in watcher.poll()] == ["session-old"]
+
+
+def test_late_selected_indexed_file_is_baselined_before_its_history_is_read(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    indexed = _day(root, date(2026, 8, 1)) / "rollout-indexed.jsonl"
+    indexed.write_bytes(
+        _meta("session-indexed-late")
+        + _event("task_started", "turn-indexed-late", timestamp="2026-08-20T11:57:00Z")
+    )
+    date_candidate = _day(root) / "rollout-date-candidate.jsonl"
+    date_candidate.write_bytes(b"")
+    indexed_stat = indexed.stat()
+    os.utime(
+        date_candidate,
+        ns=(indexed_stat.st_atime_ns, indexed_stat.st_mtime_ns + 2_000_000_000),
+    )
+    index = _FakeThreadIndex((indexed,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        max_files=1,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+    )
+    watcher.start()
+
+    with indexed.open("ab") as stream:
+        stream.write(_line("event_msg", {"type": "future_event", "turn_id": "ignored"}))
+    date_stat = date_candidate.stat()
+    os.utime(
+        indexed,
+        ns=(date_stat.st_atime_ns, date_stat.st_mtime_ns + 1_000_000_000),
+    )
+
+    assert watcher.poll() == ()
+    with indexed.open("ab") as stream:
+        stream.write(_event("task_complete", "turn-indexed-late"))
+    date_stat = date_candidate.stat()
+    os.utime(
+        indexed,
+        ns=(date_stat.st_atime_ns, date_stat.st_mtime_ns + 1_000_000_000),
+    )
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == ["Stop"]
+
+
+def test_index_status_preserves_a_running_old_path_until_its_terminal_event(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root, date(2026, 8, 1)) / "rollout-index-status.jsonl"
+    path.write_bytes(_meta("session-index-status"))
+    index = _FakeThreadIndex((path,))
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        monotonic_time=lambda: now[0],
+        thread_index_factory=lambda _home: index,
+        index_refresh_seconds=1.0,
+    )
+    watcher.start()
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "turn-index-status"))
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == [
+        "UserPromptSubmit"
+    ]
+
+    index.paths = ()
+    index.last_status = "unavailable"
+    now[0] = 1.0
+    assert watcher.poll() == ()
+    assert path in watcher._indexed_paths
+
+    index.last_status = "ready"
+    now[0] = 2.0
+    assert watcher.poll() == ()
+    assert path not in watcher._indexed_paths
+    assert path in {candidate.path for candidate in watcher._candidate_files(())}
+
+    with path.open("ab") as stream:
+        stream.write(_event("task_complete", "turn-index-status"))
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == ["Stop"]
+    assert path not in {candidate.path for candidate in watcher._candidate_files(())}
+
+
+def test_cursor_cache_stays_bounded_during_index_rotation_and_keeps_active_lease(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    active = _day(root, date(2026, 8, 1)) / "rollout-active.jsonl"
+    active.write_bytes(_meta("session-active") + _event("task_started", "turn-active"))
+    os.utime(active, ns=(1_000_000_000, 1_000_000_000))
+    index = _FakeThreadIndex((active,))
+    now = [0.0]
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        max_files=2,
+        monotonic_time=lambda: now[0],
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        thread_index_factory=lambda _home: index,
+        index_refresh_seconds=0.1,
+    )
+    watcher.start()
+    assert watcher.poll()[0].payload["turn_id"] == "turn-active"
+
+    latest: tuple[Path, Path] | None = None
+    for batch in range(12):
+        paths: list[Path] = []
+        for item in range(2):
+            path = _day(root, date(2026, 8, 2)) / f"rollout-{batch}-{item}.jsonl"
+            path.write_bytes(_meta(f"session-{batch}-{item}"))
+            modified_ns = (batch * 2 + item + 10) * 1_000_000_000
+            os.utime(path, ns=(modified_ns, modified_ns))
+            paths.append(path)
+        latest = (paths[0], paths[1])
+        index.paths = latest
+        now[0] += 1.0
+        assert watcher.poll() == ()
+
+    assert latest is not None
+    assert len(watcher._cursors) <= 4
+    assert active in watcher._cursors
+    assert set(latest).issubset(watcher._cursors)
+
+    with active.open("ab") as stream:
+        stream.write(_event("task_complete", "turn-active"))
+    active_stat = active.stat()
+    os.utime(
+        active,
+        ns=(active_stat.st_atime_ns, max(active_stat.st_mtime_ns, 99_000_000_000)),
+    )
+    now[0] += 1.0
+
+    assert [event.payload["hook_event_name"] for event in watcher.poll()] == ["Stop"]
+
+
+def test_poll_scans_date_candidates_once(tmp_path: Path, monkeypatch: object) -> None:
+    watcher = CodexSessionLogWatcher(tmp_path / "sessions", today=lambda: TODAY)
+    watcher.start()
+    calls = [0]
+
+    def count_date_candidates() -> tuple[Path, ...]:
+        calls[0] += 1
+        return ()
+
+    monkeypatch.setattr(watcher, "_date_candidate_files", count_date_candidates)  # type: ignore[attr-defined]
+
+    watcher.poll()
+
+    assert calls == [1]
+
+
+def test_poll_uses_one_safe_stat_for_a_path_shared_by_date_and_index(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-snapshot.jsonl"
+    path.write_bytes(_meta("session-snapshot"))
+    index = _FakeThreadIndex((path,))
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        thread_index_factory=lambda _home: index,
+    )
+    watcher.start()
+    calls: list[Path] = []
+
+    def count_safe_stat(candidate: Path) -> object:
+        calls.append(candidate)
+        return candidate.stat()
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        watcher,
+        "_safe_session_stat",
+        count_safe_stat,
+        raising=False,
+    )
+
+    assert watcher.poll() == ()
+    assert calls == [path]

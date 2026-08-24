@@ -1735,7 +1735,7 @@ def test_codex_review_finishes_back_to_active_keyboard(
     application._finish_codex_review_animation()
 
     assert application.work_activity.effective_event == "agent.working"
-    assert application.window.current_action == "working"
+    assert application.window.current_action == application.package.bindings.get("agent.success", "review")
     assert application.codex_link.snapshot.unread_review_count == 0
     application.shutdown()
 

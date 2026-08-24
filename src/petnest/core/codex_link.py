@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -102,6 +102,8 @@ class CodexLinkCoordinator:
         self._monotonic_time = monotonic_time
         self._completed_session_ttl = max(0.0, float(completed_session_ttl))
         self._completed_sessions: dict[str, float] = {}
+        self._completed_session_tombstones: OrderedDict[str, None] = OrderedDict()
+        self._max_completed_session_tombstones = 4096
         self._unread_sessions: set[str] = set()
         self._completed_turns: set[tuple[str, str]] = set()
         self._completed_turn_order: deque[tuple[str, str]] = deque()
@@ -124,9 +126,10 @@ class CodexLinkCoordinator:
             return False
         self._prune_completed_sessions()
         if (
-            hook_name == "UserPromptSubmit"
-            and turn_id is not None
+            turn_id is not None
             and (session_id, turn_id) in self._completed_turns
+            and hook_name in CODEX_HOOK_EVENTS
+            and hook_name != "SessionEnd"
         ):
             return True
         if hook_name == "ThreadUnread" and event.source == "codex-log":
@@ -172,9 +175,14 @@ class CodexLinkCoordinator:
         if hook_name == "SessionStart":
             return True
         if hook_name == "SessionEnd":
-            removed = session_id in self._unread_sessions or session_id in self._completed_sessions
+            removed = (
+                session_id in self._unread_sessions
+                or session_id in self._completed_sessions
+                or session_id in self._completed_session_tombstones
+            )
             self._unread_sessions.discard(session_id)
             self._completed_sessions.pop(session_id, None)
+            self._completed_session_tombstones.pop(session_id, None)
             for key in tuple(self._tasks):
                 if key[0] == session_id:
                     removed = True
@@ -183,10 +191,17 @@ class CodexLinkCoordinator:
                 self._active_turns.pop(session_id, None)
                 self._emit_snapshot()
             return removed
+        if (
+            turn_id is None
+            and session_id in self._completed_session_tombstones
+            and hook_name != "UserPromptSubmit"
+        ):
+            return True
         provisional_key = (session_id, "__session__")
         if hook_name == "UserPromptSubmit":
             self._unread_sessions.discard(session_id)
             self._completed_sessions.pop(session_id, None)
+            self._completed_session_tombstones.pop(session_id, None)
             for old_key, old_task in tuple(self._tasks.items()):
                 if old_key[0] == session_id and old_task.state == "review":
                     del self._tasks[old_key]
@@ -217,6 +232,7 @@ class CodexLinkCoordinator:
             if not self._remember_completed_turn(completion_key):
                 return True
             self._completed_sessions[session_id] = self._monotonic_time()
+            self._remember_completed_session_tombstone(session_id)
             task = _CodexTask(
                 "review",
                 session_id in self._unread_sessions,
@@ -229,7 +245,7 @@ class CodexLinkCoordinator:
         else:
             task = _CodexTask("running")
         self._tasks[key] = task
-        self._emit_snapshot()
+        self._emit_snapshot(force_pet_event=hook_name == "UserPromptSubmit")
         return True
 
     def mark_reviews_read(self) -> None:
@@ -287,6 +303,7 @@ class CodexLinkCoordinator:
         if (
             not self._tasks
             and not self._completed_sessions
+            and not self._completed_session_tombstones
             and not self._unread_sessions
             and self._snapshot.state == "idle"
         ):
@@ -294,6 +311,7 @@ class CodexLinkCoordinator:
         self._tasks.clear()
         self._active_turns.clear()
         self._completed_sessions.clear()
+        self._completed_session_tombstones.clear()
         self._unread_sessions.clear()
         self._completed_turns.clear()
         self._completed_turn_order.clear()
@@ -309,6 +327,12 @@ class CodexLinkCoordinator:
             self._completed_turns.discard(expired)
         return True
 
+    def _remember_completed_session_tombstone(self, session_id: str) -> None:
+        self._completed_session_tombstones[session_id] = None
+        self._completed_session_tombstones.move_to_end(session_id)
+        while len(self._completed_session_tombstones) > self._max_completed_session_tombstones:
+            self._completed_session_tombstones.popitem(last=False)
+
     def _prune_completed_sessions(self) -> None:
         cutoff = self._monotonic_time() - self._completed_session_ttl
         for session_id, completed_at in tuple(self._completed_sessions.items()):
@@ -320,13 +344,17 @@ class CodexLinkCoordinator:
         *,
         publish_pet_event: bool = True,
         pet_event_priority: int = 90,
+        force_pet_event: bool = False,
     ) -> None:
         snapshot = self._aggregate()
-        if snapshot == self._snapshot:
+        force_pet_event = force_pet_event and snapshot.state == "running"
+        changed = snapshot != self._snapshot
+        if not changed and not force_pet_event:
             return
         previous_state = self._snapshot.state
-        self._snapshot = snapshot
-        if publish_pet_event and snapshot.state != previous_state:
+        if changed:
+            self._snapshot = snapshot
+        if publish_pet_event and (snapshot.state != previous_state or force_pet_event):
             from petnest.models.event import PetEvent
 
             self._publish(
@@ -336,7 +364,7 @@ class CodexLinkCoordinator:
                     priority=pet_event_priority,
                 )
             )
-        if self._snapshot_changed is not None:
+        if changed and self._snapshot_changed is not None:
             self._snapshot_changed(snapshot)
 
     def _aggregate(self) -> CodexLinkSnapshot:

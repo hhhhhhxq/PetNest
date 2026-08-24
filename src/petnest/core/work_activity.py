@@ -33,7 +33,10 @@ class WorkActivityCoordinator:
             return
         self.codex_state = state
         self.review_animation_finished = state != "review"
-        self._emit_effective(priority=event.priority)
+        self._emit_effective(
+            priority=event.priority,
+            reassert_working=event.event_name == "agent.working",
+        )
 
     def keyboard_activity_started(self) -> None:
         if self.keyboard_active:
@@ -69,9 +72,11 @@ class WorkActivityCoordinator:
             return "agent.working"
         return "agent.idle"
 
-    def _emit_effective(self, *, priority: int) -> None:
+    def _emit_effective(self, *, priority: int, reassert_working: bool = False) -> None:
         desired = self._desired_event()
         if desired == self.effective_event:
+            if reassert_working and desired == "agent.working":
+                self._publish(PetEvent(desired, source="work-activity", priority=priority))
             return
         self.effective_event = desired
         self._publish(PetEvent(desired, source="work-activity", priority=priority))

@@ -240,6 +240,168 @@ def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
     assert coordinator.snapshot.unread_review_count == 1
 
 
+def test_new_prompt_reasserts_working_without_duplicate_snapshot_callback() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+
+    assert coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+    assert coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+
+    assert [event.event_name for event in published] == ["agent.working", "agent.working"]
+    assert snapshots == [coordinator.snapshot]
+    assert coordinator.snapshot.count == 1
+
+
+def test_new_session_prompt_reasserts_working_and_reports_changed_count_once() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+
+    coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+    coordinator.consume(_hook("UserPromptSubmit", session="s2", turn="t2"))
+
+    assert [event.event_name for event in published] == ["agent.working", "agent.working"]
+    assert [snapshot.count for snapshot in snapshots] == [1, 2]
+    assert coordinator.snapshot.state == "running"
+
+
+def test_new_prompt_does_not_replay_when_waiting_remains_aggregate_state() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+    coordinator.consume(_hook("UserPromptSubmit", session="s1", turn="t1"))
+    coordinator.consume(_hook("PermissionRequest", session="s1", turn="t1"))
+    published.clear()
+    snapshots.clear()
+
+    assert coordinator.consume(_hook("UserPromptSubmit", session="s2", turn="t2"))
+
+    assert coordinator.snapshot.state == "waiting"
+    assert published == []
+    assert snapshots == []
+
+
+def test_delayed_tool_activity_does_not_revive_completed_turn() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+    published.clear()
+
+    assert coordinator.consume(_hook("PreToolUse", session="same", turn="turn-1"))
+
+    assert coordinator.snapshot.state == "idle"
+    assert published == []
+
+
+def test_delayed_tool_activity_without_turn_does_not_revive_completed_session() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(published.append)
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+    published.clear()
+
+    assert coordinator.consume(_hook("PreToolUse", session="same", turn=None))
+
+    assert coordinator.snapshot.state == "idle"
+    assert published == []
+
+
+def test_delayed_tool_activity_without_turn_remains_blocked_after_completion_ttl() -> None:
+    now = [0.0]
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(
+        published.append,
+        monotonic_time=lambda: now[0],
+        completed_session_ttl=2.0,
+    )
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+    now[0] = 3.0
+    published.clear()
+
+    assert coordinator.consume(_hook("PreToolUse", session="same", turn=None))
+
+    assert coordinator.snapshot.state == "idle"
+    assert published == []
+
+
+def test_new_prompt_clears_completed_session_tombstone_for_later_tool_activity() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+
+    coordinator.consume(_hook("UserPromptSubmit", session="same", turn=None))
+    coordinator.consume(_hook("PostToolUse", session="same", turn=None, tool_failed=True))
+    assert coordinator.snapshot.state == "failed"
+
+    assert coordinator.consume(_hook("PreToolUse", session="same", turn=None))
+
+    assert coordinator.snapshot.state == "running"
+
+
+def test_session_end_clears_completed_session_tombstone_after_correlation_ttl() -> None:
+    now = [0.0]
+    coordinator = CodexLinkCoordinator(
+        lambda _event: None,
+        monotonic_time=lambda: now[0],
+        completed_session_ttl=2.0,
+    )
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+    now[0] = 3.0
+
+    assert coordinator.consume(_hook("SessionEnd", session="same", turn=None))
+    assert coordinator.consume(_hook("PreToolUse", session="same", turn=None))
+
+    assert coordinator.snapshot.state == "running"
+
+
+def test_completed_session_tombstones_are_bounded_and_evict_oldest_session() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator._max_completed_session_tombstones = 2
+
+    for session in ("first", "second", "third"):
+        coordinator.consume(_hook("Stop", session=session, turn="turn-1"))
+
+    assert list(coordinator._completed_session_tombstones) == ["second", "third"]
+
+
+def test_clear_removes_completed_session_tombstone_after_correlation_ttl() -> None:
+    now = [0.0]
+    coordinator = CodexLinkCoordinator(
+        lambda _event: None,
+        monotonic_time=lambda: now[0],
+        completed_session_ttl=2.0,
+    )
+    coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
+    coordinator.finish_review_animation()
+    now[0] = 3.0
+    coordinator._prune_completed_sessions()
+    assert not coordinator._completed_sessions
+    assert list(coordinator._completed_session_tombstones) == ["same"]
+
+    coordinator.clear()
+
+    assert not coordinator._completed_session_tombstones
+
+
+def test_same_state_thread_unread_does_not_replay_pet_event_or_callback() -> None:
+    published: list[PetEvent] = []
+    snapshots = []
+    coordinator = CodexLinkCoordinator(published.append, snapshots.append)
+    coordinator.consume(_log("Stop", session="background", turn="t1"))
+    coordinator.consume(_log("ThreadUnread", session="background", turn="ignored"))
+    published.clear()
+    snapshots.clear()
+
+    assert not coordinator.consume(_log("ThreadUnread", session="background", turn="ignored"))
+
+    assert published == []
+    assert snapshots == []
+
+
 def test_coordinator_uses_session_when_codex_omits_turn_id() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)

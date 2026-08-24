@@ -46,6 +46,7 @@ class PetStateMachine:
         self._timeout_seconds = timeout_seconds
         self._clock = clock
         self._mouse_over = False
+        self._working_context: str | None = None
         self._current_action = "idle"
         self._entered_at = clock()
         self._last_events: dict[tuple[str, str], float] = {}
@@ -63,6 +64,8 @@ class PetStateMachine:
         if previous_timestamp is not None and event.timestamp - previous_timestamp < self._debounce_seconds:
             return self._transition(previous, False, "debounced")
         self._last_events[event_key] = event.timestamp
+        if event_name in {"agent.idle", "agent.waiting", "agent.success", "agent.error"}:
+            self._working_context = None
 
         if event_name == "mouse.enter":
             self._mouse_over = True
@@ -70,6 +73,8 @@ class PetStateMachine:
             self._mouse_over = False
 
         requested = self._bindings.get(event_name)
+        if event_name == "mouse.leave" and self._working_context in self.animations:
+            requested = self._context_action()
         if requested is None:
             if event_name in {"mouse.leave", "mouse.drag_end", "agent.idle"}:
                 requested = self._context_action()
@@ -78,9 +83,13 @@ class PetStateMachine:
         target = self._resolver.resolve(requested, self.animations)
         if target == GLOBAL_PLACEHOLDER:
             return self._transition(previous, False, "unavailable")
+        if event_name == "agent.working":
+            self._working_context = target if self.animations[target].loop else None
         forced = event_name in {"mouse.drag_end", "agent.idle"}
         if target == previous:
             return self._transition(previous, False, "already-current")
+        if event_name == "agent.working" and not self.animations[previous].interruptible:
+            return self._transition(previous, False, "not-interruptible")
         if not self._may_interrupt(target, event.priority, forced):
             return self._transition(previous, False, "not-interruptible")
         self._set_current(target)
@@ -123,6 +132,9 @@ class PetStateMachine:
         return max(event_priority, self.animations[target].priority) >= current.priority
 
     def _context_action(self) -> str:
+        working_context = self._working_context
+        if working_context is not None and working_context in self.animations:
+            return working_context
         requested = "hover" if self._mouse_over else "idle"
         return self._resolver.resolve(requested, self.animations)
 

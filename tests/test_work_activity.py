@@ -91,6 +91,33 @@ def test_repeated_keyboard_activity_reasserts_working_without_changing_effective
     assert coordinator.effective_event == "agent.working"
 
 
+def test_repeated_codex_working_reasserts_with_input_priority_and_activity_source() -> None:
+    published: list[PetEvent] = []
+    coordinator = WorkActivityCoordinator(published.append)
+
+    coordinator.handle_codex_event(_event("agent.working", priority=71))
+    coordinator.handle_codex_event(_event("agent.working", priority=72))
+
+    assert [(event.event_name, event.source, event.priority) for event in published] == [
+        ("agent.working", "work-activity", 71),
+        ("agent.working", "work-activity", 72),
+    ]
+
+
+def test_repeated_nonworking_codex_events_remain_deduplicated() -> None:
+    published: list[PetEvent] = []
+    coordinator = WorkActivityCoordinator(published.append)
+
+    for event_name in ("agent.idle", "agent.waiting", "agent.waiting", "agent.error", "agent.error", "agent.success", "agent.success"):
+        coordinator.handle_codex_event(_event(event_name))
+
+    assert [event.event_name for event in published] == [
+        "agent.waiting",
+        "agent.error",
+        "agent.success",
+    ]
+
+
 def test_both_sources_must_end_before_idle_is_published() -> None:
     published: list[PetEvent] = []
     coordinator = WorkActivityCoordinator(published.append)
