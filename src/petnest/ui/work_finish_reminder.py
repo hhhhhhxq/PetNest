@@ -27,6 +27,8 @@ class WorkFinishAnimationWindow(QWidget):
         super().__init__(None)
         self._clock = clock
         self._started_at = 0.0
+        self._display_generation = 0
+        self._paint_pending = False
         self._walk_frames: tuple[QPixmap, ...] = ()
         self._lie_frames: tuple[QPixmap, ...] = ()
         self._lie_loop_frames: tuple[QPixmap, ...] = ()
@@ -51,6 +53,10 @@ class WorkFinishAnimationWindow(QWidget):
         self.timer.timeout.connect(self._refresh_frame)
 
     def show_for(self, package: PetPackage, geometry: QRect) -> None:
+        self.timer.stop()
+        self._display_generation += 1
+        self._paint_pending = True
+        self.setWindowOpacity(0.0)
         animation = resolve_work_finish_animation(package)
         self._walk_frames = _pixmaps(animation.walk)
         self._lie_frames = _pixmaps(animation.lie_down)
@@ -67,6 +73,7 @@ class WorkFinishAnimationWindow(QWidget):
         self.current_phase = "walking"
         self.current_frame_index = 0
         if not self._walk_frames and not self._lie_frames and not self._lie_loop_frames:
+            self._paint_pending = False
             self.hide()
             self.timer.stop()
             return
@@ -77,6 +84,9 @@ class WorkFinishAnimationWindow(QWidget):
 
     def stop(self) -> None:
         self.timer.stop()
+        self._display_generation += 1
+        self._paint_pending = False
+        self.setWindowOpacity(0.0)
         self.current_phase = "hidden"
         self.hide()
 
@@ -143,6 +153,14 @@ class WorkFinishAnimationWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.drawPixmap(self.current_frame_rect(), pixmap)
+        if self._paint_pending:
+            self._paint_pending = False
+            generation = self._display_generation
+            QTimer.singleShot(0, lambda: self._reveal_painted_generation(generation))
+
+    def _reveal_painted_generation(self, generation: int) -> None:
+        if generation == self._display_generation and self.isVisible():
+            self.setWindowOpacity(1.0)
 
     def _current_pixmap(self) -> QPixmap | None:
         if self.current_phase == "walking":

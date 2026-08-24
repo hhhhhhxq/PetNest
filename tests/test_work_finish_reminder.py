@@ -145,6 +145,58 @@ def test_animation_with_none_direction_starts_centered(qtbot, tmp_path: Path) ->
     reminder.hide()
 
 
+def test_reused_animation_window_stays_transparent_until_new_pet_frame_is_painted(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    previous_pet = _with_fullscreen_pair(
+        _package(tmp_path, identifier="previous", colour=(255, 0, 0, 255)),
+        "none",
+    )
+    current_pet = _with_fullscreen_pair(
+        _package(tmp_path, identifier="current", colour=(0, 0, 255, 255)),
+        "none",
+    )
+
+    reminder.show_for(previous_pet, QRect(0, 0, 1000, 800), datetime.now())
+    qtbot.waitUntil(lambda: reminder.animation_window.windowOpacity() == 1.0)
+    reminder.hide()
+
+    reminder.animation_window.setUpdatesEnabled(False)
+    reminder.show_for(current_pet, QRect(0, 0, 1000, 800), datetime.now())
+
+    assert reminder.animation_window.windowOpacity() == 0.0
+    qtbot.wait(25)
+    assert reminder.animation_window.windowOpacity() == 0.0
+
+    reminder.animation_window.setUpdatesEnabled(True)
+    reminder.animation_window.repaint()
+    qtbot.waitUntil(lambda: reminder.animation_window.windowOpacity() == 1.0)
+    rendered = reminder.animation_window.grab().toImage()
+    center = rendered.pixelColor(rendered.rect().center())
+    assert center.blue() > center.red()
+    reminder.hide()
+
+
+def test_stale_first_paint_reveal_cannot_unlock_the_next_pet(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    previous_pet = _package(tmp_path, identifier="previous")
+    current_pet = _package(tmp_path, identifier="current")
+
+    reminder.animation_window.setUpdatesEnabled(False)
+    reminder.show_for(previous_pet, QRect(0, 0, 1000, 800), datetime.now())
+    stale_generation = reminder.animation_window._display_generation
+    reminder.hide()
+    reminder.show_for(current_pet, QRect(0, 0, 1000, 800), datetime.now())
+
+    reminder.animation_window._reveal_painted_generation(stale_generation)
+
+    assert reminder.animation_window.windowOpacity() == 0.0
+    reminder.hide()
+
+
 def test_control_buttons_emit_actions_and_hide_stops_timers(qtbot, tmp_path: Path) -> None:
     reminder = WorkFinishReminder()
     qtbot.addWidget(reminder.animation_window)
