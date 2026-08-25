@@ -33,9 +33,11 @@ from petnest.core.app_update import (
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
 from petnest.core.codex_usage import (
     CodexAccountObservationStore,
+    CodexManualAttributionStore,
     CodexDeviceUsageStore,
     CodexUsageClient,
     codex_account_observation_path,
+    codex_manual_attribution_path,
     codex_device_usage_path,
 )
 from petnest.core.codex_usage_sync import CodexUsageSyncCoordinator
@@ -334,8 +336,12 @@ class PetNest:
         self._codex_account_observations = CodexAccountObservationStore(
             codex_account_observation_path(self._codex_usage_history_path)
         )
+        self._codex_manual_attributions = CodexManualAttributionStore(
+            codex_manual_attribution_path(self._codex_usage_history_path)
+        )
         self._codex_client_factory = lambda: CodexUsageClient(
-            observation_store=self._codex_account_observations
+            observation_store=self._codex_account_observations,
+            manual_attribution_store=self._codex_manual_attributions,
         )
         self._pending_app_update: AppUpdateInfo | None = None
         self.resource_directory = resource_directory_for_cache(self.remote_resource_cache)

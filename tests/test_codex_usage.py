@@ -13,6 +13,7 @@ import petnest.core.codex_usage as codex_usage_module
 from petnest.core.codex_usage import (
     CodexAccount,
     CodexAccountObservationStore,
+    CodexManualAttributionStore,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
@@ -787,6 +788,24 @@ def test_account_observation_gap_becomes_pending_instead_of_wrong_account(tmp_pa
 
     assert usage.tokens.total_tokens == 900
     assert usage.pending_tokens.total_tokens == 700
+
+    store = CodexManualAttributionStore(tmp_path / "manual-attributions.json")
+    assert len(usage.pending_event_ids) == 1
+    assert store.claim(account_b, int(reset.timestamp()), usage.pending_event_ids) == 1
+    assert store.claim(account_b, int(reset.timestamp()), usage.pending_event_ids) == 0
+
+    claimed = scan_local_codex_usage(
+        tmp_path,
+        _weekly_limit(reset),
+        account_key=account_b,
+        account_intervals=intervals,
+        now=now,
+        claimed_event_ids=store.claimed_event_ids(account_b, int(reset.timestamp())),
+    )
+
+    assert claimed.tokens.total_tokens == 1_600
+    assert claimed.pending_tokens.total_tokens == 0
+    assert claimed.pending_event_ids == ()
 
 
 def test_new_observer_does_not_claim_previous_process_offline_gap(tmp_path: Path) -> None:
