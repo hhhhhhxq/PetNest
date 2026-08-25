@@ -72,12 +72,63 @@ def test_inspect_parses_json_and_hashes_sorted_network_identities(tmp_path: Path
         can_repair=True,
     )
     command, kwargs = calls[0]
+    script = command[-1]
     assert command[0].lower().endswith("powershell.exe")
-    assert str(executable.resolve()).casefold() in command[-1].casefold()
+    assert str(executable.resolve()).casefold() in script.casefold()
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 8
-    assert "Get-NetRoute" in command[-1]
-    assert "0.0.0.0/0" in command[-1]
+    assert "Get-NetRoute" in script
+    assert "0.0.0.0/0" in script
+    assert "HNetCfg.FwPolicy2" in script
+    assert "$firewallRules" in script
+    assert "Get-NetFirewallRule" not in script
+    assert "Get-NetFirewallPortFilter" not in script
+    assert "Get-NetFirewallApplicationFilter" not in script
+
+
+def test_inspection_script_strictly_matches_public_petnest_rules(tmp_path: Path) -> None:
+    captured: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs):
+        captured.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "publicNetworks": [],
+                    "firewallEnabled": True,
+                    "udpAllowed": False,
+                    "tcpAllowed": False,
+                    "policyManaged": False,
+                }
+            ),
+            "",
+        )
+
+    executable = tmp_path / "PetNest.exe"
+    WindowsLanFirewallBackend(
+        executable=executable,
+        platform="win32",
+        frozen=True,
+        command_runner=runner,
+    ).inspect()
+
+    script = captured[0][-1]
+    for fragment in (
+        ".Name -ne $displayName",
+        ".Enabled",
+        ".Direction -ne 1",
+        ".Action -ne 1",
+        ".Profiles -band 4",
+        ".Protocol -ne $protocol",
+        ".LocalPorts)",
+        ".ApplicationName",
+        "OrdinalIgnoreCase",
+        "Test-PetNestRule 'PetNest LAN UDP 18487' 17",
+        "Test-PetNestRule 'PetNest LAN TCP 18487' 6",
+    ):
+        assert fragment in script
 
 
 def test_policy_managed_status_keeps_warning_but_disables_repair(tmp_path: Path) -> None:

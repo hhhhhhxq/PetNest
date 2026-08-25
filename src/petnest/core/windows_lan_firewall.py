@@ -144,24 +144,33 @@ $identities = @($publicProfiles | ForEach-Object {{ "NetworkProfile:$($_.Interfa
 $publicFirewall = Get-NetFirewallProfile -Profile Public -PolicyStore ActiveStore
 $firewallEnabled = [bool]$publicFirewall.Enabled
 $policyManaged = [string]$publicFirewall.AllowLocalFirewallRules -eq 'False'
-function Test-PetNestRule([string]$displayName, [string]$protocol) {{
-    $rules = @(Get-NetFirewallRule -DisplayName $displayName -ErrorAction SilentlyContinue | Where-Object {{
-        $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' -and
-        (($_.Profile -band 4) -ne 0 -or $_.Profile -eq 'Any')
-    }})
-    foreach ($rule in $rules) {{
-        $port = $rule | Get-NetFirewallPortFilter
-        $app = $rule | Get-NetFirewallApplicationFilter
-        if ($port.Protocol -eq $protocol -and "$($port.LocalPort)" -eq '{LAN_PORT}' -and
-            [string]::Equals($app.Program, $program, [System.StringComparison]::OrdinalIgnoreCase)) {{ return $true }}
+$firewallPolicy = New-Object -ComObject HNetCfg.FwPolicy2
+$firewallRules = @($firewallPolicy.Rules)
+function Test-PetNestRule([string]$displayName, [int]$protocol) {{
+    foreach ($rule in $firewallRules) {{
+        if ($rule.Name -ne $displayName) {{ continue }}
+        if (-not [bool]$rule.Enabled -or [int]$rule.Direction -ne 1 -or [int]$rule.Action -ne 1) {{
+            continue
+        }}
+        if (([int]$rule.Profiles -band 4) -eq 0) {{ continue }}
+        if ([int]$rule.Protocol -ne $protocol) {{ continue }}
+        if ("$($rule.LocalPorts)" -ne '{LAN_PORT}') {{ continue }}
+        if (-not [string]::Equals(
+            $rule.ApplicationName,
+            $program,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {{
+            continue
+        }}
+        return $true
     }}
     return $false
 }}
 [ordered]@{{
     publicNetworks = $identities
     firewallEnabled = $firewallEnabled
-    udpAllowed = [bool](Test-PetNestRule '{UDP_RULE_NAME}' 'UDP')
-    tcpAllowed = [bool](Test-PetNestRule '{TCP_RULE_NAME}' 'TCP')
+    udpAllowed = [bool](Test-PetNestRule '{UDP_RULE_NAME}' 17)
+    tcpAllowed = [bool](Test-PetNestRule '{TCP_RULE_NAME}' 6)
     policyManaged = [bool]$policyManaged
 }} | ConvertTo-Json -Compress
 """.strip()
