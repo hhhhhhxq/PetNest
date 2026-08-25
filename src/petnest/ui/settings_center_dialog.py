@@ -445,23 +445,34 @@ class SettingsCenterDialog(QDialog):
         content_layout = QVBoxLayout(content_pane)
         content_layout.setContentsMargins(10, 8, 8, 0)
         content_layout.setSpacing(4)
-        self.page_title = QLabel(content_pane)
+        self.page_heading = QFrame(content_pane)
+        self.page_heading.setObjectName("contentHeading")
+        heading_layout = QHBoxLayout(self.page_heading)
+        heading_layout.setContentsMargins(0, 0, 0, 0)
+        heading_layout.setSpacing(12)
+        self.page_title = QLabel(self.page_heading)
         self.page_title.setObjectName("contentTitle")
+        heading_layout.addWidget(self.page_title)
+        heading_layout.addStretch(1)
+        self.resource_status_label = QLabel(self.page_heading)
+        self.resource_status_label.setObjectName("resourceStatusLabel")
+        self.resource_status_label.setWordWrap(True)
+        self.resource_status_label.hide()
+        heading_layout.addWidget(
+            self.resource_status_label,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
         self.page_description = QLabel(content_pane)
         self.page_description.setObjectName("contentDescription")
         self.page_description.setWordWrap(True)
-        content_layout.addWidget(self.page_title)
+        content_layout.addWidget(self.page_heading)
         content_layout.addWidget(self.page_description)
-        self.resource_status_label = QLabel(content_pane)
-        self.resource_status_label.setObjectName("mutedLabel")
-        self.resource_status_label.setWordWrap(True)
-        self.resource_status_label.hide()
         self._resource_status_active = False
         self.resource_status_hide_timer = QTimer(self)
         self.resource_status_hide_timer.setSingleShot(True)
         self.resource_status_hide_timer.setInterval(3000)
         self.resource_status_hide_timer.timeout.connect(self.clear_resource_status)
-        content_layout.addWidget(self.resource_status_label)
 
         self.page_stack = QStackedWidget(content_pane)
         self.page_stack.setObjectName("settingsPageStack")
@@ -635,7 +646,7 @@ class SettingsCenterDialog(QDialog):
         self._set_resource_status(f"正在获取{subject}… {percentage}%")
 
     def set_resource_ready(self) -> None:
-        self._set_resource_status("新资源已就绪")
+        self._set_resource_status("资源已是最新")
         self.resource_status_hide_timer.start()
 
     def set_resource_error(self) -> None:

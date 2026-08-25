@@ -258,6 +258,15 @@ def dialog_stylesheet() -> str:
             color: {c['muted_text']};
             font-size: 14px;
         }}
+        QLabel#resourceStatusLabel {{
+            color: #9A5438;
+            background: rgba(255, 239, 228, 210);
+            border: 1px solid rgba(217, 134, 99, 120);
+            border-radius: 10px;
+            padding: 5px 10px;
+            font-size: 13px;
+            font-weight: 700;
+        }}
         QLabel#accentValue {{
             color: #A85D3E;
             font-size: 17px;

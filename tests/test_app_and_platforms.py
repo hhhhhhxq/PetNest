@@ -1550,6 +1550,30 @@ def test_resource_section_applies_an_already_known_update_without_checking(
     application.shutdown()
 
 
+def test_resource_check_without_update_reports_resources_are_current(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._schedule_resource_check = lambda force=False: None  # type: ignore[method-assign]
+    application.show_cursor_style_dialog()
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+
+    application._handle_resource_check_result(
+        RemoteResourceCheckResult(True, False, False, catalog_version="2026.8.25")
+    )
+
+    assert application._resource_status == "ready"
+    assert dialog.resource_status_label.text() == "资源已是最新"
+    application.shutdown()
+
+
 def test_resource_progress_updates_the_open_settings_page_with_resource_context(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
@@ -1568,6 +1592,77 @@ def test_resource_progress_updates_the_open_settings_page_with_resource_context(
     application._handle_resource_progress((43, "interaction_effect", "星光", False))
 
     assert dialog.resource_status_label.text() == "正在获取互动动效「星光」… 43%"
+    application.shutdown()
+
+
+def test_draining_a_fast_resource_update_yields_progress_before_ready(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._schedule_resource_check = lambda force=False: None  # type: ignore[method-assign]
+    application.show_cursor_style_dialog()
+    dialog = application._settings_center_dialog
+    assert dialog is not None
+    worker_token = object()
+    application._resource_worker = worker_token  # type: ignore[assignment]
+    application._resource_results.put(
+        ("progress", worker_token, (43, "cursor_theme", "奶霜猫爪", False))
+    )
+    application._resource_results.put(
+        ("apply", worker_token, RemoteResourceApplyResult(True, "2026.8.25"))
+    )
+
+    application._drain_resource_results()
+
+    assert application._resource_status == "downloading"
+    assert dialog.resource_status_label.text() == "正在获取鼠标主题「奶霜猫爪」… 43%"
+
+    application._drain_resource_results()
+
+    assert application._resource_status == "ready"
+    assert dialog.resource_status_label.text() == "资源已是最新"
+    application.shutdown()
+
+
+def test_resource_view_refresh_is_not_repeated_when_apply_arrives_next_poll(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    refreshes: list[bool] = []
+    application._refresh_resource_directories = (  # type: ignore[method-assign]
+        lambda verify_files=True: refreshes.append(verify_files)
+    )
+    worker_token = object()
+    application._resource_worker = worker_token  # type: ignore[assignment]
+    application._resource_results.put(("view", worker_token, None))
+
+    application._drain_resource_results()
+    application._resource_results.put(
+        (
+            "apply",
+            worker_token,
+            RemoteResourceApplyResult(
+                True,
+                "2026.8.25",
+                updated_resource_ids=("cursor-set-6",),
+            ),
+        )
+    )
+    application._drain_resource_results()
+
+    assert refreshes == [False]
     application.shutdown()
 
 

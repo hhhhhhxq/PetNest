@@ -59,6 +59,9 @@ def test_resource_status_uses_precise_non_blocking_messages(qtbot) -> None:
     dialog = SettingsDialog(Settings(), initial_section="mouse_behavior")
     qtbot.addWidget(dialog)
 
+    assert dialog.resource_status_label.parentWidget() is dialog.page_heading
+    assert dialog.resource_status_label.objectName() == "resourceStatusLabel"
+
     dialog.set_resource_checking()
     assert dialog.resource_status_label.text() == "正在获取最新资源信息…"
     assert not dialog.resource_status_label.isHidden()
@@ -76,7 +79,7 @@ def test_resource_status_uses_precise_non_blocking_messages(qtbot) -> None:
     assert dialog.resource_status_label.text() == "新资源获取失败，将稍后自动重试"
 
     dialog.set_resource_ready()
-    assert dialog.resource_status_label.text() == "新资源已就绪"
+    assert dialog.resource_status_label.text() == "资源已是最新"
     assert dialog.resource_status_hide_timer.interval() == 3000
     assert dialog.resource_status_hide_timer.isActive()
     dialog.resource_status_hide_timer.timeout.emit()

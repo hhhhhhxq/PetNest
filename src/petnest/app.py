@@ -326,6 +326,10 @@ class PetNest:
         )
         self._resource_results: Queue[tuple[str, object, object]] = Queue()
         self._resource_worker: Thread | None = None
+        self._deferred_resource_apply: (
+            tuple[object, RemoteResourceApplyResult] | None
+        ) = None
+        self._resource_view_refreshed_worker: object | None = None
         self._resource_status = "idle"
         self._resource_progress: tuple[int, str | None, str | None, bool] = (0, None, None, False)
         self.app_update_client = AppUpdateClient(
@@ -2147,24 +2151,46 @@ class PetNest:
             self._schedule_resource_check(force=False)
 
     def _drain_resource_results(self) -> None:
-        view_refreshed = False
-        while True:
+        deferred_apply = self._deferred_resource_apply
+        if deferred_apply is not None:
+            self._deferred_resource_apply = None
+            worker_token, result = deferred_apply
+            if self._resource_worker is worker_token:
+                self._resource_worker = None
+            view_refreshed = self._resource_view_refreshed_worker is worker_token
+            if view_refreshed:
+                self._resource_view_refreshed_worker = None
+            self._handle_resource_apply_result(result, view_already_refreshed=view_refreshed)
+            return
+
+        progress_rendered = False
+        for _ in range(self._resource_results.qsize()):
             try:
                 kind, worker_token, payload = self._resource_results.get_nowait()
             except Empty:
+                return
+            if (
+                kind == "apply"
+                and progress_rendered
+                and isinstance(payload, RemoteResourceApplyResult)
+            ):
+                self._deferred_resource_apply = (worker_token, payload)
                 return
             if kind in {"check", "apply"} and self._resource_worker is worker_token:
                 self._resource_worker = None
             if kind == "check" and isinstance(payload, RemoteResourceCheckResult):
                 self._handle_resource_check_result(payload)
             elif kind == "apply" and isinstance(payload, RemoteResourceApplyResult):
+                view_refreshed = self._resource_view_refreshed_worker is worker_token
+                if view_refreshed:
+                    self._resource_view_refreshed_worker = None
                 self._handle_resource_apply_result(payload, view_already_refreshed=view_refreshed)
-                view_refreshed = False
             elif kind == "progress" and isinstance(payload, tuple) and len(payload) == 4:
                 self._handle_resource_progress(payload)
+                progress_rendered = True
             elif kind == "view":
                 self._refresh_resource_directories(verify_files=False)
-                view_refreshed = True
+                self._resource_view_refreshed_worker = worker_token
 
     def _handle_resource_progress(
         self,
@@ -2182,7 +2208,7 @@ class PetNest:
         elif result.update_available:
             self._schedule_resource_apply()
         else:
-            self._resource_status = "idle"
+            self._resource_status = "ready"
             self._render_resource_status()
 
     def _handle_resource_apply_result(
