@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QProgressBar
+from PySide6.QtWidgets import QLabel, QMessageBox, QProgressBar
 
 from petnest.core.codex_usage import (
     AccountTokenSummary,
@@ -19,6 +19,7 @@ from petnest.core.codex_usage import (
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexManualAttributionStore,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -27,6 +28,7 @@ from petnest.core.codex_usage import (
     DailyTokenUsage,
     LocalCodexUsage,
     codex_device_usage_path,
+    codex_manual_attribution_path,
 )
 from petnest.ui.codex_usage_dialog import CodexUsageDialog
 
@@ -39,6 +41,7 @@ def test_usage_dialog_is_a_movable_non_modal_window(tmp_path, qtbot) -> None:
     assert dialog.windowModality() is Qt.WindowModality.NonModal
     assert not dialog.isModal()
     assert dialog.windowFlags() & Qt.WindowType.WindowTitleHint
+    assert dialog.claim_pending_button.text() == "补登到当前账号"
 
 
 def _report(tmp_path: Path) -> CodexUsageReport:
@@ -128,6 +131,39 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
+
+
+def test_claim_pending_button_persists_current_account_claim(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _report(tmp_path)
+    report = replace(
+        report,
+        local_usage=replace(report.local_usage, pending_event_ids=("event-one", "event-two")),
+    )
+    history_path = tmp_path / "history.json"
+    dialog = CodexUsageDialog(history_path, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog._live_report = report
+    dialog._show_report(report)
+    refreshed: list[bool] = []
+    monkeypatch.setattr(dialog, "refresh_usage", lambda: refreshed.append(True))
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    qtbot.mouseClick(dialog.claim_pending_button, Qt.MouseButton.LeftButton)
+
+    reset = report.primary_limit.primary.resets_at
+    assert reset is not None
+    store = CodexManualAttributionStore(codex_manual_attribution_path(history_path))
+    assert store.claimed_event_ids(report.account.key, int(reset.timestamp())) == {
+        "event-one",
+        "event-two",
+    }
+    assert refreshed == [True]
 
 
 def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pytest.QtBot, tmp_path: Path) -> None:

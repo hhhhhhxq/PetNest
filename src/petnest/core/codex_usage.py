@@ -114,6 +114,7 @@ class LocalCodexUsage:
     observed_end_used_percent: float | None = None
     files_scanned: int = 0
     files_skipped: int = 0
+    pending_event_ids: tuple[str, ...] = ()
 
     @property
     def scan_status(self) -> str:
@@ -291,6 +292,59 @@ class CodexAccountObservationStore:
             if temporary.exists():
                 temporary.unlink()
 
+
+class CodexManualAttributionStore:
+    """Persist explicit user claims for otherwise-unattributable token events."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = RLock()
+
+    def claimed_event_ids(self, account_key: str, reset_epoch: int) -> frozenset[str]:
+        with self._lock:
+            raw = self._load()
+        key = f"{account_key}:{reset_epoch}"
+        values = raw.get("claims", {}).get(key, []) if isinstance(raw.get("claims"), dict) else []
+        if not isinstance(values, list):
+            return frozenset()
+        return frozenset(value for value in values if isinstance(value, str) and value)
+
+    def claim(self, account_key: str, reset_epoch: int, event_ids: Iterable[str]) -> int:
+        if re.fullmatch(r"[0-9a-f]{24}", account_key) is None or reset_epoch <= 0:
+            raise ValueError("补登账号或额度周期无效")
+        additions = {str(value) for value in event_ids if str(value)}
+        if not additions:
+            return 0
+        with self._lock:
+            raw = self._load()
+            claims = raw.get("claims")
+            if not isinstance(claims, dict):
+                claims = {}
+            key = f"{account_key}:{reset_epoch}"
+            existing = {value for value in claims.get(key, []) if isinstance(value, str)}
+            before = len(existing)
+            existing.update(additions)
+            claims[key] = sorted(existing)
+            payload = {"schema_version": 1, "claims": claims}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(self.path.suffix + ".tmp")
+            try:
+                temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                temporary.replace(self.path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+            return len(existing) - before
+
+    def _load(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
 RpcTransport = Callable[
     [Path, list[dict[str, Any]], frozenset[int], float],
     dict[int, dict[str, Any]],
@@ -307,12 +361,14 @@ class CodexUsageClient:
         timeout: float = 20.0,
         transport: RpcTransport | None = None,
         observation_store: CodexAccountObservationStore | None = None,
+        manual_attribution_store: CodexManualAttributionStore | None = None,
     ) -> None:
         self._executables = (executable,) if executable is not None else discover_codex_executables()
         self.executable = self._executables[0]
         self.timeout = timeout
         self._transport = transport or _stdio_rpc_transport
         self._observation_store = observation_store
+        self._manual_attribution_store = manual_attribution_store
 
     def observe_account(self) -> CodexAccount | None:
         """Record the current login without fetching quota or scanning logs."""
@@ -456,6 +512,15 @@ class CodexUsageClient:
             account_key=account.key,
             account_intervals=intervals,
             now=fetched_at,
+            claimed_event_ids=(
+                self._manual_attribution_store.claimed_event_ids(
+                    account.key, int(primary.primary.resets_at.timestamp())
+                )
+                if self._manual_attribution_store is not None
+                and primary.primary is not None
+                and primary.primary.resets_at is not None
+                else ()
+            ),
         )
         return CodexUsageReport(
             account=account,
@@ -576,6 +641,7 @@ def scan_local_codex_usage(
     account_key: str | None = None,
     account_intervals: Iterable[CodexAccountInterval] = (),
     now: datetime | None = None,
+    claimed_event_ids: Iterable[str] = (),
 ) -> LocalCodexUsage:
     """Sum local token events attributable to an account's current quota window.
 
@@ -593,6 +659,7 @@ def scan_local_codex_usage(
         window.resets_at,
     )
     intervals = tuple(account_intervals)
+    claimed = frozenset(claimed_event_ids)
     total = CodexTokenUsage()
     pending = CodexTokenUsage()
     anomalies = CodexTokenUsage()
@@ -608,6 +675,7 @@ def scan_local_codex_usage(
     fingerprint_paths = _session_ancestry_files(codex_home, paths)
     first_occurrence, duplicates = _token_fingerprint_index(fingerprint_paths, end)
     processed_events: set[str] = set()
+    pending_event_ids: list[str] = []
     for path in paths:
         try:
             stream = path.open("r", encoding="utf-8")
@@ -663,8 +731,9 @@ def scan_local_codex_usage(
                     account_key,
                     intervals,
                 )
-                if attribution != "current":
+                if attribution != "current" and event.fingerprint not in claimed:
                     pending += event.usage
+                    pending_event_ids.append(event.fingerprint)
                     continue
                 total += event.usage
                 if anomalous:
@@ -741,6 +810,7 @@ def scan_local_codex_usage(
         observed_end_used_percent=observed_end,
         files_scanned=scanned,
         files_skipped=skipped,
+        pending_event_ids=tuple(pending_event_ids),
     )
 
 
@@ -948,6 +1018,9 @@ class CodexUsageHistoryStore:
                     codex_account_observation_path(self.path)
                 ).load(),
                 now=report.fetched_at,
+                claimed_event_ids=CodexManualAttributionStore(
+                    codex_manual_attribution_path(self.path)
+                ).claimed_event_ids(report.account.key, int(reset.timestamp())),
             )
             local = local_usage.tokens
             if local.total_tokens <= 0 and snapshot.local_tokens > 0:
@@ -1194,6 +1267,13 @@ def codex_account_observation_path(account_history_path: Path) -> Path:
     suffix = account_history_path.suffix or ".json"
     stem = account_history_path.stem if account_history_path.suffix else account_history_path.name
     return account_history_path.with_name(f"{stem}-accounts{suffix}")
+
+
+def codex_manual_attribution_path(account_history_path: Path) -> Path:
+    """Derive the local-only manual token attribution file."""
+    suffix = account_history_path.suffix or ".json"
+    stem = account_history_path.stem if account_history_path.suffix else account_history_path.name
+    return account_history_path.with_name(f"{stem}-manual-attributions{suffix}")
 
 
 def _device_cycle_key(snapshot: CodexDeviceUsageSnapshot) -> str:
@@ -1920,6 +2000,7 @@ __all__ = [
     "CodexAccount",
     "CodexAccountInterval",
     "CodexAccountObservationStore",
+    "CodexManualAttributionStore",
     "CodexAccountSnapshot",
     "CodexDeviceUsageSnapshot",
     "CodexDeviceUsageStore",
@@ -1938,5 +2019,6 @@ __all__ = [
     "locate_codex_home",
     "scan_local_codex_usage",
     "codex_account_observation_path",
+    "codex_manual_attribution_path",
     "codex_device_usage_path",
 ]

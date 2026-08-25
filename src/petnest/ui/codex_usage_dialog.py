@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -32,6 +33,7 @@ from petnest.core.codex_usage import (
     CodexAccountSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexManualAttributionStore,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -39,6 +41,7 @@ from petnest.core.codex_usage import (
     CodexUsageHistoryStore,
     CodexUsageReport,
     codex_device_usage_path,
+    codex_manual_attribution_path,
 )
 from petnest.ui.theme import dialog_stylesheet
 
@@ -72,6 +75,7 @@ class CodexUsageDialog(QDialog):
         )
         self.setWindowModality(Qt.WindowModality.NonModal)
         self._history = CodexUsageHistoryStore(history_path)
+        self._manual_attributions = CodexManualAttributionStore(codex_manual_attribution_path(history_path))
         self._device_history = CodexDeviceUsageStore(codex_device_usage_path(history_path))
         self._client_factory = client_factory
         self._device_id = str(device_id)
@@ -208,6 +212,10 @@ class CodexUsageDialog(QDialog):
         self.local_attribution_label = QLabel("待归属 / 标签异常  —", local_card)
         self.local_attribution_label.setObjectName("mutedLabel")
         self.local_attribution_label.setWordWrap(True)
+        self.claim_pending_button = QPushButton("补登到当前账号", local_card)
+        self.claim_pending_button.setToolTip("将当前待归属日志事件人工绑定到当前登录账号和本额度周期")
+        self.claim_pending_button.clicked.connect(self._claim_pending_tokens)
+        self.claim_pending_button.setEnabled(False)
         self.local_models_label = QLabel("常用模型  —", local_card)
         self.local_models_label.setObjectName("mutedLabel")
         self.local_models_label.setWordWrap(True)
@@ -266,6 +274,7 @@ class CodexUsageDialog(QDialog):
         local_layout.addWidget(self.local_requests_label)
         local_layout.addWidget(self.local_weighted_label)
         local_layout.addWidget(self.local_attribution_label)
+        local_layout.addWidget(self.claim_pending_button)
         local_layout.addWidget(self.local_models_label)
         local_layout.addWidget(self.local_speed_label)
         local_layout.addWidget(self.local_scan_label)
@@ -336,6 +345,47 @@ class CodexUsageDialog(QDialog):
         self._worker = Thread(target=self._fetch_worker, name="petnest-codex-usage", daemon=True)
         self._worker.start()
         self._poll_timer.start()
+
+    def _claim_pending_tokens(self, _checked: bool = False) -> None:
+        report = self._live_report
+        if report is None:
+            QMessageBox.information(self, "无法补登", "请先刷新当前登录账号的用量数据。")
+            return
+        if not report.local_usage.pending_event_ids:
+            QMessageBox.information(
+                self,
+                "无需补登",
+                "当前没有可补登的待归属日志事件。请先刷新；历史快照中的汇总数字不能直接补登。",
+            )
+            return
+        window = report.primary_limit.primary
+        if window is None or window.resets_at is None:
+            QMessageBox.warning(self, "无法补登", "当前账号没有可确认的额度周期。")
+            return
+        tokens = report.local_usage.pending_tokens.total_tokens
+        choice = QMessageBox.question(
+            self,
+            "补登待归属 Token",
+            f"确认将 {tokens:,} 个待归属 Token 补登到当前账号 {report.account.label}？\n\n"
+            "该操作只保存 PetNest 本地归属，不会修改 Codex 官方额度或原始会话日志。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            count = self._manual_attributions.claim(
+                report.account.key,
+                int(window.resets_at.timestamp()),
+                report.local_usage.pending_event_ids,
+            )
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "补登失败", str(error))
+            return
+        self.claim_pending_button.setEnabled(False)
+        self.status_label.setStyleSheet("color: #4E7A51;")
+        self.status_label.setText(f"已记录 {count} 条人工归属，正在重新扫描…")
+        self.refresh_usage()
 
     def _fetch_worker(self) -> None:
         try:
@@ -550,6 +600,8 @@ class CodexUsageDialog(QDialog):
             f"待归属 {_number(local.pending_tokens.total_tokens)} Token · "
             f"标签异常 {_number(local.anomaly_tokens.total_tokens)} Token"
         )
+        self.claim_pending_button.setEnabled(bool(local.pending_event_ids))
+        self.claim_pending_button.setVisible(True)
         self.local_models_label.setText(_model_usage_label(local.model_usage))
         self.local_speed_label.setText(
             "速度占比  " + _speed_usage_label(local.fast_uses, local.standard_uses)
@@ -584,6 +636,8 @@ class CodexUsageDialog(QDialog):
         )
 
     def _show_snapshot(self, snapshot: CodexAccountSnapshot) -> None:
+        self.claim_pending_button.setVisible(False)
+        self.claim_pending_button.setEnabled(False)
         self.current_account_label.setText(
             f"历史快照 · {snapshot.account_label} · {_plan_label(snapshot.plan_type)}"
         )
@@ -670,6 +724,8 @@ class CodexUsageDialog(QDialog):
         self,
         devices: tuple[CodexDeviceUsageSnapshot, ...],
     ) -> None:
+        self.claim_pending_button.setVisible(False)
+        self.claim_pending_button.setEnabled(False)
         latest = max(devices, key=lambda item: item.updated_at)
         label = latest.account_label or f"局域网账号 {latest.account_key[:6]}…"
         plan = f" · {_plan_label(latest.plan_type)}" if latest.plan_type else ""
