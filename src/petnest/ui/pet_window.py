@@ -22,6 +22,13 @@ from petnest.ui.codex_status_bubble import CodexStatusBubble
 PositionSaved = Callable[[QPoint], object]
 
 
+def _prepare_translucent_frame(painter: QPainter, rect: QRect) -> None:
+    """清除上一帧的透明窗口像素，再恢复正常 alpha 叠加。"""
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+    painter.fillRect(rect, Qt.GlobalColor.transparent)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+
 class InteractionBubble(QLabel):
     """可在透明顶层窗口中稳定绘制背景的互动气泡。"""
 
@@ -618,11 +625,10 @@ class PetWindow(QWidget):
             | QPainter.RenderHint.TextAntialiasing
             | QPainter.RenderHint.SmoothPixmapTransform
         )
-        # A translucent native window can retain pixels from the previous frame,
-        # especially while its NSPanel is being moved on macOS. Source composition
-        # replaces the backing store (including fully transparent pixels) instead
-        # of blending the new frame over stale contents.
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        # Clear the translucent backing store first so macOS cannot retain pixels
+        # from the previous frame while moving the window. Draw the actual layers
+        # with SourceOver so transparent effect pixels preserve the pet beneath.
+        _prepare_translucent_frame(painter, self.rect())
         pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
         if self._active_effect_layer == "under":
             self._draw_active_effect(painter, pet_rect)

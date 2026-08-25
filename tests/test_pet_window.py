@@ -11,8 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QContextMenuEvent, QEnterEvent, QImage, QMouseEvent, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QImage, QMouseEvent, QPainter, QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -26,7 +26,7 @@ from petnest.models.pet_package import (
     DisplaySettings,
     PetPackage,
 )
-from petnest.ui.pet_window import PetWindow
+from petnest.ui.pet_window import PetWindow, _prepare_translucent_frame
 from petnest.ui.tray_icon import PetTrayIcon, application_icon
 
 
@@ -214,6 +214,79 @@ def test_remote_effect_exposes_its_requested_layer_and_can_be_cleared(
     window.clear_effect()
     assert window.active_effect_id is None
     assert window.size().height() == 12
+
+
+def test_transparent_over_effect_keeps_pet_pixels_beneath_it(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    frame = tmp_path / "transparent-effect.png"
+    effect_frame = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+    effect_frame.paste((0, 0, 255, 255), (0, 0, 5, 8))
+    effect_frame.save(frame)
+    effect = SimpleNamespace(
+        identifier="half-overlay",
+        frames=(frame,),
+        duration_ms=300,
+        layer="over",
+    )
+    window.show()
+
+    window.play_effect(effect)
+    window.repaint()
+    rendered = window.grab().toImage()
+
+    covered_pet = rendered.pixelColor(window.width() // 4, window.height() // 2)
+    uncovered_pet = rendered.pixelColor(window.width() * 3 // 4, window.height() // 2)
+    assert covered_pet.alpha() == 255
+    assert covered_pet.blue() > covered_pet.red()
+    assert uncovered_pet.alpha() == 255
+    assert uncovered_pet.red() > uncovered_pet.blue()
+
+
+def test_under_effect_stays_behind_opaque_pet_pixels(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        pet_frame = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+        pet_frame.paste((255, 0, 0, 255), (5, 0, 10, 8))
+        pet_frame.save(path)
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    frame = tmp_path / "under-effect.png"
+    Image.new("RGBA", (10, 8), (0, 0, 255, 255)).save(frame)
+    effect = SimpleNamespace(
+        identifier="underlay",
+        frames=(frame,),
+        duration_ms=300,
+        layer="under",
+    )
+    window.show()
+
+    window.play_effect(effect)
+    window.repaint()
+    rendered = window.grab().toImage()
+
+    transparent_pet_side = rendered.pixelColor(window.width() // 4, window.height() // 2)
+    opaque_pet_side = rendered.pixelColor(window.width() * 3 // 4, window.height() // 2)
+    assert transparent_pet_side.blue() > transparent_pet_side.red()
+    assert opaque_pet_side.red() > opaque_pet_side.blue()
+
+
+def test_frame_preparation_clears_old_pixels_and_restores_source_over_composition() -> None:
+    image = QImage(3, 1, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.green)
+    painter = QPainter(image)
+
+    _prepare_translucent_frame(painter, image.rect())
+    painter.fillRect(QRect(1, 0, 2, 1), Qt.GlobalColor.red)
+    painter.fillRect(QRect(2, 0, 1, 1), QColor(0, 0, 255, 128))
+    painter.end()
+
+    cleared_old_pixel = image.pixelColor(0, 0)
+    alpha_blended_pixel = image.pixelColor(2, 0)
+    assert cleared_old_pixel.alpha() == 0
+    assert alpha_blended_pixel.alpha() == 255
+    assert alpha_blended_pixel.red() > 0
+    assert alpha_blended_pixel.blue() > 0
 
 
 def test_countdown_skins_can_be_loaded_from_a_verified_resource_directory(
