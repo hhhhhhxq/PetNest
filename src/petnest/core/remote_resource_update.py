@@ -94,7 +94,7 @@ class RemoteResourceUpdateCoordinator:
         state_path: Path,
         *,
         now: Callable[[], datetime] | None = None,
-        interval: timedelta = timedelta(hours=24),
+        interval: timedelta = timedelta(seconds=60),
     ) -> None:
         self.cache = cache
         self.state_path = Path(state_path)

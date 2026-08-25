@@ -99,21 +99,24 @@ def _clock(start: datetime):
     return now, advance
 
 
-def test_check_is_throttled_for_24_hours_but_force_bypasses(tmp_path: Path) -> None:
+def test_check_is_throttled_for_60_seconds_but_force_bypasses(tmp_path: Path) -> None:
     now, advance = _clock(datetime(2026, 8, 11, 9, tzinfo=UTC))
     cache = _FakeCache(_manifest(b"new"))
     coordinator = RemoteResourceUpdateCoordinator(cache, tmp_path / "state.json", now=now)
 
     first = coordinator.check()
-    advance(hours=1)
+    advance(seconds=59)
     skipped = coordinator.check()
+    advance(seconds=2)
+    refreshed = coordinator.check()
     forced = coordinator.check(force=True)
 
     assert first.checked is True
     assert first.update_available is True
     assert skipped.skipped is True
+    assert refreshed.checked is True
     assert forced.checked is True
-    assert cache.fetch_calls == 2
+    assert cache.fetch_calls == 3
 
 
 def test_update_badge_state_survives_reload_and_clears_after_apply(tmp_path: Path) -> None:
