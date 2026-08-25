@@ -55,6 +55,7 @@ def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp
     assert reminder.animation_window.geometry() == geometry
     assert reminder.animation_window.target_frame_width == 920
     assert reminder.animation_window.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    assert reminder.animation_window.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert reminder.animation_window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
     assert reminder.control_window.pos().x() == 124
     assert reminder.control_window.pos().y() == 74

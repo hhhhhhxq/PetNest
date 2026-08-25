@@ -460,6 +460,11 @@ class WorkCountdownWindow(QObject):
         self._last_now = current
         if (
             self._work_finish_state is not None
+            and self._work_finish_state.work_date < current.date() - timedelta(days=1)
+        ):
+            self._set_work_finish_state(None)
+        if (
+            self._work_finish_state is not None
             and self._work_finish_state.work_date < current.date()
             and self._work_finish_state.status in {"prompting", "overtime"}
         ):
