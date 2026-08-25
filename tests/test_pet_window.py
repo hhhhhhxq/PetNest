@@ -192,6 +192,41 @@ def test_codex_status_bubble_is_independent_from_remote_messages(qtbot: pytest.Q
     assert window.codex_status_text is None
 
 
+def test_lan_firewall_notice_is_persistent_and_activates_independently(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    activated: list[bool] = []
+    window.lan_firewall_notice_activated.connect(lambda: activated.append(True))
+    window.show()
+
+    window.show_lan_firewall_notice()
+
+    assert window.lan_firewall_notice.isVisible()
+    assert not hasattr(window.lan_firewall_notice, "dismiss_timer")
+    window.lan_firewall_notice._activate()
+    assert activated == [True]
+    assert not window.lan_firewall_notice.isVisible()
+
+
+def test_lan_firewall_notice_close_only_dismisses(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    activated: list[bool] = []
+    dismissed: list[bool] = []
+    window.lan_firewall_notice_activated.connect(lambda: activated.append(True))
+    window.lan_firewall_notice_dismissed.connect(lambda: dismissed.append(True))
+    window.show()
+    window.show_lan_firewall_notice()
+
+    window.lan_firewall_notice.close_button.click()
+
+    assert activated == []
+    assert dismissed == [True]
+    assert not window.lan_firewall_notice.isVisible()
+
+
 def test_remote_effect_exposes_its_requested_layer_and_can_be_cleared(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

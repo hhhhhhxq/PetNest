@@ -20,6 +20,7 @@ from .logging_config import configure_logging, install_diagnostic_hooks
 from .core.codex_link import forward_codex_hook
 from .core.settings_manager import SettingsManager
 from .core.single_instance import InstanceClaim, SingleInstanceCoordinator
+from .core.windows_lan_firewall import configure_public_firewall_rules
 from .ui.tray_icon import application_icon
 
 
@@ -32,7 +33,12 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="仅校验内置宠物包，不创建 GUI")
     parser.add_argument("--set-pets-root", type=Path, metavar="目录", help="供安装器保存自定义宠物库位置")
     parser.add_argument("--codex-hook", type=Path, metavar="元数据", help=argparse.SUPPRESS)
+    parser.add_argument("--configure-lan-firewall-public", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(arguments)
+    if args.configure_lan_firewall_public:
+        if sys.platform != "win32" or not getattr(sys, "frozen", False):
+            return 2
+        return configure_public_firewall_rules(Path(sys.executable))
     if args.codex_hook is not None:
         input_stream = getattr(sys.stdin, "buffer", sys.stdin)
         raw_input = input_stream.read(65_537)

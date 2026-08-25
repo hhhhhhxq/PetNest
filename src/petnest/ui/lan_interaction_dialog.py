@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from petnest.core.device_identity import display_name_for, initials_for
 from petnest.core.lan_chat import LanChatImageError, prepare_chat_image
+from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.lan_interaction import (
     MAX_CHAT_TEXT_LENGTH,
     ChatDraft,
@@ -182,6 +183,8 @@ class LanInteractionDialog(QDialog):
         remote_pair_code: str = "",
         remote_status: str = "Firebase 尚未配置",
         chat_messages: Sequence[LanChatMessage] = (),
+        firewall_status: LanFirewallStatus | None = None,
+        on_allow_public_firewall: Callable[[], bool | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -207,6 +210,8 @@ class LanInteractionDialog(QDialog):
         self._remote_pair_code = remote_pair_code
         self._remote_status = remote_status
         self._chat_messages = list(chat_messages)
+        self._firewall_status = firewall_status or LanFirewallStatus()
+        self._on_allow_public_firewall = on_allow_public_firewall
         self._preview_active = False
         self._selected_peer: LanPeer | None = None
         self._selected_effect_id: str | None = None
@@ -217,6 +222,7 @@ class LanInteractionDialog(QDialog):
         self._status_reset_timer.setSingleShot(True)
         self._status_reset_timer.timeout.connect(self._restore_default_status)
         self._build_ui()
+        self.set_firewall_status(self._firewall_status)
         self._populate_peers()
         self._populate_remote_peers()
         self._populate_effects()
@@ -240,6 +246,36 @@ class LanInteractionDialog(QDialog):
         if self._pending_send_draft is not None:
             return
         self._show_feedback(str(message), timeout_ms=4_000)
+
+    def set_firewall_status(
+        self,
+        status: LanFirewallStatus,
+        *,
+        repair_message: str = "",
+        repairing: bool = False,
+    ) -> None:
+        self._firewall_status = status
+        self.firewall_warning.setVisible(status.requires_attention)
+        if not status.requires_attention:
+            return
+        message = (
+            "此设备由组织策略管理，请联系管理员放行 PetNest UDP/TCP 18487"
+            if status.policy_managed
+            else "公用网络防火墙尚未放行，部分设备可能无法连接"
+        )
+        self.firewall_warning_label.setText(
+            f"{message} · {repair_message}" if repair_message else message
+        )
+        self.firewall_allow_button.setVisible(status.can_repair)
+        self.firewall_allow_button.setEnabled(status.can_repair and not repairing)
+        self.firewall_allow_button.setText("处理中…" if repairing else "一键允许")
+
+    def _request_firewall_repair(self) -> None:
+        if self._on_allow_public_firewall is None or not self._firewall_status.can_repair:
+            return
+        accepted = self._on_allow_public_firewall()
+        if accepted is not False:
+            self.set_firewall_status(self._firewall_status, repairing=True)
 
     def remote_send_succeeded(self, draft: InteractionDraft) -> None:
         """远程服务确认写入 Firebase 后更新发送反馈。"""
@@ -398,9 +434,26 @@ class LanInteractionDialog(QDialog):
         self.set_status_message("伙伴码已复制")
 
     def _build_ui(self) -> None:
-        root = QHBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 20)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(10)
+        self.firewall_warning = QFrame(self)
+        self.firewall_warning.setObjectName("firewallWarning")
+        warning_layout = QHBoxLayout(self.firewall_warning)
+        warning_layout.setContentsMargins(12, 8, 10, 8)
+        self.firewall_warning_label = QLabel(self.firewall_warning)
+        self.firewall_warning_label.setObjectName("firewallWarningLabel")
+        self.firewall_warning_label.setWordWrap(True)
+        warning_layout.addWidget(self.firewall_warning_label, 1)
+        self.firewall_allow_button = QPushButton("一键允许", self.firewall_warning)
+        self.firewall_allow_button.setObjectName("firewallAllowButton")
+        self.firewall_allow_button.clicked.connect(self._request_firewall_repair)
+        warning_layout.addWidget(self.firewall_allow_button)
+        outer.addWidget(self.firewall_warning)
+
+        root = QHBoxLayout()
         root.setSpacing(18)
+        outer.addLayout(root, 1)
 
         left = QFrame(self)
         left.setObjectName("sidebar")
@@ -1381,6 +1434,10 @@ def _dialog_stylesheet() -> str:
     return """
     QDialog { background: #faf9f7; color: #272421; }
     QFrame#sidebar, QFrame#contentPanel { background: #ffffff; border: 1px solid #ebe6df; border-radius: 16px; }
+    QFrame#firewallWarning { background: #fff1e8; border: 1px solid #efad89; border-radius: 10px; }
+    QLabel#firewallWarningLabel { color: #8b4528; font-size: 12px; }
+    QPushButton#firewallAllowButton { background: #df8f68; color: white; border: none; border-radius: 8px; padding: 6px 12px; font-weight: 600; }
+    QPushButton#firewallAllowButton:disabled { background: #d8b6a5; }
     QLabel#titleLabel { font-size: 17px; font-weight: 650; color: #272421; }
     QLabel#sectionTitle { color: #272421; font-size: 15px; font-weight: 600; }
     QLabel#mutedLabel { color: #8f8b86; font-size: 12px; }

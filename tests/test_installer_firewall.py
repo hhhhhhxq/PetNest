@@ -23,6 +23,9 @@ def test_installer_declares_scoped_lan_firewall_configuration() -> None:
     assert "PetNest LAN TCP 18487" in script
     assert "protocol=UDP" in script
     assert "protocol=TCP" in script
+    assert "FirewallPage.Values[0] := False" in script
+    assert "Result := 'private,public'" in script
+    assert "Result := 'private'" in script
     assert "RunOnceId: \"RemovePetNestLanFirewall\"" in script
     assert "RunOnceId: \"RemovePetNestLanChatFirewall\"" in script
 

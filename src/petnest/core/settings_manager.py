@@ -222,6 +222,10 @@ class SettingsManager:
             version = 26
         if version == 26:
             migrated.setdefault("keyboard_working_enabled", False)
+            migrated["schema_version"] = 27
+            version = 27
+        if version == 27:
+            migrated.setdefault("lan_firewall_dismissed_public_networks", [])
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

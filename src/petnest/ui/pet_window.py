@@ -18,6 +18,7 @@ from petnest.core.state_machine import PetStateMachine, StateTransition
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
 from petnest.ui.codex_status_bubble import CodexStatusBubble
+from petnest.ui.lan_firewall_notice import LanFirewallNoticeBubble
 
 PositionSaved = Callable[[QPoint], object]
 
@@ -53,6 +54,8 @@ class PetWindow(QWidget):
     context_menu_requested = Signal(QPoint)
     countdown_clicked = Signal()
     codex_status_activated = Signal()
+    lan_firewall_notice_activated = Signal()
+    lan_firewall_notice_dismissed = Signal()
     position_changed = Signal()
 
     def __init__(
@@ -140,6 +143,9 @@ class PetWindow(QWidget):
         self._interaction_bubble_timer.timeout.connect(self.clear_interaction_bubble)
         self.codex_status_bubble = CodexStatusBubble(None)
         self.codex_status_bubble.activated.connect(self.codex_status_activated)
+        self.lan_firewall_notice = LanFirewallNoticeBubble(None)
+        self.lan_firewall_notice.activated.connect(self.lan_firewall_notice_activated)
+        self.lan_firewall_notice.dismissed.connect(self.lan_firewall_notice_dismissed)
         self._active_effect_id: str | None = None
         self._active_effect_layer = "over"
         self._effect_pixmaps: tuple[QPixmap, ...] = ()
@@ -412,6 +418,12 @@ class PetWindow(QWidget):
     def clear_codex_status(self) -> None:
         self.codex_status_bubble.clear()
 
+    def show_lan_firewall_notice(self) -> None:
+        self.lan_firewall_notice.show_notice(self._global_window_rect())
+
+    def clear_lan_firewall_notice(self) -> None:
+        self.lan_firewall_notice.clear()
+
     def play_effect(self, effect: object, *, loop: bool = False) -> bool:
         """在宠物画布中播放本地动效；``layer`` 决定绘制顺序。"""
         frames = tuple(getattr(effect, "frames", ()))
@@ -604,12 +616,14 @@ class PetWindow(QWidget):
         if self.interaction_bubble.isVisible():
             self.interaction_bubble.move(self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3))))
         self.codex_status_bubble.reposition(self._global_window_rect())
+        self.lan_firewall_notice.reposition(self._global_window_rect())
         super().moveEvent(event)  # type: ignore[arg-type]
         self.position_changed.emit()
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
         self.clear_interaction_bubble()
         self.clear_codex_status()
+        self.clear_lan_firewall_notice()
         self.clear_effect()
         super().closeEvent(event)  # type: ignore[arg-type]
 

@@ -300,6 +300,13 @@ class LanInteractionService(QObject):
         for broadcast in dict.fromkeys((*broadcasts, "255.255.255.255")):
             self._send_packet(packet, QHostAddress(broadcast), self._port)
 
+    def refresh_connections(self) -> None:
+        """立即重新广播，并定向探测所有已保存伙伴。"""
+        if not self._running:
+            return
+        self.discover()
+        self._probe_saved_peers()
+
     def _refresh_manual_peers(self) -> None:
         """用定向 hello 续期手动添加的跨网段设备。"""
         if not self._running or not self._manual_peer_targets:

@@ -988,3 +988,26 @@ def test_discover_deduplicates_broadcasts_and_continues_after_a_send_failure(qtb
     service.discover()
 
     assert sent == ["192.168.20.255", "255.255.255.255"]
+
+
+def test_refresh_connections_discovers_and_probes_saved_peers(qtbot) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安")
+    calls: list[str] = []
+    service._running = True
+    service.discover = lambda: calls.append("discover")
+    service._probe_saved_peers = lambda: calls.append("saved")
+
+    service.refresh_connections()
+
+    assert calls == ["discover", "saved"]
+
+
+def test_refresh_connections_is_noop_while_stopped(qtbot) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安")
+    calls: list[str] = []
+    service.discover = lambda: calls.append("discover")
+    service._probe_saved_peers = lambda: calls.append("saved")
+
+    service.refresh_connections()
+
+    assert calls == []

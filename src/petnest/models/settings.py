@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 27
+    SCHEMA_VERSION = 28
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -51,6 +51,7 @@ class Settings:
     lan_interaction_enabled: bool = True
     lan_group_chat_notifications_enabled: bool = True
     lan_alert_group_joined: bool = False
+    lan_firewall_dismissed_public_networks: tuple[str, ...] = ()
     codex_usage_unlocked: bool = False
     codex_link_enabled: bool = True
     codex_link_show_attention_bubbles: bool = True
@@ -113,6 +114,9 @@ class Settings:
             if values.get(name) is not None and not isinstance(values[name], str):
                 values[name] = None
         values["work_finish_state"] = _work_finish_state(values.get("work_finish_state"))
+        values["lan_firewall_dismissed_public_networks"] = _string_history(
+            values.get("lan_firewall_dismissed_public_networks")
+        )
         for name, default in (
             ("keyboard_working_enabled", False),
             ("codex_link_enabled", True),
@@ -128,6 +132,20 @@ class Settings:
         if "animation_overrides" in values:
             values["animation_overrides"] = _animation_overrides(values["animation_overrides"])
         return cls(**values)
+
+
+def _string_history(value: object, *, limit: int = 20) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    unique: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        normalized = item.strip()
+        if normalized in unique:
+            unique.remove(normalized)
+        unique.append(normalized)
+    return tuple(unique[-limit:])
 
 
 def _cursor_scale(value: object) -> int:

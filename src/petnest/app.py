@@ -59,10 +59,12 @@ from petnest.core.codex_plugin import CodexPluginManager, CodexPluginStatus
 from petnest.core.codex_session_log import CodexSessionLogWatcher
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
+from petnest.core.lan_firewall_advisor import LanFirewallAdvisorCoordinator
 from petnest.core.lan_discovery import qt_interface_ipv4
 from petnest.core.lan_pool_roster import PoolRosterStore
 from petnest.core.lan_pool_sync import LanPoolSyncService
 from petnest.core.lan_peer_registry import KnownLanPeerRegistry
+from petnest.core.windows_lan_firewall import LanFirewallStatus, WindowsLanFirewallBackend
 from petnest.core.lottie_effects import EffectCatalog
 from petnest.core.mouse_follow import MouseFollowController
 from petnest.core.package_loader import PackageLoader
@@ -252,6 +254,7 @@ class PetNest:
         codex_discovery: CodexDiscoveryService | None = None,
         codex_log_watcher: CodexSessionLogWatcher | None = None,
         keyboard_activity_monitor: KeyboardActivityMonitor | None = None,
+        lan_firewall_advisor: LanFirewallAdvisorCoordinator | None = None,
         store_base_url: str = REMOTE_RESOURCE_BASE_URL,
         enable_tray: bool = True,
     ) -> None:
@@ -398,6 +401,19 @@ class PetNest:
         )
         self.window.codex_status_activated.connect(self._activate_codex_status)
         self.window.codex_status_bubble.dismissed.connect(self._dismiss_codex_status)
+        self._uses_default_lan_firewall_advisor = lan_firewall_advisor is None
+        self.lan_firewall_advisor = lan_firewall_advisor or LanFirewallAdvisorCoordinator(
+            WindowsLanFirewallBackend(),
+            parent=self.window,
+        )
+        self._lan_firewall_status = self.lan_firewall_advisor.status
+        self._lan_firewall_repairing = False
+        self._lan_firewall_repair_message = ""
+        self._lan_interaction_dialog: LanInteractionDialog | None = None
+        self.lan_firewall_advisor.status_changed.connect(self._handle_lan_firewall_status)
+        self.lan_firewall_advisor.repair_finished.connect(self._handle_lan_firewall_repair_finished)
+        self.window.lan_firewall_notice_activated.connect(self.show_lan_interaction_dialog)
+        self.window.lan_firewall_notice_dismissed.connect(self._dismiss_lan_firewall_notice)
         self.peer_registry = KnownLanPeerRegistry(
             self.settings_manager.path.parent / "known-lan-peers.json"
         )
@@ -584,6 +600,11 @@ class PetNest:
         if self.tray is not None:
             self.tray.show()
         self.window.show()
+        firewall_enabled = self.settings.lan_interaction_enabled and not (
+            self._uses_default_lan_firewall_advisor
+            and os.environ.get("PETNEST_TEST_DISABLE_LAN", "").strip() == "1"
+        )
+        self.lan_firewall_advisor.start(enabled=firewall_enabled)
         self._configure_work_countdown()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=self.settings.cursor_restore_pending)
@@ -772,6 +793,9 @@ class PetNest:
         keyboard_configuration_changed = (
             settings.keyboard_working_enabled != self.settings.keyboard_working_enabled
         )
+        lan_configuration_changed = (
+            settings.lan_interaction_enabled != self.settings.lan_interaction_enabled
+        )
         alert_membership_changed = settings.lan_alert_group_joined != self.settings.lan_alert_group_joined
         external_event_configuration_changed = (
             settings.external_event_server_enabled != self.settings.external_event_server_enabled
@@ -804,6 +828,12 @@ class PetNest:
             pet_name=self.package.name,
         )
         self._configure_lan_service()
+        if lan_configuration_changed:
+            self.lan_firewall_advisor.set_enabled(settings.lan_interaction_enabled)
+            if not settings.lan_interaction_enabled:
+                self._lan_firewall_repairing = False
+                self._lan_firewall_repair_message = ""
+                self.window.clear_lan_firewall_notice()
         self._configure_remote_interaction_service()
         self._configure_work_countdown()
         self._configure_mouse_follow()
@@ -1399,8 +1429,75 @@ class PetNest:
         """设置中心内联检查更新，不再打开独立更新窗口。"""
         self._schedule_app_update_check(force=True)
 
+    def _handle_lan_firewall_status(self, status: LanFirewallStatus) -> None:
+        self._lan_firewall_status = status
+        dialog = self._lan_interaction_dialog
+        if dialog is not None:
+            dialog.set_firewall_status(
+                status,
+                repairing=self._lan_firewall_repairing,
+                repair_message=self._lan_firewall_repair_message,
+            )
+        dismissed = self.settings.lan_firewall_dismissed_public_networks
+        should_show = (
+            self.settings.lan_interaction_enabled
+            and status.requires_attention
+            and status.public_network_key not in dismissed
+        )
+        if should_show:
+            self.window.show_lan_firewall_notice()
+        else:
+            self.window.clear_lan_firewall_notice()
+
+    def _dismiss_lan_firewall_notice(self) -> None:
+        key = self._lan_firewall_status.public_network_key
+        if not key:
+            return
+        history = list(self.settings.lan_firewall_dismissed_public_networks)
+        if key in history:
+            history.remove(key)
+        history.append(key)
+        self.settings = replace(
+            self.settings,
+            lan_firewall_dismissed_public_networks=tuple(history[-20:]),
+        )
+        self.settings_manager.save(self.settings)
+        self.window.clear_lan_firewall_notice()
+
+    def _request_lan_firewall_repair(self) -> bool:
+        if self._lan_firewall_repairing or not self._lan_firewall_status.requires_attention:
+            return False
+        if not self.lan_firewall_advisor.request_repair():
+            return False
+        self._lan_firewall_repairing = True
+        self._lan_firewall_repair_message = ""
+        if self._lan_interaction_dialog is not None:
+            self._lan_interaction_dialog.set_firewall_status(
+                self._lan_firewall_status,
+                repairing=True,
+            )
+        return True
+
+    def _handle_lan_firewall_repair_finished(self, succeeded: bool, message: str) -> None:
+        self._lan_firewall_repairing = False
+        self._lan_firewall_repair_message = "" if succeeded else message
+        if self._lan_interaction_dialog is not None:
+            self._lan_interaction_dialog.set_firewall_status(
+                self._lan_firewall_status,
+                repair_message=message,
+            )
+        if succeeded:
+            self.settings = replace(
+                self.settings,
+                lan_firewall_dismissed_public_networks=(),
+            )
+            self.settings_manager.save(self.settings)
+            self.window.clear_lan_firewall_notice()
+            self.lan_service.refresh_connections()
+
     def show_lan_interaction_dialog(self) -> None:
         """打开附近设备与远程伙伴的统一互动入口。"""
+        self.lan_firewall_advisor.request_check()
         self._configure_lan_service()
         self._configure_remote_interaction_service()
         self.lan_service.discover()
@@ -1437,8 +1534,11 @@ class PetNest:
             ),
             remote_status=self.remote_interaction_service.status_message,
             chat_messages=self.lan_service.chat_messages(),
+            firewall_status=self._lan_firewall_status,
+            on_allow_public_firewall=self._request_lan_firewall_repair,
             parent=self.window,
         )
+        self._lan_interaction_dialog = dialog
         self.lan_service.peer_changed.connect(dialog.update_peer)
         self.lan_service.manual_probe_succeeded.connect(dialog.manual_probe_succeeded)
         self.lan_service.peer_removed.connect(dialog.remove_peer)
@@ -1456,6 +1556,7 @@ class PetNest:
         pool_refresh = lambda: dialog.set_pool_members(self.lan_pool_sync.member_views())
         self.lan_pool_sync.roster_changed.connect(pool_refresh)
         dialog.exec()
+        self._lan_interaction_dialog = None
         self.lan_pool_sync.roster_changed.disconnect(pool_refresh)
         updated = dialog.settings
         if (
@@ -1764,6 +1865,7 @@ class PetNest:
             self._run_shutdown_step("关闭 Codex 用量窗口", self._codex_usage_dialog.close)
         self._run_shutdown_step("清理 Codex 联动状态", self.codex_link.clear)
         self._run_shutdown_step("隐藏 Codex 状态气泡", self.window.clear_codex_status)
+        self._run_shutdown_step("隐藏防火墙提醒", self.window.clear_lan_firewall_notice)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
         self._work_finish_visibility_lease.cancel()
@@ -1789,6 +1891,7 @@ class PetNest:
         self._run_shutdown_step("停止 Codex 自动发现计时器", self.codex_discovery_timer.stop)
         self._run_shutdown_step("停止 Codex 发现结果计时器", self.codex_discovery_result_timer.stop)
         self._run_shutdown_step("停止 Codex review 动画计时器", self.codex_review_animation_timer.stop)
+        self._run_shutdown_step("停止防火墙状态检查", self.lan_firewall_advisor.stop)
         self._run_shutdown_step("停止 Codex 日志回退", self.codex_log_watcher.stop)
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)

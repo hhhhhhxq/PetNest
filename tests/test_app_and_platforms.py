@@ -19,7 +19,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PIL import Image
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
-from PySide6.QtCore import QPoint, QRect, QThread, Qt
+from PySide6.QtCore import QObject, QPoint, QRect, QThread, Qt, Signal
 
 from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
@@ -36,6 +36,7 @@ from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_manifest import ResourceManifest
 from petnest.core.remote_resource_update import RemoteResourceApplyResult, RemoteResourceCheckResult
 from petnest.core.settings_manager import SettingsManager
+from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.event import EventName, PetEvent
 from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, InteractionKind, LanPeer
 from petnest.models.settings import Settings
@@ -152,6 +153,39 @@ class _KeyboardActivityMonitor:
         self.status_message = "已关闭" if self.supported else "当前版本仅支持 Windows"
 
 
+class _LanFirewallAdvisor(QObject):
+    status_changed = Signal(object)
+    repair_finished = Signal(bool, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.status = LanFirewallStatus()
+        self.started: list[bool] = []
+        self.enabled: list[bool] = []
+        self.repairs = 0
+        self.checks = 0
+        self.stopped = 0
+        self.accept_repairs = True
+
+    def start(self, *, enabled: bool) -> None:
+        self.started.append(enabled)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled.append(enabled)
+
+    def request_check(self) -> None:
+        self.checks += 1
+
+    def request_repair(self) -> bool:
+        if not self.accept_repairs:
+            return False
+        self.repairs += 1
+        return True
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
 def _free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -236,6 +270,160 @@ def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, t
     assert application.lan_pool_sync.roster is application.lan_pool_roster
     assert application.danger_alert_action.text() == "⚠  发送危险预警"
     assert application.danger_alert_overlay is not None
+    application.shutdown()
+
+
+def test_app_shows_and_remembers_dismissed_public_firewall_notice(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    advisor = _LanFirewallAdvisor()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        lan_firewall_advisor=advisor,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.window.show()
+    warning = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        public_network_key="network-a",
+        firewall_enabled=True,
+        udp_allowed=False,
+        tcp_allowed=True,
+        can_repair=True,
+    )
+
+    advisor.status_changed.emit(warning)
+    assert application.window.lan_firewall_notice.isVisible()
+
+    application.window.lan_firewall_notice.close_button.click()
+    assert manager.load().lan_firewall_dismissed_public_networks == ("network-a",)
+    advisor.status_changed.emit(warning)
+    assert not application.window.lan_firewall_notice.isVisible()
+
+    advisor.status_changed.emit(replace(warning, public_network_key="network-b"))
+    assert application.window.lan_firewall_notice.isVisible()
+    application.shutdown()
+    assert advisor.stopped == 1
+
+
+def test_disabling_lan_during_firewall_repair_allows_a_later_retry(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    advisor = _LanFirewallAdvisor()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        lan_firewall_advisor=advisor,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application._lan_firewall_repairing = True
+
+    application.apply_settings(replace(application.settings, lan_interaction_enabled=False))
+
+    assert application._lan_firewall_repairing is False
+    assert advisor.enabled == [False]
+    application.shutdown()
+
+
+def test_app_does_not_enter_repairing_when_coordinator_rejects_request(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    advisor = _LanFirewallAdvisor()
+    advisor.accept_repairs = False
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        lan_firewall_advisor=advisor,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    advisor.status_changed.emit(
+        LanFirewallStatus(
+            applicable=True,
+            public_network_active=True,
+            firewall_enabled=True,
+            udp_allowed=False,
+            tcp_allowed=True,
+            can_repair=True,
+        )
+    )
+
+    application._request_lan_firewall_repair()
+
+    assert application._lan_firewall_repairing is False
+    assert advisor.repairs == 0
+    application.shutdown()
+
+
+def test_opening_interaction_dialog_requests_fresh_firewall_check(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    advisor = _LanFirewallAdvisor()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        lan_firewall_advisor=advisor,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr("petnest.app.LanInteractionDialog.exec", lambda _dialog: 0)
+
+    application.show_lan_interaction_dialog()
+
+    assert advisor.checks == 1
+    application.shutdown()
+
+
+def test_app_repairs_then_refreshes_lan_only_after_verified_status(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    advisor = _LanFirewallAdvisor()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        lan_firewall_advisor=advisor,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    refreshed: list[bool] = []
+    monkeypatch.setattr(application.lan_service, "refresh_connections", lambda: refreshed.append(True))
+    application.settings = replace(
+        application.settings,
+        lan_firewall_dismissed_public_networks=("network-a",),
+    )
+    warning = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        public_network_key="network-a",
+        firewall_enabled=True,
+        udp_allowed=False,
+        tcp_allowed=True,
+        can_repair=True,
+    )
+    fixed = replace(warning, udp_allowed=True, tcp_allowed=True)
+    advisor.status_changed.emit(warning)
+
+    application._request_lan_firewall_repair()
+    assert advisor.repairs == 1
+    advisor.repair_finished.emit(False, "已取消")
+    assert refreshed == []
+
+    application._request_lan_firewall_repair()
+    advisor.status_changed.emit(fixed)
+    advisor.repair_finished.emit(True, "已更新")
+    assert refreshed == [True]
+    assert application.settings.lan_firewall_dismissed_public_networks == ()
+    assert not application.window.lan_firewall_notice.isVisible()
     application.shutdown()
 
 

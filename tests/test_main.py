@@ -38,3 +38,32 @@ def test_codex_hook_bridge_runs_before_qt_and_single_instance(tmp_path: Path, mo
 
     assert main(["--codex-hook", str(metadata_path)]) == 0
     assert calls == [(metadata_path.resolve(), raw)]
+
+
+def test_firewall_helper_runs_before_qt_when_frozen_on_windows(tmp_path: Path, monkeypatch) -> None:
+    executable = tmp_path / "PetNest.exe"
+    calls: list[Path] = []
+    monkeypatch.setattr(main_module.sys, "platform", "win32")
+    monkeypatch.setattr(main_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(main_module.sys, "executable", str(executable))
+    monkeypatch.setattr(
+        main_module,
+        "configure_public_firewall_rules",
+        lambda path: calls.append(path) or 7,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "QApplication",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应创建 QApplication")),
+    )
+
+    assert main(["--configure-lan-firewall-public"]) == 7
+    assert calls == [executable]
+
+
+def test_firewall_helper_rejects_developer_mode(monkeypatch) -> None:
+    monkeypatch.setattr(main_module.sys, "platform", "win32")
+    monkeypatch.delattr(main_module.sys, "frozen", raising=False)
+
+    assert main(["--configure-lan-firewall-public"]) == 2

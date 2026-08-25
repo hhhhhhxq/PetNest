@@ -328,8 +328,41 @@ def test_schema_26_adds_disabled_keyboard_working(tmp_path) -> None:
 
     loaded = SettingsManager(path).load()
 
-    assert loaded.schema_version == 27
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
     assert loaded.keyboard_working_enabled is False
+
+
+def test_schema_27_adds_empty_lan_firewall_dismissals(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text('{"schema_version":27}', encoding="utf-8")
+
+    loaded = SettingsManager(path).load()
+
+    assert loaded.schema_version == 28
+    assert loaded.lan_firewall_dismissed_public_networks == ()
+
+
+def test_lan_firewall_dismissals_round_trip_and_are_bounded(tmp_path) -> None:
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(
+        Settings(
+            lan_firewall_dismissed_public_networks=("network-a", "network-b"),
+        )
+    )
+
+    assert manager.load().lan_firewall_dismissed_public_networks == (
+        "network-a",
+        "network-b",
+    )
+
+    dirty = [None, "", "network-0", "network-0", *[f"network-{index}" for index in range(1, 24)]]
+    normalized = Settings.from_dict(
+        {"lan_firewall_dismissed_public_networks": dirty}
+    ).lan_firewall_dismissed_public_networks
+
+    assert len(normalized) == 20
+    assert normalized[0] == "network-4"
+    assert normalized[-1] == "network-23"
 
 
 def test_keyboard_working_round_trips_and_rejects_non_boolean(tmp_path) -> None:

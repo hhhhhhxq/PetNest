@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from petnest.core.device_identity import display_name_for
+from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.lan_interaction import ChatScope, InteractionDraft, InteractionKind, LanPeer
 from petnest.models.lan_pool import PoolMemberView
 from petnest.models.settings import Settings
@@ -251,6 +252,103 @@ def test_dialog_can_disable_local_lan_presence(qtbot) -> None:
     dialog.lan_enabled_input.setChecked(False)
 
     assert dialog.settings.lan_interaction_enabled is False
+
+
+def test_dialog_shows_public_firewall_warning_and_starts_repair(qtbot) -> None:
+    repairs: list[bool] = []
+    warning = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        public_network_key="key",
+        firewall_enabled=True,
+        udp_allowed=True,
+        tcp_allowed=False,
+        can_repair=True,
+    )
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local-1"),
+        firewall_status=warning,
+        on_allow_public_firewall=lambda: repairs.append(True),
+    )
+    qtbot.addWidget(dialog)
+
+    assert not dialog.firewall_warning.isHidden()
+    assert "公用网络防火墙尚未放行" in dialog.firewall_warning_label.text()
+    dialog.firewall_allow_button.click()
+
+    assert repairs == [True]
+    assert not dialog.firewall_allow_button.isEnabled()
+    assert dialog.firewall_allow_button.text() == "处理中…"
+
+
+def test_dialog_keeps_firewall_button_enabled_when_repair_is_rejected(qtbot) -> None:
+    warning = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        public_network_key="key",
+        firewall_enabled=True,
+        udp_allowed=False,
+        tcp_allowed=True,
+        can_repair=True,
+    )
+    dialog = LanInteractionDialog(
+        settings=Settings(device_id="local-1"),
+        firewall_status=warning,
+        on_allow_public_firewall=lambda: False,
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.firewall_allow_button.click()
+
+    assert dialog.firewall_allow_button.isEnabled()
+    assert dialog.firewall_allow_button.text() == "一键允许"
+
+
+def test_dialog_keeps_warning_retryable_after_failure_and_hides_after_fix(qtbot) -> None:
+    warning = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        firewall_enabled=True,
+        udp_allowed=False,
+        tcp_allowed=False,
+        can_repair=True,
+    )
+    fixed = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        firewall_enabled=True,
+        udp_allowed=True,
+        tcp_allowed=True,
+        can_repair=True,
+    )
+    dialog = LanInteractionDialog(settings=Settings(), firewall_status=warning)
+    qtbot.addWidget(dialog)
+
+    dialog.set_firewall_status(warning, repair_message="已取消管理员授权")
+    assert not dialog.firewall_warning.isHidden()
+    assert dialog.firewall_allow_button.isEnabled()
+    assert "已取消" in dialog.firewall_warning_label.text()
+
+    dialog.set_firewall_status(fixed)
+    assert dialog.firewall_warning.isHidden()
+
+
+def test_dialog_explains_organization_managed_firewall_without_retry(qtbot) -> None:
+    managed = LanFirewallStatus(
+        applicable=True,
+        public_network_active=True,
+        firewall_enabled=True,
+        udp_allowed=False,
+        tcp_allowed=False,
+        policy_managed=True,
+        can_repair=False,
+    )
+    dialog = LanInteractionDialog(settings=Settings(), firewall_status=managed)
+    qtbot.addWidget(dialog)
+
+    assert "组织策略管理" in dialog.firewall_warning_label.text()
+    assert "UDP/TCP 18487" in dialog.firewall_warning_label.text()
+    assert dialog.firewall_allow_button.isHidden()
 
 
 def test_dialog_can_disable_only_group_chat_pet_bubbles(qtbot) -> None:
