@@ -1525,11 +1525,16 @@ class PetNest:
                 repairing=self._lan_firewall_repairing,
                 repair_message=self._lan_firewall_repair_message,
             )
+        self._refresh_lan_firewall_notice()
+
+    def _refresh_lan_firewall_notice(self) -> None:
+        status = self._lan_firewall_status
         dismissed = self.settings.lan_firewall_dismissed_public_networks
         should_show = (
             self.settings.lan_interaction_enabled
             and status.requires_attention
             and status.public_network_key not in dismissed
+            and self._lan_interaction_dialog is None
         )
         if should_show:
             self.window.show_lan_firewall_notice()
@@ -1584,7 +1589,6 @@ class PetNest:
 
     def show_lan_interaction_dialog(self) -> None:
         """打开附近设备与远程伙伴的统一互动入口。"""
-        self.lan_firewall_advisor.request_check()
         self._configure_lan_service()
         self._configure_remote_interaction_service()
         self.lan_service.discover()
@@ -1626,6 +1630,8 @@ class PetNest:
             parent=self.window,
         )
         self._lan_interaction_dialog = dialog
+        self.window.clear_lan_firewall_notice()
+        self.lan_firewall_advisor.request_check()
         self.lan_service.peer_changed.connect(dialog.update_peer)
         self.lan_service.manual_probe_succeeded.connect(dialog.manual_probe_succeeded)
         self.lan_service.peer_removed.connect(dialog.remove_peer)
@@ -1655,6 +1661,7 @@ class PetNest:
             or updated.remote_interaction_enabled != self.settings.remote_interaction_enabled
         ):
             self.apply_settings(updated)
+        self._refresh_lan_firewall_notice()
 
     def _update_lan_peer_address(self, device_id: str, ip_address: str) -> bool:
         return self.lan_service.update_saved_peer_address(device_id, ip_address)
