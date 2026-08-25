@@ -3,6 +3,17 @@
 from pathlib import Path
 
 
+def test_uninstaller_removes_the_auto_start_task() -> None:
+    contents = Path("installer/PetNest.iss").read_text(encoding="utf-8")
+
+    assert 'Filename: "{app}\\PetNest.exe"; Parameters: "--remove-startup"' in contents
+    assert 'RunOnceId: "RemovePetNestAutoStartTasks"' in contents
+    assert "runasoriginaluser" not in contents
+    assert 'Filename: "{sys}\\schtasks.exe"' in contents
+    assert 'Parameters: "/Delete /TN ""\\PetNest\\AutoStart"" /F"' in contents
+    assert 'RunOnceId: "RemoveLegacyPetNestAutoStart"' in contents
+
+
 def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> None:
     contents = Path("installer/PetNest.iss").read_text(encoding="utf-8")
     build_script = Path("build_windows.bat").read_text(encoding="utf-8")
@@ -28,12 +39,15 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     assert "src\\petnest_launcher.py" in build_script
     assert "%LocalAppData%\\Programs\\Inno Setup 6\\ISCC.exe" in build_script
     assert "--name PetNestUpdateHost" in build_script
+    assert "--name PetNestStartupHost" in build_script
+    assert r"src\petnest_startup_host.py" in build_script
     assert "google-services.json;." in build_script
     assert "PETNEST_FIREBASE_CONFIG" in build_script
     assert '--add-data "%PETNEST_FIREBASE_CONFIG%;."' in build_script
     assert 'if not exist "%PETNEST_FIREBASE_CONFIG%"' in build_script
     assert "/google-services.json" in ignored
     assert "Source: \"..\\dist\\PetNestUpdateHost.exe\"" in contents
+    assert "Source: \"..\\dist\\PetNestStartupHost.exe\"; DestDir: \"{app}\"" in contents
     assert "Source: \"..\\dist\\PetNestUpdater.exe\"" not in contents
     assert "skipifsilent" in contents
 
@@ -68,6 +82,14 @@ def test_updater_entrypoint_is_standard_library_only() -> None:
 
     assert "def main" in contents
     assert "run_installer" in contents
+    assert "PySide6" not in contents
+
+
+def test_startup_host_entrypoint_is_standard_library_only() -> None:
+    contents = Path("src/petnest_startup_host.py").read_text(encoding="utf-8")
+
+    assert "def main" in contents
+    assert "run_supervisor" in contents
     assert "PySide6" not in contents
 
 

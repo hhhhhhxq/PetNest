@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class StartupRegistrationResult:
+    """修改当前用户登录启动项的结果。"""
+
+    success: bool
+    requires_approval: bool = False
+    message: str = ""
 
 
 class PlatformEventAdapter(ABC):
@@ -20,6 +30,11 @@ class PlatformEventAdapter(ABC):
     def get_idle_seconds(self) -> float | None:
         """返回系统空闲秒数；能力缺失时返回 ``None``。"""
 
+    @property
+    def startup_supported(self) -> bool:
+        """当前运行环境是否可修改登录启动项。"""
+        return False
+
     @abstractmethod
-    def register_startup(self, enabled: bool) -> bool:
-        """请求修改开机启动；成功时返回 ``True``。"""
+    def register_startup(self, enabled: bool) -> StartupRegistrationResult:
+        """请求修改当前用户的登录启动项。"""

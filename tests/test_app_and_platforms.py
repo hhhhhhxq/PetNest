@@ -10,7 +10,7 @@ import sys
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Thread, current_thread
 from time import monotonic
 from types import SimpleNamespace
 
@@ -40,6 +40,7 @@ from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.event import EventName, PetEvent
 from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, InteractionKind, LanPeer
 from petnest.models.settings import Settings
+from petnest.platforms.base import StartupRegistrationResult
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
 from tools.create_sample_pet import create_sample_pet
 
@@ -56,6 +57,21 @@ class _IdleAdapter:
 
     def get_idle_seconds(self) -> float:
         return self.idle_seconds
+
+
+class _StartupAdapter(_IdleAdapter):
+    startup_supported = True
+
+    def __init__(self, result: StartupRegistrationResult) -> None:
+        super().__init__()
+        self.result = result
+        self.startup_calls: list[bool] = []
+        self.startup_threads: list[Thread] = []
+
+    def register_startup(self, enabled: bool) -> StartupRegistrationResult:
+        self.startup_calls.append(enabled)
+        self.startup_threads.append(current_thread())
+        return self.result
 
 
 class _CodexLogWatcher:
@@ -1569,6 +1585,16 @@ def test_start_does_not_check_resources_until_a_relevant_page_opens(
     application.shutdown()
 
 
+def test_startup_registration_result_distinguishes_approval_from_failure() -> None:
+    approved = StartupRegistrationResult(True)
+    pending = StartupRegistrationResult(True, requires_approval=True)
+    failed = StartupRegistrationResult(False, message="not supported")
+
+    assert approved.success is True
+    assert pending.requires_approval is True
+    assert failed.success is False
+
+
 def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) -> None:
     adapter = UnsupportedPlatformAdapter("test")
 
@@ -1576,9 +1602,189 @@ def test_unsupported_adapter_is_a_safe_noop(caplog: pytest.LogCaptureFixture) ->
     adapter.start()
 
     assert adapter.get_idle_seconds() is None
-    assert adapter.register_startup(True) is False
-    assert adapter.register_startup(False) is False
+    assert adapter.startup_supported is False
+    assert adapter.register_startup(True).success is False
+    assert adapter.register_startup(False).success is False
     assert sum("暂不支持" in record.message for record in caplog.records) == 1
+
+
+def test_enabling_auto_start_registers_and_persists(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    adapter = _StartupAdapter(StartupRegistrationResult(True))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.apply_settings(replace(application.settings, run_at_startup=True))
+
+    assert adapter.startup_calls == [True]
+    assert application.settings.run_at_startup is True
+    assert manager.load().run_at_startup is True
+    application.shutdown()
+
+
+def test_failed_auto_start_change_reverts_only_that_field(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    adapter = _StartupAdapter(StartupRegistrationResult(False, message="access denied"))
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "petnest.app.QMessageBox.warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.apply_settings(replace(application.settings, run_at_startup=True, scale=1.1))
+
+    assert adapter.startup_calls == [True]
+    assert application.settings.run_at_startup is False
+    assert application.settings.scale == 1.1
+    assert manager.load().run_at_startup is False
+    assert manager.load().scale == 1.1
+    assert warnings == [("无法修改自动启动", "access denied")]
+    application.shutdown()
+
+
+def test_macos_approval_result_is_saved_and_explained(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    adapter = _StartupAdapter(StartupRegistrationResult(True, requires_approval=True))
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "petnest.app.QMessageBox.information",
+        lambda _parent, title, message: notices.append((title, message)),
+    )
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.apply_settings(replace(application.settings, run_at_startup=True))
+
+    assert application.settings.run_at_startup is True
+    assert manager.load().run_at_startup is True
+    assert notices and "系统设置 → 通用 → 登录项" in notices[0][1]
+    application.shutdown()
+
+
+def test_enabled_auto_start_is_silently_repaired_after_start_returns(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(run_at_startup=True))
+    adapter = _StartupAdapter(StartupRegistrationResult(False, message="temporary failure"))
+    warnings: list[bool] = []
+    monkeypatch.setattr("petnest.app.QMessageBox.warning", lambda *_args: warnings.append(True))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr(application, "_schedule_resource_check", lambda force=False: None)
+
+    application.start()
+
+    assert adapter.startup_calls == []
+    qtbot.waitUntil(lambda: adapter.startup_calls == [True])
+    assert adapter.startup_calls == [True]
+    assert adapter.startup_threads[0] is not current_thread()
+    assert warnings == []
+    application.shutdown()
+
+
+def test_startup_repair_reconciles_a_concurrent_user_change(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _BlockingStartupAdapter(_IdleAdapter):
+        startup_supported = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[bool] = []
+            self.first_enable_started = Event()
+            self.release_first_enable = Event()
+            self.system_enabled = False
+
+        def register_startup(self, enabled: bool) -> StartupRegistrationResult:
+            self.calls.append(enabled)
+            if enabled and len(self.calls) == 1:
+                self.first_enable_started.set()
+                self.release_first_enable.wait(timeout=2)
+            self.system_enabled = enabled
+            return StartupRegistrationResult(True)
+
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(run_at_startup=True))
+    adapter = _BlockingStartupAdapter()
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr(application, "_schedule_resource_check", lambda force=False: None)
+    application.start()
+    qtbot.waitUntil(adapter.first_enable_started.is_set)
+
+    application.apply_settings(replace(application.settings, run_at_startup=False))
+    adapter.release_first_enable.set()
+
+    qtbot.waitUntil(lambda: adapter.calls == [True, False, False])
+    assert application.settings.run_at_startup is False
+    assert manager.load().run_at_startup is False
+    assert adapter.system_enabled is False
+    application.shutdown()
+
+
+def test_unrelated_settings_change_does_not_touch_auto_start(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    adapter = _StartupAdapter(StartupRegistrationResult(True))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        platform_adapter=adapter,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    application.apply_settings(replace(application.settings, scale=1.1))
+
+    assert adapter.startup_calls == []
+    application.shutdown()
 
 
 def test_application_shutdown_stops_server_and_persists_window_position(

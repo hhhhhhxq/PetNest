@@ -13,7 +13,7 @@ import re
 import sys
 import subprocess
 import tempfile
-from threading import Thread, current_thread
+from threading import Lock, Thread, current_thread
 from time import monotonic
 import uuid
 
@@ -101,7 +101,11 @@ from petnest.models.settings import AnimationOverride, Settings
 from petnest.ui.app_update_dialog import AppUpdateDialog
 from petnest.ui.codex_usage_dialog import CodexUsageDialog
 from petnest.ui.danger_alert import DangerAlertConfirmDialog, DangerAlertOverlay
-from petnest.platforms import PlatformEventAdapter, create_platform_adapter
+from petnest.platforms import (
+    PlatformEventAdapter,
+    StartupRegistrationResult,
+    create_platform_adapter,
+)
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.platforms.keyboard import KeyboardActivityMonitor, create_keyboard_activity_monitor
 from petnest.ui.pet_window import PetWindow
@@ -282,6 +286,10 @@ class PetNest:
         self._codex_app_home_probe_after = 0.0
         self._codex_discovery_results: Queue[tuple[Path | None, str | None]] = Queue()
         self._codex_discovery_worker: Thread | None = None
+        self._startup_repair_worker: Thread | None = None
+        self._startup_registration_lock = Lock()
+        self._startup_registration_revision = 0
+        self._startup_registration_desired = self.settings.run_at_startup
         self.codex_discovery = codex_discovery or CodexDiscoveryService(
             CodexInstallationDetector(
                 platform_name=sys.platform,
@@ -527,6 +535,10 @@ class PetNest:
         self.app_update_startup_timer.setSingleShot(True)
         self.app_update_startup_timer.setInterval(APP_UPDATE_STARTUP_DELAY_MS)
         self.app_update_startup_timer.timeout.connect(lambda: self._schedule_app_update_check(force=False))
+        self.startup_repair_timer = QTimer(self.window)
+        self.startup_repair_timer.setSingleShot(True)
+        self.startup_repair_timer.setInterval(0)
+        self.startup_repair_timer.timeout.connect(self._repair_startup_registration)
         self.codex_log_timer = QTimer(self.window)
         self.codex_log_timer.setInterval(250)
         self.codex_log_timer.timeout.connect(self._poll_codex_logs)
@@ -609,12 +621,61 @@ class PetNest:
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=self.settings.cursor_restore_pending)
         self.settings_manager.save(self.settings)
+        if self.settings.run_at_startup:
+            self.startup_repair_timer.start()
         self.resource_result_timer.start()
         if sys.platform in APP_UPDATE_PLATFORMS:
             self.app_update_result_timer.start()
             self.app_update_check_timer.start()
             self.app_update_startup_timer.start()
         LOGGER.info("PetNest 已启动，宠物包：%s", self.package.identifier)
+
+    def _repair_startup_registration(self) -> None:
+        if (
+            self._shutdown
+            or not self.settings.run_at_startup
+            or (
+                self._startup_repair_worker is not None
+                and self._startup_repair_worker.is_alive()
+            )
+        ):
+            return
+        worker = Thread(
+            target=self._startup_repair_worker_task,
+            daemon=True,
+            name="petnest-startup-repair",
+        )
+        self._startup_repair_worker = worker
+        worker.start()
+
+    def _startup_repair_worker_task(self) -> None:
+        try:
+            while True:
+                with self._startup_registration_lock:
+                    revision = self._startup_registration_revision
+                    desired = self._startup_registration_desired
+                try:
+                    startup_result = self.platform_adapter.register_startup(desired)
+                except Exception as error:
+                    LOGGER.warning("启动时修复自动启动项失败", exc_info=True)
+                    startup_result = StartupRegistrationResult(False, message=str(error))
+                with self._startup_registration_lock:
+                    stale = revision != self._startup_registration_revision
+                if stale:
+                    continue
+                if not startup_result.success:
+                    LOGGER.warning("启动时修复自动启动项失败：%s", startup_result.message)
+                elif startup_result.requires_approval:
+                    LOGGER.info("macOS 自动启动项等待用户批准")
+                return
+        finally:
+            if self._startup_repair_worker is current_thread():
+                self._startup_repair_worker = None
+
+    def _set_startup_registration_desired(self, enabled: bool) -> None:
+        with self._startup_registration_lock:
+            self._startup_registration_revision += 1
+            self._startup_registration_desired = enabled
 
     def reveal(self) -> None:
         """供第二次启动请求在主显示器中央找回宠物。"""
@@ -785,6 +846,29 @@ class PetNest:
 
     def apply_settings(self, settings: Settings) -> None:
         """立即应用可安全即时修改的设置，并持久化其非敏感值。"""
+        startup_configuration_changed = settings.run_at_startup != self.settings.run_at_startup
+        if startup_configuration_changed:
+            previous_startup_value = self.settings.run_at_startup
+            self._set_startup_registration_desired(settings.run_at_startup)
+            try:
+                startup_result = self.platform_adapter.register_startup(settings.run_at_startup)
+            except Exception as error:
+                LOGGER.warning("修改自动启动项失败", exc_info=True)
+                startup_result = StartupRegistrationResult(False, message=str(error))
+            if not startup_result.success:
+                settings = replace(settings, run_at_startup=previous_startup_value)
+                self._set_startup_registration_desired(previous_startup_value)
+                QMessageBox.warning(
+                    self.window,
+                    "无法修改自动启动",
+                    startup_result.message or "系统未能修改当前用户的登录启动项。",
+                )
+            elif startup_result.requires_approval:
+                QMessageBox.information(
+                    self.window,
+                    "需要批准自动启动",
+                    "请在“系统设置 → 通用 → 登录项”中允许 PetNest。",
+                )
         idle_configuration_changed = (
             settings.system_idle_enabled != self.settings.system_idle_enabled
             or settings.system_bored_seconds != self.settings.system_bored_seconds
@@ -1346,6 +1430,9 @@ class PetNest:
             supported_roles=supported_roles,
             keyboard_activity_supported=self.keyboard_activity_monitor.supported,
             keyboard_activity_status=self.keyboard_activity_monitor.status_message,
+            auto_start_supported=bool(
+                getattr(self.platform_adapter, "startup_supported", False)
+            ),
             pet_preview_path=preview_path,
             initial_section=initial_section,
         )
@@ -1887,6 +1974,7 @@ class PetNest:
         self._run_shutdown_step("停止程序更新结果计时器", self.app_update_result_timer.stop)
         self._run_shutdown_step("停止程序更新检查计时器", self.app_update_check_timer.stop)
         self._run_shutdown_step("停止程序启动更新计时器", self.app_update_startup_timer.stop)
+        self._run_shutdown_step("停止自动启动修复计时器", self.startup_repair_timer.stop)
         self._run_shutdown_step("停止 Codex 日志轮询计时器", self.codex_log_timer.stop)
         self._run_shutdown_step("停止 Codex 自动发现计时器", self.codex_discovery_timer.stop)
         self._run_shutdown_step("停止 Codex 发现结果计时器", self.codex_discovery_result_timer.stop)

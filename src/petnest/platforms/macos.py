@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import logging
 
-from .base import PlatformEventAdapter
+from .base import PlatformEventAdapter, StartupRegistrationResult
+from .macos_startup import MacOSLoginItem
 
 LOGGER = logging.getLogger(__name__)
 
 
 class MacOSPlatformAdapter(PlatformEventAdapter):
-    """保留 macOS 接口，避免未经验证的系统调用影响桌宠主流程。"""
+    """macOS 基础降级能力和 Service Management 登录项。"""
+
+    def __init__(self, *, login_item: MacOSLoginItem | None = None) -> None:
+        self._login_item = login_item or MacOSLoginItem()
 
     def start(self) -> None:
         LOGGER.info("macOS 系统事件适配器已启用基础降级模式")
@@ -21,7 +25,9 @@ class MacOSPlatformAdapter(PlatformEventAdapter):
     def get_idle_seconds(self) -> float | None:
         return None
 
-    def register_startup(self, enabled: bool) -> bool:
-        del enabled
-        LOGGER.info("macOS 登录启动项尚未在第一阶段实现")
-        return False
+    @property
+    def startup_supported(self) -> bool:
+        return self._login_item.supported
+
+    def register_startup(self, enabled: bool) -> StartupRegistrationResult:
+        return self._login_item.configure(enabled)

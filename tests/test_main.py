@@ -3,10 +3,46 @@
 import io
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import petnest.__main__ as main_module
 from petnest.__main__ import main
 from petnest.core.settings_manager import SettingsManager
+
+
+def test_startup_marker_is_accepted_by_the_normal_entrypoint(monkeypatch) -> None:
+    monkeypatch.setattr(main_module.PetNest, "check_installation", staticmethod(lambda: 0))
+
+    assert main(["--startup", "--check"]) == 0
+
+
+def test_remove_startup_runs_before_qt(monkeypatch) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        main_module,
+        "remove_startup_registrations",
+        lambda: calls.append(True) or SimpleNamespace(success=True),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "QApplication",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应创建 QApplication")),
+    )
+
+    assert main(["--remove-startup"]) == 0
+    assert calls == [True]
+
+
+def test_remove_startup_returns_failure_when_cleanup_fails(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "remove_startup_registrations",
+        lambda: SimpleNamespace(success=False),
+        raising=False,
+    )
+
+    assert main(["--remove-startup"]) == 1
 
 
 def test_set_pets_root_persists_an_absolute_custom_library(tmp_path: Path, monkeypatch) -> None:

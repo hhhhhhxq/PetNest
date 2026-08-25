@@ -21,6 +21,7 @@ from .core.codex_link import forward_codex_hook
 from .core.settings_manager import SettingsManager
 from .core.single_instance import InstanceClaim, SingleInstanceCoordinator
 from .core.windows_lan_firewall import configure_public_firewall_rules
+from .platforms import remove_startup_registrations
 from .ui.tray_icon import application_icon
 
 
@@ -31,6 +32,8 @@ def main(arguments: list[str] | None = None) -> int:
     """解析 ``--check``；正常模式启动 Qt 事件循环。"""
     parser = argparse.ArgumentParser(description="PetNest 跨平台轻量桌面宠物")
     parser.add_argument("--check", action="store_true", help="仅校验内置宠物包，不创建 GUI")
+    parser.add_argument("--startup", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--remove-startup", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--set-pets-root", type=Path, metavar="目录", help="供安装器保存自定义宠物库位置")
     parser.add_argument("--codex-hook", type=Path, metavar="元数据", help=argparse.SUPPRESS)
     parser.add_argument("--configure-lan-firewall-public", action="store_true", help=argparse.SUPPRESS)
@@ -50,6 +53,8 @@ def main(arguments: list[str] | None = None) -> int:
         return 0
     if args.check:
         return PetNest.check_installation()
+    if args.remove_startup:
+        return 0 if remove_startup_registrations().success else 1
     if args.set_pets_root is not None:
         root = args.set_pets_root.expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from .base import PlatformEventAdapter
+from .base import PlatformEventAdapter, StartupRegistrationResult
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,10 +26,10 @@ class UnsupportedPlatformAdapter(PlatformEventAdapter):
         self._warn_once()
         return None
 
-    def register_startup(self, enabled: bool) -> bool:
+    def register_startup(self, enabled: bool) -> StartupRegistrationResult:
         del enabled
         self._warn_once()
-        return False
+        return StartupRegistrationResult(False, message=f"平台 {self.platform_name} 不支持自动启动")
 
     def _warn_once(self) -> None:
         if not self._warned:

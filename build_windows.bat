@@ -15,6 +15,8 @@ if defined PETNEST_FIREBASE_CONFIG set RESOURCE_DATA=%RESOURCE_DATA% --add-data 
 if not defined PETNEST_FIREBASE_CONFIG if exist "google-services.json" set "RESOURCE_DATA=%RESOURCE_DATA% --add-data google-services.json;."
 pyinstaller --noconfirm --clean --onedir --windowed --name PetNest --icon assets\icons\petnest-app.ico --paths src %RESOURCE_DATA% src\petnest_launcher.py
 if errorlevel 1 exit /b 1
+pyinstaller --noconfirm --clean --onefile --windowed --name PetNestStartupHost src\petnest_startup_host.py
+if errorlevel 1 exit /b 1
 pyinstaller --noconfirm --clean --onefile --windowed --name PetNestUpdateHost --paths src src\petnest_updater.py
 if errorlevel 1 exit /b 1
 

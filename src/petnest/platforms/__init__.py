@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import sys
 
-from .base import PlatformEventAdapter
+from .base import PlatformEventAdapter, StartupRegistrationResult
 from .macos import MacOSPlatformAdapter
 from .unsupported import UnsupportedPlatformAdapter
 from .windows import WindowsPlatformAdapter
+from .windows_startup import WindowsStartupTask
 
 
 def create_platform_adapter(platform_name: str | None = None) -> PlatformEventAdapter:
@@ -20,4 +21,17 @@ def create_platform_adapter(platform_name: str | None = None) -> PlatformEventAd
     return UnsupportedPlatformAdapter(name)
 
 
-__all__ = ["PlatformEventAdapter", "create_platform_adapter"]
+def remove_startup_registrations(platform_name: str | None = None) -> StartupRegistrationResult:
+    """卸载时清理 PetNest 任务命名空间内的登录启动登记。"""
+    name = platform_name or sys.platform
+    if name == "win32":
+        return WindowsStartupTask().remove_all()
+    return create_platform_adapter(name).register_startup(False)
+
+
+__all__ = [
+    "PlatformEventAdapter",
+    "StartupRegistrationResult",
+    "create_platform_adapter",
+    "remove_startup_registrations",
+]

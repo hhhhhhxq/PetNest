@@ -5,13 +5,17 @@ from __future__ import annotations
 import logging
 import sys
 
-from .base import PlatformEventAdapter
+from .base import PlatformEventAdapter, StartupRegistrationResult
+from .windows_startup import WindowsStartupTask
 
 LOGGER = logging.getLogger(__name__)
 
 
 class WindowsPlatformAdapter(PlatformEventAdapter):
-    """仅使用 Win32 最后输入时间；启动项留待显式设置实现。"""
+    """Win32 最后输入时间和任务计划登录启动。"""
+
+    def __init__(self, *, startup_task: WindowsStartupTask | None = None) -> None:
+        self._startup_task = startup_task or WindowsStartupTask()
 
     def start(self) -> None:
         """第一阶段无需注册后台监听器。"""
@@ -41,10 +45,12 @@ class WindowsPlatformAdapter(PlatformEventAdapter):
             LOGGER.warning("无法读取 Windows 系统空闲时间", exc_info=True)
             return None
 
-    def register_startup(self, enabled: bool) -> bool:
-        del enabled
-        LOGGER.info("Windows 开机启动尚未在第一阶段实现")
-        return False
+    @property
+    def startup_supported(self) -> bool:
+        return self._startup_task.supported
+
+    def register_startup(self, enabled: bool) -> StartupRegistrationResult:
+        return self._startup_task.configure(enabled)
 
 
 def _elapsed_milliseconds(current_tick: int, last_input_tick: int) -> int:

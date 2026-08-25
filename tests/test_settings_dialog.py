@@ -626,6 +626,31 @@ def test_application_update_entry_is_opt_in_for_platform_owner(qtbot) -> None:
     assert called == [True]
 
 
+def test_auto_start_card_uses_confirmed_copy_and_persists(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(run_at_startup=False),
+        auto_start_supported=True,
+        initial_section="app_update",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.auto_start_input.text() == "自动启动"
+    assert dialog.auto_start_hint.text() == (
+        "登录电脑后自动启动 PetNest\n"
+        "Windows 上异常退出后将自动重试，最多 3 次。"
+    )
+    dialog.auto_start_input.setChecked(True)
+    assert dialog.updated_settings().run_at_startup is True
+
+
+def test_auto_start_card_is_hidden_when_unsupported(qtbot) -> None:
+    dialog = SettingsDialog(Settings(run_at_startup=True), auto_start_supported=False)
+    qtbot.addWidget(dialog)
+
+    assert not hasattr(dialog, "auto_start_input")
+    assert dialog.updated_settings().run_at_startup is True
+
+
 def test_application_update_entry_is_absent_without_platform_support(qtbot) -> None:
     dialog = SettingsDialog(Settings())
     qtbot.addWidget(dialog)

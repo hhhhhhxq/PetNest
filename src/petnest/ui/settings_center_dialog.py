@@ -301,6 +301,7 @@ class SettingsCenterDialog(QDialog):
         supported_roles: Iterable[str] | None = None,
         keyboard_activity_supported: bool = False,
         keyboard_activity_status: str = "已关闭",
+        auto_start_supported: bool = False,
         pet_preview_path: Path | None = None,
         initial_section: str = "display",
     ) -> None:
@@ -310,6 +311,7 @@ class SettingsCenterDialog(QDialog):
         self._supported_roles = frozenset(supported_roles) if supported_roles is not None else None
         self._keyboard_activity_supported = keyboard_activity_supported
         self._keyboard_activity_status = keyboard_activity_status
+        self._auto_start_supported = auto_start_supported
         self._on_check_app_update = on_check_app_update
         self._on_download_app_update = on_download_app_update
         self._on_unlock_codex_usage = on_unlock_codex_usage
@@ -1668,6 +1670,24 @@ class SettingsCenterDialog(QDialog):
 
     def _build_app_update_page(self) -> QWidget:
         page, layout = self._page("应用与更新", "查看当前版本，并在需要时手动检查新的 PetNest 安装包。", self)
+        if self._auto_start_supported:
+            startup_card, startup_layout = self._card(
+                "启动管理",
+                "使用系统提供的当前用户登录启动项。",
+                page,
+            )
+            self.auto_start_input = ToggleSwitch("自动启动", startup_card)
+            self.auto_start_input.setChecked(self._settings.run_at_startup)
+            startup_layout.addWidget(self.auto_start_input)
+            self.auto_start_hint = QLabel(
+                "登录电脑后自动启动 PetNest\n"
+                "Windows 上异常退出后将自动重试，最多 3 次。",
+                startup_card,
+            )
+            self.auto_start_hint.setObjectName("mutedLabel")
+            self.auto_start_hint.setWordWrap(True)
+            startup_layout.addWidget(self.auto_start_hint)
+            layout.addWidget(startup_card)
         card, card_layout = self._card("程序版本", "更新检查不会影响当前宠物和设置。", page)
         from petnest import __version__
 
@@ -1800,6 +1820,11 @@ class SettingsCenterDialog(QDialog):
             self._settings,
             scale=self.scale_input.value() / 100.0,
             always_on_top=self.always_on_top_input.isChecked(),
+            run_at_startup=(
+                self.auto_start_input.isChecked()
+                if hasattr(self, "auto_start_input")
+                else self._settings.run_at_startup
+            ),
             mouse_interaction_enabled=self.mouse_interaction_input.isChecked(),
             keyboard_working_enabled=self.keyboard_working_input.isChecked(),
             mouse_follow_enabled=self.mouse_follow_input.isChecked(),

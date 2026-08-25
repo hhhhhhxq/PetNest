@@ -22,6 +22,7 @@ WizardStyle=modern
 
 [Files]
 Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "pets\*"
+Source: "..\dist\PetNestStartupHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 名称与旧 PetNestUpdater.exe 分离，确保 0.1.2/0.1.4 的运行中更新器不会阻塞升级。
 Source: "..\dist\PetNestUpdateHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\pets\sample_pet\*"; DestDir: "{code:GetPetsRoot}\sample_pet"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: SamplePetNeedsRepair
@@ -38,6 +39,8 @@ Filename: "{app}\PetNest.exe"; Parameters: "--set-pets-root ""{code:GetPetsRoot}
 Filename: "{app}\PetNest.exe"; Description: "启动 PetNest"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+Filename: "{app}\PetNest.exe"; Parameters: "--remove-startup"; Flags: runhidden waituntilterminated; RunOnceId: "RemovePetNestAutoStartTasks"
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""\PetNest\AutoStart"" /F"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveLegacyPetNestAutoStart"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PetNest LAN UDP 18487"""; Flags: runhidden waituntilterminated; RunOnceId: "RemovePetNestLanFirewall"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""PetNest LAN TCP 18487"""; Flags: runhidden waituntilterminated; RunOnceId: "RemovePetNestLanChatFirewall"
 
