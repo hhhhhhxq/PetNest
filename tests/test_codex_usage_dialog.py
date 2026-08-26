@@ -131,6 +131,55 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
+    assert dialog.reset_status_card.property("resetState") == "normal"
+    assert dialog.reset_status_badge.text() == "正常"
+    assert "未发现已经过期" in dialog.reset_status_detail_label.text()
+
+
+def test_dialog_highlights_expired_codex_reset_time(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    expired_limit = replace(
+        report.primary_limit,
+        primary=replace(
+            report.primary_limit.primary,
+            resets_at=datetime.now(UTC) - timedelta(minutes=5),
+        ),
+    )
+    report = replace(
+        report,
+        rate_limits=(expired_limit,),
+        primary_limit=expired_limit,
+    )
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
+    qtbot.addWidget(dialog)
+
+    dialog._show_report(report)
+
+    assert dialog.reset_status_card.property("resetState") == "expired"
+    assert dialog.reset_status_badge.text() == "发现 1 个已过期"
+    assert "Codex · 1 周" in dialog.reset_status_detail_label.text()
+    assert "请点击“刷新”" in dialog.reset_status_detail_label.text()
+
+
+def test_dialog_reset_status_explains_missing_reset_time(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    unknown_limit = replace(
+        report.primary_limit,
+        primary=replace(report.primary_limit.primary, resets_at=None),
+    )
+    report = replace(
+        report,
+        rate_limits=(unknown_limit,),
+        primary_limit=unknown_limit,
+    )
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
+    qtbot.addWidget(dialog)
+
+    dialog._show_report(report)
+
+    assert dialog.reset_status_card.property("resetState") == "unknown"
+    assert dialog.reset_status_badge.text() == "无法判断"
+    assert "没有返回可用的重置时间" in dialog.reset_status_detail_label.text()
 
 
 def test_claim_pending_button_persists_current_account_claim(
