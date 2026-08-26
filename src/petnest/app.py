@@ -1605,6 +1605,9 @@ class PetNest:
             effects=effects,
             on_send=self.lan_service.send_interaction,
             on_chat_send=self.lan_service.send_chat,
+            on_nickname_changed=lambda nickname: self.apply_settings(
+                replace(self.settings, nickname=nickname)
+            ),
             on_alert_membership_changed=self._set_lan_alert_group_joined,
             on_update_peer_address=self._update_lan_peer_address,
             on_forget_peer=lambda device_id: self.lan_service.forget_peer(device_id),

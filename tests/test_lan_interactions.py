@@ -17,7 +17,12 @@ from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.lan_interaction import ChatScope, InteractionDraft, InteractionKind, LanPeer
 from petnest.models.lan_pool import PoolMemberView
 from petnest.models.settings import Settings
-from petnest.ui.lan_interaction_dialog import LanInteractionDialog, ManualPeerDialog, RemotePairDialog
+from petnest.ui.lan_interaction_dialog import (
+    LanInteractionDialog,
+    ManualPeerDialog,
+    NicknameDialog,
+    RemotePairDialog,
+)
 
 
 def test_quick_interaction_payload_contains_only_one_action() -> None:
@@ -49,6 +54,23 @@ def test_text_and_effect_payloads_validate_their_content() -> None:
 def test_default_display_name_uses_nickname_or_short_device_id() -> None:
     assert display_name_for(Settings(nickname="  小平安  ", device_id="abcdef123456")) == "小平安"
     assert display_name_for(Settings(device_id="abcdef123456")) == "用户-3456"
+
+
+def test_dialog_applies_nickname_immediately_without_waiting_for_close(qtbot, monkeypatch) -> None:
+    changed: list[str] = []
+    dialog = LanInteractionDialog(
+        settings=Settings(nickname="旧昵称", device_id="local-1"),
+        on_nickname_changed=changed.append,
+    )
+    qtbot.addWidget(dialog)
+    monkeypatch.setattr(NicknameDialog, "exec", lambda _dialog: True)
+    monkeypatch.setattr(NicknameDialog, "nickname", lambda _dialog: "新昵称")
+
+    dialog._edit_nickname()
+
+    assert changed == ["新昵称"]
+    assert dialog.settings.nickname == "新昵称"
+    assert "新昵称" in dialog.nickname_button.text()
 
 
 def test_dialog_quick_actions_are_mutually_exclusive(qtbot) -> None:

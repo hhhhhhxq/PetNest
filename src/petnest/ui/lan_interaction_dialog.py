@@ -171,6 +171,7 @@ class LanInteractionDialog(QDialog):
         effects: Sequence[object] = (),
         on_send: Callable[[InteractionDraft], bool | None] | None = None,
         on_chat_send: Callable[[ChatDraft], bool | None] | None = None,
+        on_nickname_changed: Callable[[str], None] | None = None,
         on_alert_membership_changed: Callable[[bool], bool | None] | None = None,
         on_update_peer_address: Callable[[str, str], bool | None] | None = None,
         on_forget_peer: Callable[[str], bool | None] | None = None,
@@ -198,6 +199,7 @@ class LanInteractionDialog(QDialog):
         self._effects = tuple(effects)
         self._on_send = on_send
         self._on_chat_send = on_chat_send
+        self._on_nickname_changed = on_nickname_changed
         self._on_alert_membership_changed = on_alert_membership_changed
         self._on_update_peer_address = on_update_peer_address
         self._on_forget_peer = on_forget_peer
@@ -1420,6 +1422,8 @@ class LanInteractionDialog(QDialog):
         if dialog.exec():
             self._settings = replace(self._settings, nickname=dialog.nickname())
             self._update_nickname_button()
+            if self._on_nickname_changed is not None:
+                self._on_nickname_changed(self._settings.nickname)
 
     def _update_nickname_button(self) -> None:
         self.nickname_button.setText(f"设置我的昵称  ·  {display_name_for(self._settings)}")
