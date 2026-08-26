@@ -3588,6 +3588,80 @@ def test_lan_service_follows_the_user_presence_toggle(
     assert not application.lan_service.is_running
 
 
+def test_configure_lan_starts_discovery_before_pool_sync(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PETNEST_TEST_DISABLE_LAN", raising=False)
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(lan_interaction_enabled=True))
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        application.lan_service, "start", lambda: calls.append("lan") or True
+    )
+    monkeypatch.setattr(
+        application.lan_peer_discovery,
+        "start",
+        lambda: calls.append("discovery"),
+    )
+    monkeypatch.setattr(
+        application.lan_pool_sync, "start", lambda: calls.append("pool")
+    )
+    monkeypatch.setattr(
+        application.lan_pool_sync,
+        "set_local_joined",
+        lambda *_args, **_kwargs: None,
+    )
+
+    application._configure_lan_service()
+
+    assert calls == ["lan", "discovery", "pool"]
+    application.shutdown()
+
+
+def test_disabling_lan_stops_pool_then_discovery_then_transport(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.settings = replace(
+        application.settings,
+        lan_interaction_enabled=False,
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        application.lan_pool_sync, "stop", lambda: calls.append("pool")
+    )
+    monkeypatch.setattr(
+        application.lan_peer_discovery,
+        "stop",
+        lambda: calls.append("discovery"),
+    )
+    monkeypatch.setattr(
+        application.lan_service, "stop", lambda: calls.append("lan")
+    )
+
+    application._configure_lan_service()
+
+    assert calls == ["pool", "discovery", "lan"]
+    application.shutdown()
+
+
 def test_test_network_isolation_skips_app_lan_services(
     qtbot: pytest.QtBot,
     tmp_path: Path,
@@ -3611,6 +3685,11 @@ def test_test_network_isolation_skips_app_lan_services(
         application.lan_pool_sync,
         "start",
         lambda: started.append("pool"),
+    )
+    monkeypatch.setattr(
+        application.lan_peer_discovery,
+        "start",
+        lambda: started.append("discovery"),
     )
 
     application._configure_lan_service()

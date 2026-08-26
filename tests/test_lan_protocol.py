@@ -32,8 +32,63 @@ def test_hello_packet_contains_identity_but_no_resource_path() -> None:
         "pet_name": "平安",
         "port": 18487,
         "capabilities": ["greeting", "heart", "text", "effect"],
+        "extensions": ["peer_directory_v1", "probe_token_v1"],
     }
     assert "path" not in packet
+
+
+def test_hello_advertises_peer_discovery_without_changing_interaction_capabilities() -> None:
+    packet = LanPacketCodec.hello(
+        device_id="local-1",
+        display_name="小平安",
+        pet_name="平安",
+        port=18487,
+    )
+
+    assert packet["capabilities"] == ["greeting", "heart", "text", "effect"]
+    assert packet["extensions"] == ["peer_directory_v1", "probe_token_v1"]
+
+
+def test_presence_round_trips_probe_token_and_accepts_legacy_without_extensions() -> None:
+    token = "a" * 32
+    packet = LanPacketCodec.hello(
+        device_id="peer-1",
+        display_name="小林",
+        pet_name="橘猫",
+        port=18487,
+        probe_token=token,
+    )
+
+    decoded = LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+    assert decoded["extensions"] == ("peer_directory_v1", "probe_token_v1")
+    assert decoded["probe_token"] == token
+
+    packet.pop("extensions")
+    packet.pop("probe_token")
+    legacy = LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+    assert legacy["extensions"] == ()
+    assert legacy["probe_token"] is None
+
+
+@pytest.mark.parametrize("token", ["short", "A" * 32, "g" * 32, 123])
+def test_presence_rejects_invalid_probe_token(token: object) -> None:
+    packet = LanPacketCodec.hello(
+        device_id="peer-1", display_name="小林", pet_name="橘猫", port=18487
+    )
+    packet["probe_token"] = token
+
+    with pytest.raises(LanProtocolError, match="挑战"):
+        LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+
+
+def test_presence_ignores_unknown_bounded_top_level_field() -> None:
+    packet = LanPacketCodec.hello(
+        device_id="peer-1", display_name="小林", pet_name="橘猫", port=18487
+    )
+    packet["future_field"] = {"value": 1}
+
+    decoded = LanPacketCodec.decode_presence(LanPacketCodec.encode(packet))
+    assert decoded["device_id"] == "peer-1"
 
 
 def test_presence_round_trips_optional_alert_group_membership_and_accepts_legacy() -> None:

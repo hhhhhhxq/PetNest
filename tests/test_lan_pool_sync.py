@@ -77,8 +77,22 @@ def _sync_node(root, device_id: str, records=()):
     remote = tuple(item for item in records if item.device_id != device_id)
     roster.merge(remote, directly_verified_ids={item.device_id for item in remote})
     lan = FakeLanService()
-    sync = LanPoolSyncService(lan, roster, display_name=lambda: device_id)
-    return SimpleNamespace(device_id=device_id, roster=roster, lan=lan, sync=sync)
+    candidates: list[tuple[str, str, int, str]] = []
+    sync = LanPoolSyncService(
+        lan,
+        roster,
+        display_name=lambda: device_id,
+        offer_candidate=lambda target_id, ip, port, referrer: (
+            candidates.append((target_id, ip, port, referrer)) or True
+        ),
+    )
+    return SimpleNamespace(
+        device_id=device_id,
+        roster=roster,
+        lan=lan,
+        sync=sync,
+        candidates=candidates,
+    )
 
 
 def _deliver_pending_frames(sender, receiver) -> None:
@@ -129,7 +143,20 @@ def test_received_third_party_records_are_merged_and_queued_for_direct_verificat
     a.sync.receive_records("d", PoolRecords("d", (third_party,)))
 
     assert a.roster.records()["b"] == third_party
-    assert a.lan.probes == [(third_party.ip_address, third_party.port, "b")]
+    assert a.candidates == [("b", third_party.ip_address, third_party.port, "d")]
+    assert a.lan.probes == []
+
+
+def test_left_third_party_record_is_synced_but_not_offered_for_endpoint_verification(
+    qtbot, tmp_path
+) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=(record("a", 1),))
+    left = record("b", 2, state=PoolMemberState.LEFT)
+
+    a.sync.receive_records("d", PoolRecords("d", (left,)))
+
+    assert a.roster.records()["b"] == left
+    assert a.candidates == []
 
 
 def test_sync_does_not_restore_a_foreign_identity_at_the_local_endpoint(qtbot, tmp_path) -> None:

@@ -63,6 +63,7 @@ from petnest.core.lan_firewall_advisor import LanFirewallAdvisorCoordinator
 from petnest.core.lan_discovery import qt_interface_ipv4
 from petnest.core.lan_pool_roster import PoolRosterStore
 from petnest.core.lan_pool_sync import LanPoolSyncService
+from petnest.core.lan_peer_discovery_sync import LanPeerDiscoverySyncService
 from petnest.core.lan_peer_registry import KnownLanPeerRegistry
 from petnest.core.windows_lan_firewall import LanFirewallStatus, WindowsLanFirewallBackend
 from petnest.core.lottie_effects import EffectCatalog
@@ -446,10 +447,23 @@ class PetNest:
             self.settings_manager.path.parent / "lan-alert-pool-roster.json",
             local_device_id=self.settings.device_id,
         )
+        self.lan_peer_discovery = LanPeerDiscoverySyncService(
+            self.lan_service,
+            local_device_id=self.settings.device_id,
+            parent=self.window,
+        )
         self.lan_pool_sync = LanPoolSyncService(
             self.lan_service,
             self.lan_pool_roster,
             display_name=lambda: display_name_for(self.settings),
+            offer_candidate=lambda device_id, ip, port, referrer: (
+                self.lan_peer_discovery.offer_candidate(
+                    device_id,
+                    ip,
+                    port,
+                    referrer_device_id=referrer,
+                )
+            ),
             parent=self.window,
         )
         self.codex_usage_sync = CodexUsageSyncCoordinator(
@@ -1998,6 +2012,7 @@ class PetNest:
         self._run_shutdown_step("停止倒计时计时器", self.work_countdown.timer.stop)
         self._run_shutdown_step("停止 Codex 局域网同步", self.codex_usage_sync.stop)
         self._run_shutdown_step("停止预警池名单同步", self.lan_pool_sync.stop)
+        self._run_shutdown_step("停止伙伴辅助发现", self.lan_peer_discovery.stop)
         self._run_shutdown_step(
             "记录 Codex 账号观察结束",
             lambda: self._codex_account_observations.observe(None, datetime.now(UTC)),
@@ -2491,12 +2506,16 @@ class PetNest:
     def _configure_lan_service(self) -> None:
         if os.environ.get("PETNEST_TEST_DISABLE_LAN", "").strip() == "1":
             self.lan_pool_sync.stop()
+            self.lan_peer_discovery.stop()
             self.lan_service.stop()
             return
         if self.settings.lan_interaction_enabled:
             if not self.lan_service.start():
+                self.lan_pool_sync.stop()
+                self.lan_peer_discovery.stop()
                 LOGGER.warning("局域网互动未启用，桌宠仍可正常使用")
                 return
+            self.lan_peer_discovery.start()
             self.lan_pool_sync.start()
             self.lan_pool_sync.set_local_joined(
                 self.settings.lan_alert_group_joined,
@@ -2505,6 +2524,7 @@ class PetNest:
             )
         else:
             self.lan_pool_sync.stop()
+            self.lan_peer_discovery.stop()
             self.lan_service.stop()
 
     @staticmethod

@@ -24,10 +24,32 @@ from petnest.core.lan_pool_protocol import (
     PoolSummary,
 )
 from petnest.core.lan_peer_registry import KnownLanPeer, KnownLanPeerRegistry
+from petnest.core.lan_peer_discovery_protocol import (
+    PeerDirectory,
+    PeerDirectoryCodec,
+    PeerEndpointRecord,
+)
 from petnest.core.lan_service import LanInteractionService
 from petnest.models.lan_interaction import ChatDraft, ChatScope, InteractionDraft, InteractionKind, LanPeer
 from petnest.models.lan_interaction import DangerAlert, DangerAlertAck
 from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState
+
+
+class FakeIncomingSocket:
+    def __init__(self, frame: bytes, address: str) -> None:
+        self.frame = frame
+        self.address = QHostAddress(address)
+        self.aborted = False
+
+    def readAll(self) -> bytes:
+        frame, self.frame = self.frame, b""
+        return frame
+
+    def peerAddress(self) -> QHostAddress:
+        return self.address
+
+    def abort(self) -> None:
+        self.aborted = True
 
 
 def _pool_record(device_id: str) -> PoolMemberRecord:
@@ -40,6 +62,147 @@ def _pool_record(device_id: str) -> PoolMemberRecord:
         18487,
         1,
     )
+
+
+def test_candidate_ack_is_not_registered_until_token_identity_and_endpoint_match(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local", display_name="本机", pet_name="平安", port=18487
+    )
+    service._running = True
+    service._send_packet = lambda *_args: True
+    succeeded = []
+    service.candidate_probe_succeeded.connect(succeeded.append)
+
+    assert service.probe_candidate("peer", "192.168.20.85", token="a" * 32)
+    wrong = LanPacketCodec.hello_ack(
+        device_id="peer",
+        display_name="同事",
+        pet_name="猫",
+        port=18487,
+        probe_token="b" * 32,
+    )
+    service._handle_datagram(
+        LanPacketCodec.encode(wrong), QHostAddress("192.168.20.85"), 18487
+    )
+    assert service.peers() == ()
+    assert succeeded == []
+
+    valid = LanPacketCodec.hello_ack(
+        device_id="peer",
+        display_name="同事",
+        pet_name="猫",
+        port=18487,
+        probe_token="a" * 32,
+    )
+    service._handle_datagram(
+        LanPacketCodec.encode(valid), QHostAddress("192.168.20.85"), 18487
+    )
+    assert [peer.device_id for peer in service.peers()] == ["peer"]
+    assert succeeded[0].peer.device_id == "peer"
+    assert succeeded[0].assisted is True
+    assert succeeded[0].probe_token == "a" * 32
+
+
+def test_candidate_ack_rejects_wrong_device_ip_source_port_and_advertised_port(qtbot) -> None:
+    cases = (
+        ("wrong", "192.168.20.85", 18487, 18487),
+        ("expected", "192.168.20.86", 18487, 18487),
+        ("expected", "192.168.20.85", 18488, 18487),
+        ("expected", "192.168.20.85", 18487, 18488),
+    )
+    for device_id, host, source_port, advertised_port in cases:
+        service = LanInteractionService(
+            device_id="local", display_name="本机", pet_name="平安", port=18487
+        )
+        service._running = True
+        service._send_packet = lambda *_args: True
+        token = "c" * 32
+        assert service.probe_candidate("expected", "192.168.20.85", token=token)
+        packet = LanPacketCodec.hello_ack(
+            device_id=device_id,
+            display_name="设备",
+            pet_name="猫",
+            port=advertised_port,
+            probe_token=token,
+        )
+
+        service._handle_datagram(
+            LanPacketCodec.encode(packet), QHostAddress(host), source_port
+        )
+
+        assert service.peers() == ()
+        assert token in service._candidate_probe_targets
+
+
+def test_candidate_hello_echoes_token_and_emits_verified_presence(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local", display_name="本机", pet_name="平安", port=18487
+    )
+    service._running = True
+    sent = []
+    verified = []
+    service._send_packet = (
+        lambda packet, address, port: sent.append((packet, address.toString(), port)) or True
+    )
+    service.presence_verified.connect(verified.append)
+    packet = LanPacketCodec.hello(
+        device_id="candidate",
+        display_name="候选设备",
+        pet_name="猫",
+        port=18487,
+        probe_token="d" * 32,
+    )
+
+    service._handle_datagram(
+        LanPacketCodec.encode(packet), QHostAddress("192.168.20.85"), 18487
+    )
+
+    assert sent[0][0]["kind"] == "hello_ack"
+    assert sent[0][0]["probe_token"] == "d" * 32
+    assert verified[0].peer.device_id == "candidate"
+    assert verified[0].assisted is False
+
+
+def test_tcp_directory_frame_requires_a_verified_sender_and_matching_source_ip(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local", display_name="本机", pet_name="平安", port=18487
+    )
+    service._peers["bridge"] = LanPeer(
+        device_id="bridge",
+        display_name="桥接设备",
+        pet_name="猫",
+        ip_address="192.168.101.65",
+        port=18487,
+        online=True,
+    )
+    received = []
+    service.peer_directory_received.connect(received.append)
+    directory = PeerDirectory(
+        "bridge", (PeerEndpointRecord("peer", "192.168.20.85", 18487, 0),)
+    )
+    frame = PeerDirectoryCodec.encode_frame(directory)
+
+    valid = FakeIncomingSocket(frame, "192.168.101.65")
+    service._incoming_chat_buffers[valid] = bytearray()
+    service._read_chat_stream(valid)
+    assert received[0].message == directory
+    assert received[0].address == "192.168.101.65"
+    assert valid.aborted is False
+
+    unknown_directory = PeerDirectory(
+        "unknown", (PeerEndpointRecord("peer", "192.168.20.85", 18487, 0),)
+    )
+    unknown = FakeIncomingSocket(PeerDirectoryCodec.encode_frame(unknown_directory), "192.168.101.65")
+    service._incoming_chat_buffers[unknown] = bytearray()
+    service._read_chat_stream(unknown)
+    assert unknown.aborted is True
+    assert len(received) == 1
+
+    wrong_ip = FakeIncomingSocket(frame, "192.168.101.66")
+    service._incoming_chat_buffers[wrong_ip] = bytearray()
+    service._read_chat_stream(wrong_ip)
+    assert wrong_ip.aborted is True
+    assert len(received) == 1
 
 
 def test_service_dispatches_pool_heartbeat_without_treating_it_as_interaction(qtbot) -> None:

@@ -35,6 +35,11 @@ MAX_PACKET_BYTES = 8 * 1024
 MAX_CHAT_PACKET_BYTES = 2_100_000
 MAX_DISPLAY_NAME_LENGTH = 40
 MAX_PET_NAME_LENGTH = 40
+LAN_PRESENCE_EXTENSIONS = ("peer_directory_v1", "probe_token_v1")
+MAX_PRESENCE_EXTENSIONS = 16
+MAX_PRESENCE_EXTENSION_LENGTH = 64
+_EXTENSION_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PROBE_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 class LanProtocolError(ValueError):
@@ -74,7 +79,10 @@ class LanPacketCodec:
         pet_name: str,
         port: int,
         alert_group_joined: bool | None = None,
+        extensions: tuple[str, ...] = LAN_PRESENCE_EXTENSIONS,
+        probe_token: str | None = None,
     ) -> dict[str, Any]:
+        normalized_extensions = _extensions(list(extensions))
         packet: dict[str, Any] = {
             "version": LAN_PROTOCOL_VERSION,
             "kind": "hello",
@@ -83,11 +91,15 @@ class LanPacketCodec:
             "pet_name": _bounded_text(pet_name, "宠物名称", MAX_PET_NAME_LENGTH),
             "port": _port(port),
             "capabilities": list(cls.capabilities),
+            "extensions": list(normalized_extensions),
         }
         if alert_group_joined is not None:
             if not isinstance(alert_group_joined, bool):
                 raise LanProtocolError("预警组加入状态无效")
             packet["alert_group_joined"] = alert_group_joined
+        normalized_token = _probe_token(probe_token)
+        if normalized_token is not None:
+            packet["probe_token"] = normalized_token
         return packet
 
     @classmethod
@@ -99,6 +111,8 @@ class LanPacketCodec:
         pet_name: str,
         port: int,
         alert_group_joined: bool | None = None,
+        extensions: tuple[str, ...] = LAN_PRESENCE_EXTENSIONS,
+        probe_token: str | None = None,
     ) -> dict[str, Any]:
         packet = cls.hello(
             device_id=device_id,
@@ -106,6 +120,8 @@ class LanPacketCodec:
             pet_name=pet_name,
             port=port,
             alert_group_joined=alert_group_joined,
+            extensions=extensions,
+            probe_token=probe_token,
         )
         packet["kind"] = "hello_ack"
         return packet
@@ -296,6 +312,8 @@ class LanPacketCodec:
             "pet_name": pet_name,
             "port": port,
             "capabilities": tuple(capabilities),
+            "extensions": _extensions(raw.get("extensions")),
+            "probe_token": _probe_token(raw.get("probe_token")),
             "alert_group_supported": alert_group_supported,
             "alert_group_joined": alert_group_joined,
         }
@@ -543,6 +561,32 @@ def _identity(value: object, label: str) -> str:
     value = value.strip()
     if not value or len(value) > 64 or any(char in value for char in "\\/\r\n\x00"):
         raise LanProtocolError(f"{label}无效")
+    return value
+
+
+def _extensions(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > MAX_PRESENCE_EXTENSIONS:
+        raise LanProtocolError("设备扩展列表无效")
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or len(item) > MAX_PRESENCE_EXTENSION_LENGTH
+            or _EXTENSION_RE.fullmatch(item) is None
+        ):
+            raise LanProtocolError("设备扩展列表无效")
+        if item not in normalized:
+            normalized.append(item)
+    return tuple(normalized)
+
+
+def _probe_token(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or _PROBE_TOKEN_RE.fullmatch(value) is None:
+        raise LanProtocolError("设备验证挑战值无效")
     return value
 
 

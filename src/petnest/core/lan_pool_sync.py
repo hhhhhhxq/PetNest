@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Callable
 from time import monotonic
 
@@ -29,31 +28,24 @@ class LanPoolSyncService(QObject):
         roster: PoolRosterStore,
         *,
         display_name: Callable[[], str],
+        offer_candidate: Callable[[str, str, int, str], bool] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self.lan_service = lan_service
         self.roster = roster
         self.display_name = display_name
+        self._offer_candidate = offer_candidate
         self._online_seen_at: dict[str, float] = {}
-        self._verification_queue: deque[tuple[str, str, int]] = deque()
-        self._verification_queued_ids: set[str] = set()
-        self._active_verification: tuple[str, str, int] | None = None
         self._sync_cursor = 0
         self._running = False
         self._periodic_timer = QTimer(self)
         self._periodic_timer.setInterval(30_000)
         self._periodic_timer.timeout.connect(self.sync_reachable_peers)
-        self._verification_timeout = QTimer(self)
-        self._verification_timeout.setSingleShot(True)
-        self._verification_timeout.setInterval(4_500)
-        self._verification_timeout.timeout.connect(self._expire_active_verification)
         if hasattr(lan_service, "pool_heartbeat_received"):
             lan_service.pool_heartbeat_received.connect(self._on_heartbeat_context)
         if hasattr(lan_service, "pool_frame_received"):
             lan_service.pool_frame_received.connect(self._on_frame_context)
-        if hasattr(lan_service, "manual_probe_succeeded"):
-            lan_service.manual_probe_succeeded.connect(self._on_probe_succeeded)
         if hasattr(lan_service, "peer_changed"):
             lan_service.peer_changed.connect(self._on_peer_changed)
 
@@ -72,10 +64,6 @@ class LanPoolSyncService(QObject):
     def stop(self) -> None:
         self._running = False
         self._periodic_timer.stop()
-        self._verification_timeout.stop()
-        self._verification_queue.clear()
-        self._verification_queued_ids.clear()
-        self._active_verification = None
 
     def summary(self) -> PoolSummary:
         return PoolSummary(
@@ -146,11 +134,17 @@ class LanPoolSyncService(QObject):
             for device_id in result.changed_device_ids:
                 record = changed[device_id]
                 if (
-                    device_id != sender_device_id
+                    self._offer_candidate is not None
+                    and device_id != sender_device_id
                     and device_id != self.roster.local_device_id
                     and record.state is PoolMemberState.JOINED
                 ):
-                    self._queue_verification(record)
+                    self._offer_candidate(
+                        record.device_id,
+                        record.ip_address,
+                        record.port,
+                        sender_device_id,
+                    )
             self.roster_changed.emit()
             self.broadcast_heartbeat()
             self.sync_reachable_peers()
@@ -264,51 +258,9 @@ class LanPoolSyncService(QObject):
         if sender:
             self.receive_frame(str(sender), message)
 
-    def _queue_verification(self, record: PoolMemberRecord) -> None:
-        if record.device_id in self._verification_queued_ids:
-            return
-        self._verification_queue.append((record.device_id, record.ip_address, record.port))
-        self._verification_queued_ids.add(record.device_id)
-        self._pump_verification_queue()
-
-    def _pump_verification_queue(self) -> None:
-        if self._active_verification is not None or not self._verification_queue:
-            return
-        candidate = self._verification_queue.popleft()
-        device_id, address, port = candidate
-        self._active_verification = candidate
-        started = self.lan_service.probe_peer(
-            address,
-            port,
-            expected_device_id=device_id,
-        )
-        if not started:
-            self._active_verification = None
-            self._verification_queued_ids.discard(device_id)
-            self._pump_verification_queue()
-            return
-        self._verification_timeout.start()
-
-    def _on_probe_succeeded(self, peer: object) -> None:
-        active = self._active_verification
-        if active is None or getattr(peer, "device_id", None) != active[0]:
-            return
-        self._active_verification = None
-        self._verification_timeout.stop()
-        self._verification_queued_ids.discard(active[0])
-        self._pump_verification_queue()
-
     def _on_peer_changed(self, peer: object) -> None:
         device_id = str(getattr(peer, "device_id", ""))
         if not self._running or not device_id or not getattr(peer, "online", False):
             return
         self._online_seen_at[device_id] = monotonic()
         self.send_summary(device_id)
-
-    def _expire_active_verification(self) -> None:
-        candidate = self._active_verification
-        if candidate is None:
-            return
-        self._active_verification = None
-        self._verification_queued_ids.discard(candidate[0])
-        self._pump_verification_queue()
