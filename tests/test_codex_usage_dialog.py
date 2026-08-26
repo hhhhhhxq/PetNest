@@ -22,6 +22,8 @@ from petnest.core.codex_usage import (
     CodexReasoningUsage,
     CodexManualAttributionStore,
     CodexRateLimit,
+    CodexRateLimitResetAvailability,
+    CodexRateLimitResetCredit,
     CodexRateWindow,
     CodexTokenUsage,
     CodexUsageReport,
@@ -101,6 +103,18 @@ def _report(tmp_path: Path) -> CodexUsageReport:
         ),
         fetched_at=datetime.now(UTC),
         codex_home=tmp_path,
+        rate_limit_reset_credits=CodexRateLimitResetAvailability(
+            available_count=1,
+            credits=(
+                CodexRateLimitResetCredit(
+                    credit_id="RateLimitResetCredit_1",
+                    reset_type="codexRateLimits",
+                    status="available",
+                    expires_at=datetime.now(UTC) + timedelta(days=30),
+                    title="Full reset",
+                ),
+            ),
+        ),
     )
 
 
@@ -137,55 +151,38 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert dialog.local_reasoning_label.text() == "推理强度  高 75% · 中 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
-    assert dialog.reset_status_card.property("resetState") == "normal"
-    assert dialog.reset_status_badge.text() == "正常"
-    assert "未发现已经过期" in dialog.reset_status_detail_label.text()
+    assert dialog.reset_status_card.property("resetState") == "available"
+    assert dialog.reset_status_badge.text() == "可用 1 次"
+    assert "完全重置" in dialog.reset_status_detail_label.text()
+    assert "Codex 官方客户端" in dialog.reset_status_detail_label.text()
+    assert not hasattr(dialog, "reset_action_button")
 
 
-def test_dialog_highlights_expired_codex_reset_time(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_dialog_disables_reset_when_account_has_no_credit(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
-    expired_limit = replace(
-        report.primary_limit,
-        primary=replace(
-            report.primary_limit.primary,
-            resets_at=datetime.now(UTC) - timedelta(minutes=5),
-        ),
-    )
     report = replace(
         report,
-        rate_limits=(expired_limit,),
-        primary_limit=expired_limit,
+        rate_limit_reset_credits=CodexRateLimitResetAvailability(available_count=0),
     )
     dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
     qtbot.addWidget(dialog)
 
     dialog._show_report(report)
 
-    assert dialog.reset_status_card.property("resetState") == "expired"
-    assert dialog.reset_status_badge.text() == "发现 1 个已过期"
-    assert "Codex · 1 周" in dialog.reset_status_detail_label.text()
-    assert "请点击“刷新”" in dialog.reset_status_detail_label.text()
+    assert dialog.reset_status_card.property("resetState") == "empty"
+    assert dialog.reset_status_badge.text() == "暂无可用"
 
 
-def test_dialog_reset_status_explains_missing_reset_time(qtbot: pytest.QtBot, tmp_path: Path) -> None:
-    report = _report(tmp_path)
-    unknown_limit = replace(
-        report.primary_limit,
-        primary=replace(report.primary_limit.primary, resets_at=None),
-    )
-    report = replace(
-        report,
-        rate_limits=(unknown_limit,),
-        primary_limit=unknown_limit,
-    )
+def test_dialog_explains_unavailable_reset_feature(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    report = replace(_report(tmp_path), rate_limit_reset_credits=None)
     dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
     qtbot.addWidget(dialog)
 
     dialog._show_report(report)
 
     assert dialog.reset_status_card.property("resetState") == "unknown"
-    assert dialog.reset_status_badge.text() == "无法判断"
-    assert "没有返回可用的重置时间" in dialog.reset_status_detail_label.text()
+    assert dialog.reset_status_badge.text() == "未提供"
+    assert "尚未向该账号提供" in dialog.reset_status_detail_label.text()
 
 
 def test_claim_pending_button_persists_current_account_claim(

@@ -178,10 +178,10 @@ class CodexUsageDialog(QDialog):
         reset_status_layout.setSpacing(14)
         reset_status_copy = QVBoxLayout()
         reset_status_copy.setSpacing(4)
-        self.reset_status_title_label = QLabel("Codex 重置时间检查", self.reset_status_card)
+        self.reset_status_title_label = QLabel("Codex 使用限额重置", self.reset_status_card)
         self.reset_status_title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
         self.reset_status_detail_label = QLabel(
-            "刷新后检查当前额度窗口是否包含已经过期的重置时间。",
+            "刷新后检查当前账号是否有可使用的限额重置额度。",
             self.reset_status_card,
         )
         self.reset_status_detail_label.setWordWrap(True)
@@ -193,10 +193,10 @@ class CodexUsageDialog(QDialog):
             Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
         )
         reset_status_layout.addWidget(self.reset_status_badge)
-        self._set_reset_status(
+        self._set_reset_credit_status(
             "pending",
             "等待刷新",
-            "刷新后检查当前额度窗口是否包含已经过期的重置时间。",
+            "刷新后检查当前账号是否有可使用的限额重置额度。",
         )
         root.addWidget(self.reset_status_card)
 
@@ -379,10 +379,10 @@ class CodexUsageDialog(QDialog):
         self.loading_bar.show()
         self.status_label.setStyleSheet("")
         self.status_label.setText("正在读取当前 Codex 账号、周额度和本机会话…")
-        self._set_reset_status(
+        self._set_reset_credit_status(
             "pending",
             "检查中",
-            "正在读取 Codex 返回的额度窗口和重置时间…",
+            "正在读取 Codex 返回的限额重置额度…",
         )
         self._worker = Thread(target=self._fetch_worker, name="petnest-codex-usage", daemon=True)
         self._worker.start()
@@ -450,19 +450,19 @@ class CodexUsageDialog(QDialog):
             message = str(payload) or payload.__class__.__name__
             self.status_label.setText(f"读取失败：{message}")
             self.status_label.setStyleSheet("color: #B34D3F;")
-            self._set_reset_status(
+            self._set_reset_credit_status(
                 "unknown",
-                "无法判断",
-                "Codex 用量读取失败，暂时无法检查重置时间。",
+                "无法读取",
+                "Codex 用量读取失败，暂时无法检查限额重置额度。",
             )
             return
         if not isinstance(payload, CodexUsageReport):
             self.status_label.setText("读取失败：Codex 用量结果格式无效。")
             self.status_label.setStyleSheet("color: #B34D3F;")
-            self._set_reset_status(
+            self._set_reset_credit_status(
                 "unknown",
-                "无法判断",
-                "Codex 用量结果格式无效，暂时无法检查重置时间。",
+                "无法读取",
+                "Codex 用量结果格式无效，暂时无法检查限额重置额度。",
             )
             return
         self._live_report = payload
@@ -616,7 +616,7 @@ class CodexUsageDialog(QDialog):
         self.current_account_label.setText(
             f"当前登录 · {report.account.label} · {_plan_label(report.account.plan_type)}"
         )
-        self._show_live_reset_status(report)
+        self._show_live_reset_availability(report)
         self._clear_quota_rows()
         for limit in report.rate_limits:
             self._add_limit_rows(limit)
@@ -695,10 +695,10 @@ class CodexUsageDialog(QDialog):
     def _show_snapshot(self, snapshot: CodexAccountSnapshot) -> None:
         self.claim_pending_button.setVisible(False)
         self.claim_pending_button.setEnabled(False)
-        self._set_reset_status(
+        self._set_reset_credit_status(
             "historical",
-            "历史周期",
-            "当前显示的是往期快照；其中的重置时间已经过去属于正常情况。",
+            "仅限当前账号",
+            "限额重置额度只能从当前登录账号的实时数据读取和使用。",
         )
         self.current_account_label.setText(
             f"历史快照 · {snapshot.account_label} · {_plan_label(snapshot.plan_type)}"
@@ -798,20 +798,11 @@ class CodexUsageDialog(QDialog):
         self.current_account_label.setText(f"局域网同步 · {label}{plan} · 本机未登录")
         self._clear_quota_rows()
         reset = datetime.fromtimestamp(latest.window_resets_at, UTC)
-        if reset <= datetime.now(UTC):
-            local_reset = reset.astimezone()
-            self._set_reset_status(
-                "expired",
-                "已过期",
-                f"局域网快照的重置时间 {local_reset:%Y-%m-%d %H:%M} 已经过期，请重新同步该设备。",
-            )
-        else:
-            local_reset = reset.astimezone()
-            self._set_reset_status(
-                "normal",
-                "正常",
-                f"局域网快照的重置时间尚未过期，下一次为 {local_reset:%Y-%m-%d %H:%M}。",
-            )
+        self._set_reset_credit_status(
+            "historical",
+            "局域网账号",
+            "为避免远程消耗账号额度，限额重置只能在该账号当前登录的电脑上使用。",
+        )
         used_percent = latest.account_used_percent
         if used_percent is not None:
             self._add_window_row(
@@ -1130,54 +1121,49 @@ class CodexUsageDialog(QDialog):
         if self._on_connect_device is not None:
             self._on_connect_device()
 
-    def _show_live_reset_status(self, report: CodexUsageReport) -> None:
-        now = datetime.now(UTC)
-        windows = _named_rate_windows(report.rate_limits)
-        known = tuple((name, window) for name, window in windows if window.resets_at is not None)
-        expired = tuple(
-            (name, window)
-            for name, window in known
-            if window.resets_at is not None and window.resets_at <= now
-        )
-        if expired:
-            details = "、".join(
-                f"{name}（{window.resets_at.astimezone():%m月%d日 %H:%M}）"
-                for name, window in expired[:3]
-                if window.resets_at is not None
-            )
-            if len(expired) > 3:
-                details += f"等 {len(expired)} 个窗口"
-            self._set_reset_status(
-                "expired",
-                f"发现 {len(expired)} 个已过期",
-                f"Codex 返回的重置时间已经过去：{details}。请点击“刷新”；若仍存在，请重启或更新 Codex。",
-            )
-            return
-        if not known:
-            self._set_reset_status(
+    def _show_live_reset_availability(self, report: CodexUsageReport) -> None:
+        availability = report.rate_limit_reset_credits
+        if availability is None:
+            self._set_reset_credit_status(
                 "unknown",
-                "无法判断",
-                "Codex 当前没有返回可用的重置时间。",
+                "未提供",
+                "Codex 当前未返回限额重置额度；此功能可能尚未向该账号提供。",
             )
             return
-        next_name, next_window = min(
-            known,
-            key=lambda item: item[1].resets_at or datetime.max.replace(tzinfo=UTC),
+        if availability.available_count <= 0:
+            self._set_reset_credit_status(
+                "empty",
+                "暂无可用",
+                "当前账号没有可用的限额重置次数。该额度由 Codex 账号服务发放。",
+            )
+            return
+        available_credit = next(
+            (item for item in availability.credits if item.status.casefold() == "available"),
+            None,
         )
-        next_reset = next_window.resets_at
-        assert next_reset is not None
-        self._set_reset_status(
-            "normal",
-            "正常",
-            f"未发现已经过期的重置时间；最近的是 {next_name}，将在 "
-            f"{next_reset.astimezone():%Y-%m-%d %H:%M} 重置。",
+        credit_title = _reset_credit_title(
+            available_credit.title if available_credit is not None else None
+        )
+        expiry = ""
+        if available_credit is not None and available_credit.expires_at is not None:
+            expiry = f"，将于 {available_credit.expires_at.astimezone():%Y-%m-%d %H:%M} 到期"
+        self._set_reset_credit_status(
+            "available",
+            f"可用 {availability.available_count} 次",
+            f"{credit_title}{expiry}。当前账号共有 {availability.available_count} 次可用额度；"
+            "可在 Codex 官方客户端中使用。",
         )
 
-    def _set_reset_status(self, state: str, badge: str, detail: str) -> None:
+    def _set_reset_credit_status(
+        self,
+        state: str,
+        badge: str,
+        detail: str,
+    ) -> None:
         palette = {
             "pending": ("#FBF7F2", "#E8DED5", "#4B4641", "#8F8680", "#F0E8E1"),
-            "normal": ("#F1F7F2", "#BDD3C1", "#3F6746", "#55765B", "#DDEBDF"),
-            "expired": ("#FFF0E8", "#E1A88D", "#9A4933", "#A85D3E", "#F7D8C8"),
+            "available": ("#F1F7F2", "#BDD3C1", "#3F6746", "#55765B", "#DDEBDF"),
+            "empty": ("#FBF7F2", "#E8DED5", "#4B4641", "#8F8680", "#F0E8E1"),
             "unknown": ("#FFF8E8", "#DFC78E", "#7A6232", "#887044", "#F3E6BD"),
             "historical": ("#F4F1F8", "#CEC5DC", "#665A77", "#756A83", "#E6E0EE"),
         }
@@ -1273,24 +1259,14 @@ def _window_label(minutes: int | None) -> str:
     return f"{minutes} 分钟"
 
 
-def _named_rate_windows(
-    rate_limits: tuple[CodexRateLimit, ...],
-) -> tuple[tuple[str, CodexRateWindow], ...]:
-    windows: list[tuple[str, CodexRateWindow]] = []
-    for limit in rate_limits:
-        prefix = limit.limit_name or ("Codex" if limit.limit_id == "codex" else limit.limit_id)
-        if limit.primary is not None:
-            windows.append(
-                (f"{prefix} · {_window_label(limit.primary.window_duration_minutes)}", limit.primary)
-            )
-        if limit.secondary is not None:
-            windows.append(
-                (
-                    f"{prefix} · 次级窗口 · {_window_label(limit.secondary.window_duration_minutes)}",
-                    limit.secondary,
-                )
-            )
-    return tuple(windows)
+def _reset_credit_title(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    labels = {
+        "full reset": "完全重置",
+        "rate-limit reset": "限额重置",
+        "rate limit reset": "限额重置",
+    }
+    return labels.get(normalized.casefold(), normalized or "限额重置")
 
 
 def _live_cycle_label(window: CodexRateWindow | None) -> str:

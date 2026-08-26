@@ -102,7 +102,21 @@ def _responses(codex_home: Path, *, email: str = "person@example.com") -> tuple[
                         "unlimited": False,
                     },
                 }
-            }
+            },
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [
+                    {
+                        "id": "RateLimitResetCredit_1",
+                        "resetType": "codexRateLimits",
+                        "status": "available",
+                        "grantedAt": int(now.timestamp()),
+                        "expiresAt": int((now + timedelta(days=30)).timestamp()),
+                        "title": "Rate-limit reset",
+                        "description": "Reset an eligible Codex rate-limit window.",
+                    }
+                ],
+            },
         },
         4: {
             "summary": {
@@ -355,6 +369,14 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     assert report.account.plan_type == "pro"
     assert report.primary_limit.primary is not None
     assert report.primary_limit.primary.remaining_percent == 96
+    assert report.rate_limit_reset_credits is not None
+    assert report.rate_limit_reset_credits.available_count == 1
+    reset_credit = report.rate_limit_reset_credits.credits[0]
+    assert reset_credit.credit_id == "RateLimitResetCredit_1"
+    assert reset_credit.reset_type == "codexRateLimits"
+    assert reset_credit.status == "available"
+    assert reset_credit.granted_at is not None
+    assert reset_credit.expires_at == reset_credit.granted_at + timedelta(days=30)
     assert report.account_tokens.lifetime_tokens == 9_000_000
     assert report.local_usage.tokens.total_tokens == 2_000
     assert report.local_usage.tokens.input_tokens == 1_400

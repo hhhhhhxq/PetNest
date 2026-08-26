@@ -65,6 +65,27 @@ class CodexRateLimit:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexRateLimitResetCredit:
+    """One earned Codex rate-limit reset returned by app-server."""
+
+    credit_id: str
+    reset_type: str
+    status: str
+    granted_at: datetime | None = None
+    expires_at: datetime | None = None
+    title: str | None = None
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CodexRateLimitResetAvailability:
+    """Authoritative available count plus any reset-credit detail rows."""
+
+    available_count: int
+    credits: tuple[CodexRateLimitResetCredit, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class CodexTokenUsage:
     input_tokens: int = 0
     cached_input_tokens: int = 0
@@ -167,6 +188,7 @@ class CodexUsageReport:
     local_usage: LocalCodexUsage
     fetched_at: datetime
     codex_home: Path
+    rate_limit_reset_credits: CodexRateLimitResetAvailability | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +562,7 @@ class CodexUsageClient:
             local_usage=local,
             fetched_at=fetched_at,
             codex_home=codex_home,
+            rate_limit_reset_credits=_parse_rate_limit_reset_availability(responses[3]),
         )
 
 
@@ -1527,6 +1550,50 @@ def _parse_rate_limits(payload: dict[str, Any]) -> tuple[CodexRateLimit, ...]:
     return tuple(limits)
 
 
+def _parse_rate_limit_reset_availability(
+    payload: dict[str, Any],
+) -> CodexRateLimitResetAvailability | None:
+    raw = payload.get("rateLimitResetCredits")
+    if not isinstance(raw, dict):
+        return None
+    available_count = _integer(raw.get("availableCount"))
+    if available_count is None or not 0 <= available_count <= 10**9:
+        return None
+    parsed: list[CodexRateLimitResetCredit] = []
+    credits = raw.get("credits")
+    if isinstance(credits, list):
+        for item in credits[:50]:
+            if not isinstance(item, dict):
+                continue
+            credit_id = str(item.get("id") or "").strip()
+            reset_type = str(item.get("resetType") or "").strip()
+            status = str(item.get("status") or "").strip()
+            if (
+                not credit_id
+                or len(credit_id) > 200
+                or not reset_type
+                or len(reset_type) > 80
+                or not status
+                or len(status) > 40
+            ):
+                continue
+            parsed.append(
+                CodexRateLimitResetCredit(
+                    credit_id=credit_id,
+                    reset_type=reset_type,
+                    status=status,
+                    granted_at=_optional_epoch_datetime(item.get("grantedAt")),
+                    expires_at=_optional_epoch_datetime(item.get("expiresAt")),
+                    title=_optional_text(item.get("title"), 200),
+                    description=_optional_text(item.get("description"), 500),
+                )
+            )
+    return CodexRateLimitResetAvailability(
+        available_count=available_count,
+        credits=tuple(parsed),
+    )
+
+
 def _rate_limit(key: str, raw: dict[str, Any]) -> CodexRateLimit:
     credits = raw.get("credits")
     if not isinstance(credits, dict):
@@ -1557,6 +1624,23 @@ def _rate_window(raw: object) -> CodexRateWindow | None:
         window_duration_minutes=max(0, duration) if duration is not None else None,
         resets_at=reset,
     )
+
+
+def _optional_epoch_datetime(value: object) -> datetime | None:
+    epoch = _integer(value)
+    if epoch is None:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch, UTC)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _optional_text(value: object, maximum: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized[:maximum] or None
 
 
 def _parse_account_tokens(
@@ -2128,6 +2212,8 @@ __all__ = [
     "CodexModelUsage",
     "CodexReasoningUsage",
     "CodexRateLimit",
+    "CodexRateLimitResetAvailability",
+    "CodexRateLimitResetCredit",
     "CodexRateWindow",
     "CodexTokenUsage",
     "CodexUsageClient",
