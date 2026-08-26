@@ -135,7 +135,13 @@ class PeerDirectoryCodec:
             return cls._decode_frame(frame)
         except PeerDirectoryProtocolError:
             raise
-        except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        except (
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+            RecursionError,
+        ) as error:
             raise PeerDirectoryProtocolError("directory frame is invalid") from error
 
     @staticmethod

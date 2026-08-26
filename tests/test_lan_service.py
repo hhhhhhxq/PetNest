@@ -103,6 +103,59 @@ def test_candidate_ack_is_not_registered_until_token_identity_and_endpoint_match
     assert succeeded[0].probe_token == "a" * 32
 
 
+def test_candidate_ack_without_token_stays_hidden_for_legacy_compatibility(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local", display_name="本机", pet_name="平安", port=18487
+    )
+    service._running = True
+    service._send_packet = lambda *_args: True
+    token = "e" * 32
+    assert service.probe_candidate("legacy", "192.168.20.85", token=token)
+    legacy_ack = LanPacketCodec.hello_ack(
+        device_id="legacy",
+        display_name="旧版设备",
+        pet_name="猫",
+        port=18487,
+        extensions=(),
+    )
+
+    service._handle_datagram(
+        LanPacketCodec.encode(legacy_ack),
+        QHostAddress("192.168.20.85"),
+        18487,
+    )
+
+    assert service.peers() == ()
+    assert token in service._candidate_probe_targets
+
+
+def test_candidate_ack_without_token_cannot_bypass_challenge_with_wrong_ports(qtbot) -> None:
+    for source_port, advertised_port in ((18488, 18487), (18487, 18488)):
+        service = LanInteractionService(
+            device_id="local", display_name="本机", pet_name="平安", port=18487
+        )
+        service._running = True
+        service._send_packet = lambda *_args: True
+        token = "f" * 32
+        assert service.probe_candidate("legacy", "192.168.20.85", token=token)
+        legacy_ack = LanPacketCodec.hello_ack(
+            device_id="legacy",
+            display_name="旧版设备",
+            pet_name="猫",
+            port=advertised_port,
+            extensions=(),
+        )
+
+        service._handle_datagram(
+            LanPacketCodec.encode(legacy_ack),
+            QHostAddress("192.168.20.85"),
+            source_port,
+        )
+
+        assert service.peers() == ()
+        assert token in service._candidate_probe_targets
+
+
 def test_candidate_ack_rejects_wrong_device_ip_source_port_and_advertised_port(qtbot) -> None:
     cases = (
         ("wrong", "192.168.20.85", 18487, 18487),
@@ -203,6 +256,19 @@ def test_tcp_directory_frame_requires_a_verified_sender_and_matching_source_ip(q
     service._read_chat_stream(wrong_ip)
     assert wrong_ip.aborted is True
     assert len(received) == 1
+
+
+def test_tcp_stream_aborts_deeply_nested_json_without_leaking_recursion_error(qtbot) -> None:
+    service = LanInteractionService(
+        device_id="local", display_name="本机", pet_name="平安", port=18487
+    )
+    payload = b"[" * 2_000 + b"0" + b"]" * 2_000
+    socket = FakeIncomingSocket(len(payload).to_bytes(4, "big") + payload, "192.168.1.20")
+    service._incoming_chat_buffers[socket] = bytearray()
+
+    service._read_chat_stream(socket)
+
+    assert socket.aborted is True
 
 
 def test_service_dispatches_pool_heartbeat_without_treating_it_as_interaction(qtbot) -> None:

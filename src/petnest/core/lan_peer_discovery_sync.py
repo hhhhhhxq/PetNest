@@ -9,6 +9,7 @@ from time import monotonic
 
 from PySide6.QtCore import QObject, QTimer
 
+from petnest.core.lan_discovery import InterfaceIPv4
 from petnest.core.lan_peer_discovery_protocol import (
     MAX_DIRECTORY_RECORDS,
     PeerDirectory,
@@ -37,6 +38,7 @@ class LanPeerDiscoverySyncService(QObject):
         local_device_id: str,
         clock: Callable[[], float] = monotonic,
         token_factory: Callable[[], str] = lambda: token_hex(16),
+        interface_provider: Callable[[], tuple[InterfaceIPv4, ...]] = lambda: (),
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -44,6 +46,7 @@ class LanPeerDiscoverySyncService(QObject):
         self.local_device_id = local_device_id
         self._clock = clock
         self._token_factory = token_factory
+        self._interface_provider = interface_provider
         self.endpoint_book = DirectEndpointBook(local_device_id=local_device_id)
         self.candidates = CandidateQueue(local_device_id=local_device_id)
         self._pending: dict[str, tuple[CandidateKey, float]] = {}
@@ -127,6 +130,8 @@ class LanPeerDiscoverySyncService(QObject):
             key = CandidateKey(device_id, ip_address, port)
         except (TypeError, ValueError):
             return False
+        if key.ip_address in self._local_and_broadcast_addresses():
+            return False
         return self.candidates.offer(
             key,
             referrer_device_id,
@@ -208,20 +213,24 @@ class LanPeerDiscoverySyncService(QObject):
             or len(self._global_attempts) >= MAX_PROBE_STARTS_PER_MINUTE
         ):
             return
-        queued = self.candidates.queued_keys()
-        if not queued:
-            return
-        first = queued[0]
-        referrer = self.candidates.referrer(first)
-        if referrer is None:
-            return
-        referrer_attempts = self._referrer_attempts.setdefault(referrer, deque())
-        if len(referrer_attempts) >= MAX_PROBE_STARTS_PER_REFERRER_MINUTE:
-            return
-        selected = self.candidates.take_ready(now=now, limit=1)
+        blocked_referrers = frozenset(
+            referrer
+            for referrer, attempts in self._referrer_attempts.items()
+            if len(attempts) >= MAX_PROBE_STARTS_PER_REFERRER_MINUTE
+        )
+        selected = self.candidates.take_ready(
+            now=now,
+            limit=1,
+            blocked_referrers=blocked_referrers,
+        )
         if not selected:
             return
         key = selected[0]
+        referrer = self.candidates.referrer(key)
+        if referrer is None:
+            self.candidates.mark_failed(key, now=now)
+            return
+        referrer_attempts = self._referrer_attempts.setdefault(referrer, deque())
         token = self._next_unique_token()
         self._start_attempts.append(now)
         self._global_attempts.append(now)
@@ -360,3 +369,16 @@ class LanPeerDiscoverySyncService(QObject):
     def _schedule_directory_sync(self) -> None:
         if self._running:
             self._debounce_timer.start()
+
+    def _local_and_broadcast_addresses(self) -> frozenset[str]:
+        try:
+            interfaces = tuple(self._interface_provider())
+        except (OSError, RuntimeError, TypeError):
+            return frozenset()
+        return frozenset(
+            address
+            for interface in interfaces
+            if interface.is_up and interface.is_running and not interface.is_loopback
+            for address in (interface.address, interface.broadcast)
+            if address
+        )

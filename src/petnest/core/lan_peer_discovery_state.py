@@ -13,6 +13,9 @@ from petnest.core.lan_peer_discovery_protocol import (
 
 DIRECT_ENDPOINT_TTL_SECONDS = 24.0
 ASSISTED_ENDPOINT_TTL_SECONDS = 90.0
+CANDIDATE_TTL_SECONDS = 60.0
+NEGATIVE_CACHE_TTL_SECONDS = 3_600.0
+DEFAULT_NEGATIVE_CACHE_MAXIMUM = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +37,12 @@ class DirectEndpoint:
     extensions: frozenset[str]
     verified_at: float
     assisted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateOffer:
+    referrer_device_id: str
+    offered_at: float
 
 
 class DirectEndpointBook:
@@ -159,15 +168,29 @@ class DirectEndpointBook:
 class CandidateQueue:
     BACKOFF_SECONDS = (120.0, 240.0, 480.0, 600.0)
 
-    def __init__(self, *, local_device_id: str, maximum: int = 128) -> None:
+    def __init__(
+        self,
+        *,
+        local_device_id: str,
+        maximum: int = 128,
+        negative_cache_maximum: int = DEFAULT_NEGATIVE_CACHE_MAXIMUM,
+    ) -> None:
         self.local_device_id = _identity(local_device_id)
         if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
             raise ValueError("maximum must be a positive integer")
+        if (
+            isinstance(negative_cache_maximum, bool)
+            or not isinstance(negative_cache_maximum, int)
+            or negative_cache_maximum < 1
+        ):
+            raise ValueError("negative_cache_maximum must be a positive integer")
         self.maximum = maximum
-        self._queued: dict[CandidateKey, str] = {}
+        self.negative_cache_maximum = negative_cache_maximum
+        self._queued: dict[CandidateKey, _CandidateOffer] = {}
         self._active: dict[CandidateKey, str] = {}
         self._failure_counts: dict[CandidateKey, int] = {}
         self._backoff_until: dict[CandidateKey, float] = {}
+        self._failure_expires_at: dict[CandidateKey, float] = {}
 
     def offer(
         self,
@@ -181,6 +204,8 @@ class CandidateQueue:
             return False
         referrer = _identity(referrer_device_id)
         current = float(now)
+        self._expire_queued(current)
+        self._prune_negative_cache(current)
         if (
             key.device_id == self.local_device_id
             or already_verified
@@ -190,33 +215,52 @@ class CandidateQueue:
             or len(self._queued) + len(self._active) >= self.maximum
         ):
             return False
-        self._queued[key] = referrer
+        self._queued[key] = _CandidateOffer(referrer, current)
         return True
 
-    def take_ready(self, *, now: float, limit: int) -> tuple[CandidateKey, ...]:
+    def take_ready(
+        self,
+        *,
+        now: float,
+        limit: int,
+        blocked_referrers: frozenset[str] = frozenset(),
+    ) -> tuple[CandidateKey, ...]:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             return ()
-        selected = tuple(list(self._queued)[:limit])
+        current = float(now)
+        self._expire_queued(current)
+        self._prune_negative_cache(current)
+        selected = tuple(
+            key
+            for key, offer in self._queued.items()
+            if offer.referrer_device_id not in blocked_referrers
+        )[:limit]
         for key in selected:
-            self._active[key] = self._queued.pop(key)
+            self._active[key] = self._queued.pop(key).referrer_device_id
         return selected
 
     def referrer(self, key: CandidateKey) -> str | None:
-        return self._active.get(key, self._queued.get(key))
+        active = self._active.get(key)
+        if active is not None:
+            return active
+        queued = self._queued.get(key)
+        return queued.referrer_device_id if queued is not None else None
 
     def mark_failed(self, key: CandidateKey, *, now: float) -> None:
         self._queued.pop(key, None)
         self._active.pop(key, None)
         failures = self._failure_counts.get(key, 0) + 1
+        self._drop_failure(key)
         self._failure_counts[key] = failures
         delay = self.BACKOFF_SECONDS[min(failures - 1, len(self.BACKOFF_SECONDS) - 1)]
         self._backoff_until[key] = float(now) + delay
+        self._failure_expires_at[key] = float(now) + NEGATIVE_CACHE_TTL_SECONDS
+        self._prune_negative_cache(float(now))
 
     def mark_verified(self, key: CandidateKey) -> None:
         self._queued.pop(key, None)
         self._active.pop(key, None)
-        self._failure_counts.pop(key, None)
-        self._backoff_until.pop(key, None)
+        self._drop_failure(key)
 
     def backoff_until(self, key: CandidateKey) -> float | None:
         return self._backoff_until.get(key)
@@ -232,3 +276,37 @@ class CandidateQueue:
         self._active.clear()
         self._failure_counts.clear()
         self._backoff_until.clear()
+        self._failure_expires_at.clear()
+
+    def _expire_queued(self, now: float) -> None:
+        expired = tuple(
+            key
+            for key, offer in self._queued.items()
+            if now - offer.offered_at > CANDIDATE_TTL_SECONDS
+        )
+        for key in expired:
+            self._queued.pop(key, None)
+
+    def _prune_negative_cache(self, now: float) -> None:
+        expired = tuple(
+            key
+            for key, expires_at in self._failure_expires_at.items()
+            if now >= expires_at and key not in self._queued and key not in self._active
+        )
+        for key in expired:
+            self._drop_failure(key)
+        overflow = len(self._failure_counts) - self.negative_cache_maximum
+        if overflow <= 0:
+            return
+        for key in tuple(self._failure_counts):
+            if key in self._queued or key in self._active:
+                continue
+            self._drop_failure(key)
+            overflow -= 1
+            if overflow <= 0:
+                break
+
+    def _drop_failure(self, key: CandidateKey) -> None:
+        self._failure_counts.pop(key, None)
+        self._backoff_until.pop(key, None)
+        self._failure_expires_at.pop(key, None)

@@ -450,6 +450,7 @@ class PetNest:
         self.lan_peer_discovery = LanPeerDiscoverySyncService(
             self.lan_service,
             local_device_id=self.settings.device_id,
+            interface_provider=qt_interface_ipv4,
             parent=self.window,
         )
         self.lan_pool_sync = LanPoolSyncService(

@@ -58,6 +58,13 @@ def test_directory_decoder_rejects_wrong_size_version_and_extra_fields() -> None
         PeerDirectoryCodec.decode_frame(len(encoded).to_bytes(4, "big") + encoded)
 
 
+def test_directory_decoder_wraps_deep_json_recursion_as_protocol_error() -> None:
+    payload = b"[" * 2_000 + b"0" + b"]" * 2_000
+
+    with pytest.raises(PeerDirectoryProtocolError):
+        PeerDirectoryCodec.decode_frame(len(payload).to_bytes(4, "big") + payload)
+
+
 @pytest.mark.parametrize("version", [True, 1.0, 2])
 def test_directory_decoder_requires_exact_integer_version(version: object) -> None:
     payload = {

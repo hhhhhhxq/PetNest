@@ -114,3 +114,44 @@ def test_candidate_success_clears_active_referrer_and_failure_history() -> None:
     assert queue.referrer(key) is None
     assert queue.backoff_until(key) is None
     assert queue.offer(key, "bridge-3", 123.0)
+
+
+def test_candidate_queue_expires_unstarted_candidates_after_sixty_seconds() -> None:
+    queue = CandidateQueue(local_device_id="local", maximum=1)
+    stale = CandidateKey("stale", "192.168.1.20", 18487)
+    fresh = CandidateKey("fresh", "192.168.1.21", 18487)
+    assert queue.offer(stale, "bridge", 0.0)
+
+    assert queue.offer(fresh, "bridge", 60.01)
+    assert queue.queued_keys() == (fresh,)
+
+
+def test_candidate_queue_skips_rate_limited_referrers_without_head_of_line_blocking() -> None:
+    queue = CandidateQueue(local_device_id="local")
+    blocked = CandidateKey("blocked", "10.0.0.1", 18487)
+    runnable = CandidateKey("runnable", "10.0.0.2", 18487)
+    assert queue.offer(blocked, "noisy-bridge", 0.0)
+    assert queue.offer(runnable, "quiet-bridge", 0.0)
+
+    assert queue.take_ready(
+        now=0.0,
+        limit=1,
+        blocked_referrers=frozenset({"noisy-bridge"}),
+    ) == (runnable,)
+    assert queue.queued_keys() == (blocked,)
+
+
+def test_candidate_negative_cache_is_bounded_for_unique_failed_endpoints() -> None:
+    queue = CandidateQueue(local_device_id="local", negative_cache_maximum=32)
+    for index in range(80):
+        key = CandidateKey(
+            f"peer-{index}",
+            f"10.0.{index // 250}.{index % 250 + 1}",
+            18487,
+        )
+        assert queue.offer(key, "bridge", float(index))
+        assert queue.take_ready(now=float(index), limit=1) == (key,)
+        queue.mark_failed(key, now=float(index))
+
+    assert len(queue._failure_counts) <= 32
+    assert len(queue._backoff_until) <= 32

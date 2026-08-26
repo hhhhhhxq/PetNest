@@ -1011,13 +1011,27 @@ class LanInteractionService(QObject):
                 address if isinstance(address, QHostAddress) else QHostAddress(address)
             )
             probe_token = presence["probe_token"]
-            if presence["kind"] == "hello_ack" and probe_token is not None:
-                target = self._candidate_probe_targets.get(str(probe_token))
-                host = presence_address.toString()
+            host = presence_address.toString()
+            candidate_challenge: tuple[str, _CandidateProbeTarget] | None = None
+            if presence["kind"] == "hello_ack":
+                candidate_challenges = tuple(
+                    (active_token, target)
+                    for active_token, target in self._candidate_probe_targets.items()
+                    if host == target.ip_address
+                )
+                candidate_challenge = next(
+                    (
+                        challenge
+                        for challenge in candidate_challenges
+                        if challenge[1].device_id == str(presence["device_id"])
+                    ),
+                    candidate_challenges[0] if candidate_challenges else None,
+                )
+            if candidate_challenge is not None:
+                expected_token, target = candidate_challenge
                 if (
-                    target is None
+                    probe_token != expected_token
                     or str(presence["device_id"]) != target.device_id
-                    or host != target.ip_address
                     or int(source_port) != target.port
                     or int(presence["port"]) != target.port
                 ):
@@ -1029,7 +1043,7 @@ class LanInteractionService(QObject):
                 peer = self._handle_presence(presence, presence_address)
                 if peer is None:
                     return
-                self._candidate_probe_targets.pop(str(probe_token), None)
+                self._candidate_probe_targets.pop(expected_token, None)
                 context = VerifiedPresenceContext(
                     peer=peer,
                     address=host,
@@ -1040,6 +1054,8 @@ class LanInteractionService(QObject):
                 )
                 self.presence_verified.emit(context)
                 self.candidate_probe_succeeded.emit(context)
+                return
+            if presence["kind"] == "hello_ack" and probe_token is not None:
                 return
             if self._reject_unexpected_probe_identity(
                 presence, presence_address, source_port

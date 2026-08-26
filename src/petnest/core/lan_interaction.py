@@ -544,7 +544,7 @@ class LanPacketCodec:
             raise LanProtocolError("消息超过安全大小限制")
         try:
             raw = json.loads(bytes(data).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
             raise LanProtocolError(f"JSON 消息无效：{error}") from error
         if not isinstance(raw, dict):
             raise LanProtocolError("JSON 根节点必须是对象")

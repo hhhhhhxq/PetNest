@@ -227,7 +227,7 @@ def _decode_json(payload: bytes, *, maximum: int) -> dict[str, Any]:
         raise LanPoolProtocolError("payload size is invalid")
     try:
         raw = json.loads(bytes(payload).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise LanPoolProtocolError("JSON payload is invalid") from error
     if not isinstance(raw, dict):
         raise LanPoolProtocolError("JSON root must be an object")

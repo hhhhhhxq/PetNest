@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal
 
+from petnest.core.lan_discovery import InterfaceIPv4
 from petnest.core.lan_peer_discovery_protocol import (
     PeerDirectory,
     PeerDirectoryCodec,
@@ -426,5 +427,66 @@ def test_probe_rate_limits_each_referrer_to_twenty_attempts_per_minute(qtbot) ->
         assert len(lan.probes) == 20
         assert len(sync.candidates.queued_keys()) == 1
         assert sync.pending_tokens() == ()
+    finally:
+        sync.stop()
+
+
+def test_rate_limited_referrer_does_not_block_another_referrer(qtbot) -> None:
+    sync, lan, clock, _tokens = started_sync()
+    try:
+        for index in range(20):
+            assert sync.offer_candidate(
+                f"noisy-{index}",
+                f"10.2.0.{index + 1}",
+                18487,
+                referrer_device_id="noisy-bridge",
+            )
+            sync.pump_candidates()
+            device_id, ip, _port, token = lan.probes[-1]
+            lan.candidate_probe_succeeded.emit(
+                context(device_id, ip, token=token, assisted=True)
+            )
+            clock.advance(0.251)
+        assert sync.offer_candidate(
+            "blocked", "10.2.1.1", 18487, referrer_device_id="noisy-bridge"
+        )
+        assert sync.offer_candidate(
+            "runnable", "10.2.1.2", 18487, referrer_device_id="quiet-bridge"
+        )
+
+        sync.pump_candidates()
+
+        assert lan.probes[-1][:3] == ("runnable", "10.2.1.2", 18487)
+    finally:
+        sync.stop()
+
+
+def test_offer_candidate_rejects_local_interface_and_broadcast_addresses(qtbot) -> None:
+    lan = FakeLanService()
+    sync = LanPeerDiscoverySyncService(
+        lan,
+        local_device_id="a",
+        interface_provider=lambda: (
+            InterfaceIPv4(
+                "Wi-Fi",
+                True,
+                True,
+                False,
+                "192.168.20.10",
+                "192.168.20.255",
+            ),
+        ),
+    )
+    sync.start()
+    try:
+        assert not sync.offer_candidate(
+            "self-alias", "192.168.20.10", 18487, referrer_device_id="bridge"
+        )
+        assert not sync.offer_candidate(
+            "broadcast", "192.168.20.255", 18487, referrer_device_id="bridge"
+        )
+        assert sync.offer_candidate(
+            "peer", "192.168.20.85", 18487, referrer_device_id="bridge"
+        )
     finally:
         sync.stop()
