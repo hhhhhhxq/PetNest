@@ -33,6 +33,7 @@ from petnest.core.codex_usage import (
     CodexAccountSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexReasoningUsage,
     CodexManualAttributionStore,
     CodexRateLimit,
     CodexRateWindow,
@@ -254,6 +255,12 @@ class CodexUsageDialog(QDialog):
             "按本额度周期内实际产生 Token 的模型回合统计：极快对应 fast/priority，"
             "标准对应 default。"
         )
+        self.local_reasoning_label = QLabel("推理强度  —", local_card)
+        self.local_reasoning_label.setObjectName("mutedLabel")
+        self.local_reasoning_label.setWordWrap(True)
+        self.local_reasoning_label.setToolTip(
+            "按本额度周期内实际产生 Token 的模型回合统计；旧版日志未记录该字段时会显示“未记录”。"
+        )
         self.local_scan_label = QLabel("日志匹配  —", local_card)
         self.local_scan_label.setObjectName("mutedLabel")
         self.local_scan_label.setWordWrap(True)
@@ -306,6 +313,7 @@ class CodexUsageDialog(QDialog):
         local_layout.addWidget(self.claim_pending_button)
         local_layout.addWidget(self.local_models_label)
         local_layout.addWidget(self.local_speed_label)
+        local_layout.addWidget(self.local_reasoning_label)
         local_layout.addWidget(self.local_scan_label)
         local_layout.addWidget(self.local_quota_change_label)
         local_layout.addWidget(self.synced_devices_label)
@@ -651,6 +659,9 @@ class CodexUsageDialog(QDialog):
         self.local_speed_label.setText(
             "速度占比  " + _speed_usage_label(local.fast_uses, local.standard_uses)
         )
+        self.local_reasoning_label.setText(
+            "推理强度  " + _reasoning_usage_label(local.reasoning_usage)
+        )
         self.local_scan_label.setText(
             "日志匹配  "
             + _scan_status_label(local.scan_status, local.files_scanned, local.files_skipped)
@@ -672,6 +683,7 @@ class CodexUsageDialog(QDialog):
             local_models=local.model_usage,
             local_fast_uses=local.fast_uses,
             local_standard_uses=local.standard_uses,
+            local_reasoning_usage=local.reasoning_usage,
             local_scan_status=local.scan_status,
             local_files_scanned=local.files_scanned,
             local_files_skipped=local.files_skipped,
@@ -732,6 +744,9 @@ class CodexUsageDialog(QDialog):
             "速度占比  "
             + _speed_usage_label(snapshot.local_fast_uses, snapshot.local_standard_uses)
         )
+        self.local_reasoning_label.setText(
+            "推理强度  " + _reasoning_usage_label(snapshot.local_reasoning_usage)
+        )
         self.local_scan_label.setText(
             "日志匹配  "
             + _scan_status_label(
@@ -762,6 +777,7 @@ class CodexUsageDialog(QDialog):
             local_models=snapshot.local_model_usage,
             local_fast_uses=snapshot.local_fast_uses,
             local_standard_uses=snapshot.local_standard_uses,
+            local_reasoning_usage=snapshot.local_reasoning_usage,
             local_scan_status=snapshot.local_scan_status,
             local_files_scanned=snapshot.local_files_scanned,
             local_files_skipped=snapshot.local_files_skipped,
@@ -817,6 +833,7 @@ class CodexUsageDialog(QDialog):
         self.local_attribution_label.setText("待归属 / 标签异常  —")
         self.local_models_label.setText("常用模型  —")
         self.local_speed_label.setText("速度占比  —")
+        self.local_reasoning_label.setText("推理强度  —")
         self.local_scan_label.setText("日志匹配  本机未登录该账号")
         self.local_quota_change_label.setText("账号额度来自最近一次局域网同步")
         known_devices = tuple(
@@ -838,6 +855,7 @@ class CodexUsageDialog(QDialog):
             local_models=(),
             local_fast_uses=0,
             local_standard_uses=0,
+            local_reasoning_usage=(),
             local_scan_status="unknown",
             local_files_scanned=0,
             local_files_skipped=0,
@@ -875,6 +893,7 @@ class CodexUsageDialog(QDialog):
         local_models: tuple[CodexModelUsage, ...],
         local_fast_uses: int,
         local_standard_uses: int,
+        local_reasoning_usage: tuple[CodexReasoningUsage, ...],
         local_scan_status: str,
         local_files_scanned: int,
         local_files_skipped: int,
@@ -910,6 +929,7 @@ class CodexUsageDialog(QDialog):
                 local_models=local_models,
                 local_fast_uses=local_fast_uses,
                 local_standard_uses=local_standard_uses,
+                local_reasoning_usage=local_reasoning_usage,
                 local_scan_status=local_scan_status,
                 local_files_scanned=local_files_scanned,
                 local_files_skipped=local_files_skipped,
@@ -944,6 +964,7 @@ class CodexUsageDialog(QDialog):
             local_models=local_models,
             local_fast_uses=local_fast_uses,
             local_standard_uses=local_standard_uses,
+            local_reasoning_usage=local_reasoning_usage,
             local_scan_status=local_scan_status,
             local_files_scanned=local_files_scanned,
             local_files_skipped=local_files_skipped,
@@ -960,6 +981,7 @@ class CodexUsageDialog(QDialog):
         local_models: tuple[CodexModelUsage, ...],
         local_fast_uses: int,
         local_standard_uses: int,
+        local_reasoning_usage: tuple[CodexReasoningUsage, ...],
         local_scan_status: str,
         local_files_scanned: int,
         local_files_skipped: int,
@@ -979,6 +1001,7 @@ class CodexUsageDialog(QDialog):
                     local_models,
                     local_fast_uses,
                     local_standard_uses,
+                    local_reasoning_usage,
                     local_scan_status,
                     local_files_scanned,
                     local_files_skipped,
@@ -994,6 +1017,7 @@ class CodexUsageDialog(QDialog):
                 device.model_usage,
                 device.fast_uses,
                 device.standard_uses,
+                device.reasoning_usage,
                 device.scan_status,
                 device.files_scanned,
                 device.files_skipped,
@@ -1004,14 +1028,14 @@ class CodexUsageDialog(QDialog):
         )
         entries.sort(
             key=lambda item: (
-                not _has_device_usage(item[6], item[1], item[2]),
+                not _has_device_usage(item[7], item[1], item[2]),
                 -item[1],
                 item[0].casefold(),
             )
         )
         lines: list[str] = []
         known_entries = [
-            item for item in entries if _has_device_usage(item[6], item[1], item[2])
+            item for item in entries if _has_device_usage(item[7], item[1], item[2])
         ]
         known_total = sum(item[1] for item in known_entries)
         incomplete = len(known_entries) != len(entries)
@@ -1019,10 +1043,10 @@ class CodexUsageDialog(QDialog):
             _quota_attribution_label(account_used_percent, known_total, incomplete)
         )
         weighted_available = bool(known_entries) and all(
-            item[9] is not None and item[10] for item in known_entries
+            item[10] is not None and item[11] for item in known_entries
         )
         known_weighted = (
-            sum(float(item[9] or 0) for item in known_entries)
+            sum(float(item[10] or 0) for item in known_entries)
             if weighted_available
             else 0.0
         )
@@ -1033,6 +1057,7 @@ class CodexUsageDialog(QDialog):
             models,
             fast_uses,
             standard_uses,
+            reasoning_usage,
             scan_status,
             files_scanned,
             files_skipped,
@@ -1077,7 +1102,8 @@ class CodexUsageDialog(QDialog):
                 f"    加权 {_weighted_number(weighted, weighted_complete)} · "
                 f"Token 占比 {token_share} · 加权占比 {weighted_share}\n"
                 f"    {_number(requests)} 次模型请求 · {model_suffix} · "
-                f"速度 {_speed_usage_label(fast_uses, standard_uses)}"
+                f"速度 {_speed_usage_label(fast_uses, standard_uses)}\n"
+                f"    推理强度 {_reasoning_usage_label(reasoning_usage)}"
             )
             if not has_usage:
                 line += "\n    日志 " + _scan_status_label(
@@ -1401,6 +1427,30 @@ def _speed_usage_label(fast_uses: int, standard_uses: int) -> str:
     fast_percent = fast * 100 / total
     standard_percent = 100 - fast_percent
     return f"极快 {_percent(fast_percent)}% · 标准 {_percent(standard_percent)}%"
+
+
+_REASONING_EFFORT_LABELS = {
+    "none": "无",
+    "minimal": "最低",
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+    "xhigh": "超高",
+    "max": "最高",
+    "unknown": "未记录",
+}
+
+
+def _reasoning_usage_label(usage: tuple[CodexReasoningUsage, ...]) -> str:
+    total = sum(max(0, item.uses) for item in usage)
+    if total <= 0:
+        return "—"
+    return " · ".join(
+        f"{_REASONING_EFFORT_LABELS.get(item.effort, item.effort)} "
+        f"{_percent(max(0, item.uses) * 100 / total)}%"
+        for item in usage
+        if item.uses > 0
+    )
 
 
 def _model_usage_label(models: tuple[CodexModelUsage, ...]) -> str:

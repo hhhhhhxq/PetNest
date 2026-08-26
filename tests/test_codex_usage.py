@@ -17,6 +17,7 @@ from petnest.core.codex_usage import (
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexReasoningUsage,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -222,24 +223,39 @@ def _write_model_context(
     timestamp: datetime,
     model: str,
     turn_id: str = "turn-1",
+    reasoning_effort: str | None = None,
 ) -> None:
+    payload: dict[str, Any] = {"model": model, "turn_id": turn_id}
+    if reasoning_effort is not None:
+        payload["collaboration_mode"] = {
+            "settings": {"reasoning_effort": reasoning_effort}
+        }
     event = {
         "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
         "type": "turn_context",
-        "payload": {"model": model, "turn_id": turn_id},
+        "payload": payload,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(event) + "\n")
 
 
-def _write_speed_setting(path: Path, *, timestamp: datetime, service_tier: str) -> None:
+def _write_speed_setting(
+    path: Path,
+    *,
+    timestamp: datetime,
+    service_tier: str,
+    reasoning_effort: str | None = None,
+) -> None:
+    settings = {"service_tier": service_tier}
+    if reasoning_effort is not None:
+        settings["reasoning_effort"] = reasoning_effort
     event = {
         "timestamp": timestamp.isoformat().replace("+00:00", "Z"),
         "type": "event_msg",
         "payload": {
             "type": "thread_settings_applied",
-            "thread_settings": {"service_tier": service_tier},
+            "thread_settings": settings,
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -271,6 +287,7 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
         session,
         timestamp=event_time - timedelta(seconds=1),
         model="gpt-5.6-sol",
+        reasoning_effort="high",
     )
     matching_line = _write_token_event(
         session,
@@ -297,6 +314,7 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
         session,
         timestamp=event_time + timedelta(minutes=2),
         service_tier="priority",
+        reasoning_effort="medium",
     )
     _write_model_context(
         session,
@@ -356,6 +374,10 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     )
     assert report.local_usage.fast_uses == 1
     assert report.local_usage.standard_uses == 1
+    assert report.local_usage.reasoning_usage == (
+        CodexReasoningUsage("high", uses=1),
+        CodexReasoningUsage("medium", uses=1),
+    )
     assert report.local_usage.scan_status == "matched"
     assert report.local_usage.files_scanned == 1
     assert report.local_usage.observed_quota_change == 2.5
@@ -469,6 +491,7 @@ def test_explicit_model_survives_wrong_bengalfox_limit_and_is_weighted(tmp_path:
     assert usage.anomaly_tokens.total_tokens == 1_500
     assert usage.pending_tokens.total_tokens == 0
     assert usage.fast_uses == 1
+    assert usage.reasoning_usage == (CodexReasoningUsage("unknown", uses=1),)
     assert usage.weighted_complete
     assert usage.weighted_credits == 0.603125
     assert usage.model_usage == (
@@ -482,6 +505,48 @@ def test_explicit_model_survives_wrong_bengalfox_limit_and_is_weighted(tmp_path:
             weighted_credits=0.603125,
         ),
     )
+
+
+def test_nested_thread_settings_supply_reasoning_effort_to_the_next_turn(tmp_path: Path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    event_time = now - timedelta(minutes=10)
+    session = (
+        tmp_path
+        / "sessions"
+        / event_time.strftime("%Y/%m/%d")
+        / f"rollout-{event_time:%Y-%m-%dT%H-%M-%S}-23232323-2323-2323-2323-232323232323.jsonl"
+    )
+    session.parent.mkdir(parents=True, exist_ok=True)
+    settings_event = {
+        "timestamp": (event_time - timedelta(seconds=2)).isoformat().replace("+00:00", "Z"),
+        "type": "event_msg",
+        "payload": {
+            "type": "thread_settings_applied",
+            "thread_settings": {
+                "collaboration_mode": {"settings": {"reasoning_effort": "xhigh"}}
+            },
+        },
+    }
+    session.write_text(json.dumps(settings_event) + "\n", encoding="utf-8")
+    _write_model_context(
+        session,
+        timestamp=event_time - timedelta(seconds=1),
+        model="gpt-5.6-sol",
+    )
+    _write_token_event(
+        session,
+        timestamp=event_time,
+        reset=reset,
+        used_percent=2,
+        total_tokens=1_000,
+        input_tokens=800,
+        output_tokens=200,
+    )
+
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+
+    assert usage.reasoning_usage == (CodexReasoningUsage("xhigh", uses=1),)
 
 
 def test_replayed_token_event_is_deduplicated_across_session_files(tmp_path: Path) -> None:
@@ -878,6 +943,7 @@ def test_device_store_separates_accounts_windows_and_replaces_each_device(tmp_pa
         total_tokens=1_000,
         requests=2,
         model_usage=(CodexModelUsage("gpt-5.5", uses=2, total_tokens=1_000),),
+        reasoning_usage=(CodexReasoningUsage("high", uses=2),),
     )
     replacement = replace(first, total_tokens=1_500, requests=3)
     other_account = replace(first, account_key="b" * 24, device_id="laptop-b")
@@ -898,6 +964,7 @@ def test_device_store_separates_accounts_windows_and_replaces_each_device(tmp_pa
     assert matching[0].tokens.total_tokens == 1_600
     assert matching[0].tokens.requests == 3
     assert matching[0].model_usage[0].model == "gpt-5.5"
+    assert matching[0].reasoning_usage == (CodexReasoningUsage("high", uses=2),)
     assert len(store.load()) == 3
 
 

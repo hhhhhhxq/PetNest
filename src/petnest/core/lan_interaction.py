@@ -11,7 +11,11 @@ import json
 import re
 from typing import Any
 
-from petnest.core.codex_usage import CodexDeviceUsageSnapshot, CodexModelUsage
+from petnest.core.codex_usage import (
+    CodexDeviceUsageSnapshot,
+    CodexModelUsage,
+    CodexReasoningUsage,
+)
 from petnest.core.lan_chat import LanChatImageError, validate_chat_image_data
 from petnest.models.lan_interaction import (
     ChatDraft,
@@ -187,6 +191,13 @@ class LanPacketCodec:
                     "weighted_credits": _sync_nonnegative_number(item.weighted_credits),
                 }
                 for item in snapshot.model_usage[:20]
+            ],
+            "reasoning_efforts": [
+                {
+                    "effort": _sync_reasoning_effort(item.effort),
+                    "uses": _sync_counter(item.uses),
+                }
+                for item in snapshot.reasoning_usage[:20]
             ],
         }
         return {
@@ -411,6 +422,7 @@ class LanPacketCodec:
             total_tokens=_sync_counter(usage.get("total_tokens")),
             requests=_sync_counter(usage.get("requests")),
             model_usage=_sync_model_usage(usage.get("models")),
+            reasoning_usage=_sync_reasoning_usage(usage.get("reasoning_efforts")),
             account_label=_optional_bounded_text(raw.get("account_label"), 100),
             plan_type=_optional_bounded_text(raw.get("plan_type"), 40),
             account_used_percent=_sync_percent(raw.get("account_used_percent")),
@@ -657,3 +669,44 @@ def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
         )
     models.sort(key=lambda item: (-item.uses, -item.total_tokens, item.model.casefold()))
     return tuple(models)
+
+
+def _sync_reasoning_usage(value: object) -> tuple[CodexReasoningUsage, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > 20:
+        raise LanProtocolError("Codex 推理强度用量无效")
+    efforts: list[CodexReasoningUsage] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise LanProtocolError("Codex 推理强度用量无效")
+        effort = _sync_reasoning_effort(raw.get("effort"))
+        if effort in seen:
+            raise LanProtocolError("Codex 推理强度用量重复")
+        seen.add(effort)
+        efforts.append(
+            CodexReasoningUsage(
+                effort=effort,
+                uses=_sync_counter(raw.get("uses")),
+            )
+        )
+    order = {
+        "max": 0,
+        "xhigh": 1,
+        "high": 2,
+        "medium": 3,
+        "low": 4,
+        "minimal": 5,
+        "none": 6,
+        "unknown": 8,
+    }
+    efforts.sort(key=lambda item: (-item.uses, order.get(item.effort, 7), item.effort))
+    return tuple(efforts)
+
+
+def _sync_reasoning_effort(value: object) -> str:
+    effort = _bounded_text(value, "Codex 推理强度", 32).casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", effort):
+        raise LanProtocolError("Codex 推理强度无效")
+    return effort

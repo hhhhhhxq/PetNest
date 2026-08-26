@@ -19,6 +19,7 @@ from petnest.core.codex_usage import (
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexReasoningUsage,
     CodexManualAttributionStore,
     CodexRateLimit,
     CodexRateWindow,
@@ -85,6 +86,10 @@ def _report(tmp_path: Path) -> CodexUsageReport:
                     weighted_credits=0.24125,
                 ),
             ),
+            reasoning_usage=(
+                CodexReasoningUsage("high", uses=3),
+                CodexReasoningUsage("medium", uses=1),
+            ),
             weighted_credits=0.24125,
             weighted_complete=True,
             pending_tokens=CodexTokenUsage(total_tokens=250, requests=1),
@@ -129,6 +134,7 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert "待归属 250 Token" in dialog.local_attribution_label.text()
     assert "标签异常 1,500 Token" in dialog.local_attribution_label.text()
     assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
+    assert dialog.local_reasoning_label.text() == "推理强度  高 75% · 中 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
     assert dialog.reset_status_card.property("resetState") == "normal"
@@ -236,6 +242,10 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
         total_tokens=2_000,
         requests=3,
         model_usage=(CodexModelUsage("gpt-5.5", uses=3, total_tokens=2_000),),
+        reasoning_usage=(
+            CodexReasoningUsage("medium", uses=2),
+            CodexReasoningUsage("low", uses=1),
+        ),
         fast_uses=1,
         standard_uses=3,
         weighted_credits=0.75,
@@ -274,6 +284,8 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     assert "常用 gpt-5.5（3 次）" in ranking[0]
     assert "速度 极快 25% · 标准 75%" in ranking[0]
     assert "速度 极快 75% · 标准 25%" in ranking[1]
+    assert "推理强度 中 66.7% · 低 33.3%" in ranking[0]
+    assert "推理强度 高 75% · 中 25%" in ranking[1]
     assert "常用模型  gpt-5.6-sol（1 次）" in dialog.local_models_label.text()
     assert all("预估" in line or "约" in line for line in ranking)
     assert "非单机归因" in dialog.local_quota_change_label.text()

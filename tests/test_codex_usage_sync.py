@@ -17,6 +17,7 @@ from petnest.core.codex_usage import (
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
+    CodexReasoningUsage,
     CodexRateLimit,
     CodexRateWindow,
     CodexTokenUsage,
@@ -55,6 +56,7 @@ def _report(tmp_path, *, total_tokens: int, reset: datetime) -> CodexUsageReport
                 requests=2,
             ),
             model_usage=(CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=total_tokens),),
+            reasoning_usage=(CodexReasoningUsage("high", uses=2),),
             fast_uses=1,
             standard_uses=1,
         ),
@@ -79,6 +81,10 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         total_tokens=1_000,
         requests=2,
         model_usage=(CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=1_000),),
+        reasoning_usage=(
+            CodexReasoningUsage("high", uses=1),
+            CodexReasoningUsage("medium", uses=1),
+        ),
         account_label="us*****@example.com",
         plan_type="pro",
         account_used_percent=12.5,
@@ -116,6 +122,13 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
     packet["usage"]["total_tokens"] = 1_000
     packet["usage"]["scan_status"] = "invented"
     with pytest.raises(LanProtocolError, match="扫描状态"):
+        LanPacketCodec.decode_codex_usage_sync(
+            LanPacketCodec.encode(packet),
+            local_device_id="receiver",
+        )
+    packet["usage"]["scan_status"] = "matched"
+    packet["usage"]["reasoning_efforts"][0]["effort"] = "../high"
+    with pytest.raises(LanProtocolError, match="推理强度"):
         LanPacketCodec.decode_codex_usage_sync(
             LanPacketCodec.encode(packet),
             local_device_id="receiver",

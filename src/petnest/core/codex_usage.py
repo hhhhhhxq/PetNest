@@ -100,9 +100,18 @@ class CodexModelUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexReasoningUsage:
+    """One reasoning-effort setting's model-turn count within a quota window."""
+
+    effort: str
+    uses: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class LocalCodexUsage:
     tokens: CodexTokenUsage = CodexTokenUsage()
     model_usage: tuple[CodexModelUsage, ...] = ()
+    reasoning_usage: tuple[CodexReasoningUsage, ...] = ()
     weighted_credits: float | None = None
     weighted_complete: bool = True
     pending_tokens: CodexTokenUsage = CodexTokenUsage()
@@ -664,6 +673,7 @@ def scan_local_codex_usage(
     pending = CodexTokenUsage()
     anomalies = CodexTokenUsage()
     model_totals: dict[str, dict[str, int | float | bool]] = {}
+    reasoning_totals: dict[str, int] = {}
     weighted_total = 0.0
     weighted_complete = True
     fast_uses = 0
@@ -686,7 +696,9 @@ def scan_local_codex_usage(
         current_model: str | None = None
         current_turn_id: str | None = None
         current_speed = "default"
+        current_reasoning_effort: str | None = None
         current_turn_speed = "default"
+        current_turn_reasoning_effort = "unknown"
         current_model_use_counted = False
         previous_cumulative_total: int | None = None
         with stream:
@@ -694,14 +706,21 @@ def scan_local_codex_usage(
                 raw = _json_line(line)
                 if raw is None:
                     continue
-                speed = _local_speed_setting(raw, end)
-                if speed is not None:
-                    current_speed = speed
+                settings = _local_thread_settings(raw, end)
+                if settings is not None:
+                    speed, reasoning_effort = settings
+                    if speed is not None:
+                        current_speed = speed
+                    if reasoning_effort is not None:
+                        current_reasoning_effort = reasoning_effort
                     continue
                 context = _local_model_context(raw, end)
                 if context is not None:
-                    current_model, current_turn_id = context
+                    current_model, current_turn_id, turn_reasoning_effort = context
                     current_turn_speed = current_speed
+                    current_turn_reasoning_effort = (
+                        turn_reasoning_effort or current_reasoning_effort or "unknown"
+                    )
                     current_model_use_counted = False
                     continue
                 event = _local_token_event(raw, end, turn_id=current_turn_id)
@@ -764,6 +783,9 @@ def scan_local_codex_usage(
                             fast_uses += 1
                         else:
                             standard_uses += 1
+                        reasoning_totals[current_turn_reasoning_effort] = (
+                            reasoning_totals.get(current_turn_reasoning_effort, 0) + 1
+                        )
                         current_model_use_counted = True
                     counters["total"] = int(counters["total"]) + event.usage.total_tokens
                     counters["input"] = int(counters["input"]) + event.usage.input_tokens
@@ -796,9 +818,17 @@ def scan_local_codex_usage(
             key=lambda item: (-int(item[1]["uses"]), -int(item[1]["total"]), item[0].casefold()),
         )[:20]
     )
+    reasoning_usage = tuple(
+        CodexReasoningUsage(effort=effort, uses=uses)
+        for effort, uses in sorted(
+            reasoning_totals.items(),
+            key=lambda item: (-item[1], _reasoning_effort_sort_key(item[0])),
+        )[:20]
+    )
     return LocalCodexUsage(
         tokens=total,
         model_usage=models,
+        reasoning_usage=reasoning_usage,
         weighted_credits=weighted_total,
         weighted_complete=weighted_complete,
         pending_tokens=pending,
@@ -832,6 +862,7 @@ class CodexAccountSnapshot:
     observed_quota_change: float | None
     account_lifetime_tokens: int | None
     local_model_usage: tuple[CodexModelUsage, ...] = ()
+    local_reasoning_usage: tuple[CodexReasoningUsage, ...] = ()
     local_fast_uses: int = 0
     local_standard_uses: int = 0
     local_files_scanned: int = 0
@@ -866,6 +897,7 @@ class CodexAccountSnapshot:
             observed_quota_change=report.local_usage.observed_quota_change,
             account_lifetime_tokens=report.account_tokens.lifetime_tokens,
             local_model_usage=report.local_usage.model_usage,
+            local_reasoning_usage=report.local_usage.reasoning_usage,
             local_fast_uses=report.local_usage.fast_uses,
             local_standard_uses=report.local_usage.standard_uses,
             local_files_scanned=report.local_usage.files_scanned,
@@ -927,6 +959,9 @@ class CodexUsageHistoryStore:
                     normalized["local_model_usage"] = _parse_model_usage(
                         normalized.get("local_model_usage")
                     )
+                    normalized["local_reasoning_usage"] = _parse_reasoning_usage(
+                        normalized.get("local_reasoning_usage")
+                    )
                     snapshot = CodexAccountSnapshot(**normalized)
                 except (TypeError, ValueError):
                     continue
@@ -953,7 +988,7 @@ class CodexUsageHistoryStore:
             reverse=True,
         )[:200]
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "cycles": {_account_cycle_key(item): asdict(item) for item in ordered},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1035,6 +1070,7 @@ class CodexUsageHistoryStore:
                     local_output_tokens=local.output_tokens,
                     local_requests=local.requests,
                     local_model_usage=local_usage.model_usage,
+                    local_reasoning_usage=local_usage.reasoning_usage,
                     local_fast_uses=local_usage.fast_uses,
                     local_standard_uses=local_usage.standard_uses,
                     local_files_scanned=local_usage.files_scanned,
@@ -1083,6 +1119,7 @@ class CodexDeviceUsageSnapshot:
     total_tokens: int
     requests: int
     model_usage: tuple[CodexModelUsage, ...] = ()
+    reasoning_usage: tuple[CodexReasoningUsage, ...] = ()
     account_label: str = ""
     plan_type: str = ""
     account_used_percent: float | None = None
@@ -1141,6 +1178,7 @@ class CodexDeviceUsageSnapshot:
             total_tokens=tokens.total_tokens,
             requests=tokens.requests,
             model_usage=report.local_usage.model_usage,
+            reasoning_usage=report.local_usage.reasoning_usage,
             account_label=report.account.label,
             plan_type=report.account.plan_type,
             account_used_percent=(window.used_percent if window is not None else None),
@@ -1206,7 +1244,7 @@ class CodexDeviceUsageStore:
             reverse=True,
         )[:500]
         payload = {
-            "schema_version": 5,
+            "schema_version": 6,
             "devices": {
                 _device_cycle_key(item): asdict(item)
                 for item in ordered
@@ -1246,6 +1284,9 @@ class CodexDeviceUsageStore:
                 normalized = dict(value)
                 normalized["model_usage"] = _parse_model_usage(
                     normalized.get("model_usage")
+                )
+                normalized["reasoning_usage"] = _parse_reasoning_usage(
+                    normalized.get("reasoning_usage")
                 )
                 snapshot = CodexDeviceUsageSnapshot(**normalized)
             except (TypeError, ValueError):
@@ -1341,6 +1382,7 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
         and snapshot.scan_status
         in {"unknown", "matched", "no_matching_events", "unreadable_files", "no_session_files"}
         and snapshot.model_usage == _parse_model_usage(snapshot.model_usage)
+        and snapshot.reasoning_usage == _parse_reasoning_usage(snapshot.reasoning_usage)
     )
 
 
@@ -1655,7 +1697,10 @@ def _json_line(line: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-def _local_model_context(raw: dict[str, Any], end: datetime) -> tuple[str, str | None] | None:
+def _local_model_context(
+    raw: dict[str, Any],
+    end: datetime,
+) -> tuple[str, str | None, str | None] | None:
     if raw.get("type") != "turn_context":
         return None
     timestamp = _timestamp(raw.get("timestamp"))
@@ -1666,10 +1711,13 @@ def _local_model_context(raw: dict[str, Any], end: datetime) -> tuple[str, str |
     if not _valid_model_name(model):
         return None
     turn_id = str(payload.get("turn_id") or "").strip()
-    return model, turn_id[:80] or None
+    return model, turn_id[:80] or None, _reasoning_effort_from_settings(payload)
 
 
-def _local_speed_setting(raw: dict[str, Any], end: datetime) -> str | None:
+def _local_thread_settings(
+    raw: dict[str, Any],
+    end: datetime,
+) -> tuple[str | None, str | None] | None:
     payload = raw.get("payload")
     if not isinstance(payload, dict) or payload.get("type") != "thread_settings_applied":
         return None
@@ -1678,7 +1726,22 @@ def _local_speed_setting(raw: dict[str, Any], end: datetime) -> str | None:
     if timestamp is None or timestamp > end or not isinstance(settings, dict):
         return None
     service_tier = settings.get("service_tier")
-    return str(service_tier) if service_tier in {"fast", "priority", "default"} else None
+    speed = str(service_tier) if service_tier in {"fast", "priority", "default"} else None
+    reasoning_effort = _reasoning_effort_from_settings(settings)
+    return (speed, reasoning_effort) if speed is not None or reasoning_effort is not None else None
+
+
+def _reasoning_effort_from_settings(settings: dict[str, Any]) -> str | None:
+    direct = _valid_reasoning_effort(settings.get("reasoning_effort"))
+    if direct is not None:
+        return direct
+    collaboration_mode = settings.get("collaboration_mode")
+    if not isinstance(collaboration_mode, dict):
+        return None
+    nested = collaboration_mode.get("settings")
+    if not isinstance(nested, dict):
+        return None
+    return _valid_reasoning_effort(nested.get("reasoning_effort"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1789,7 +1852,7 @@ def _token_fingerprint_index(
                     continue
                 context = _local_model_context(raw, end)
                 if context is not None:
-                    _model, turn_id = context
+                    _model, turn_id, _reasoning_effort = context
                     continue
                 event = _local_token_event(raw, end, turn_id=turn_id)
                 if event is None:
@@ -1946,6 +2009,64 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
     return tuple(parsed)
 
 
+def _parse_reasoning_usage(value: object) -> tuple[CodexReasoningUsage, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    parsed: list[CodexReasoningUsage] = []
+    seen: set[str] = set()
+    for raw in value[:20]:
+        if isinstance(raw, CodexReasoningUsage):
+            item = raw
+        elif isinstance(raw, dict):
+            raw_uses = raw.get("uses", 0)
+            effort = _valid_reasoning_effort(raw.get("effort"))
+            if (
+                effort is None
+                or isinstance(raw_uses, bool)
+                or not isinstance(raw_uses, int)
+            ):
+                continue
+            item = CodexReasoningUsage(effort=effort, uses=raw_uses)
+        else:
+            continue
+        effort = _valid_reasoning_effort(item.effort)
+        if (
+            effort is None
+            or effort != item.effort
+            or effort in seen
+            or isinstance(item.uses, bool)
+            or not 0 <= item.uses <= 10**12
+        ):
+            continue
+        seen.add(effort)
+        parsed.append(item)
+    parsed.sort(key=lambda item: (-item.uses, _reasoning_effort_sort_key(item.effort)))
+    return tuple(parsed)
+
+
+_REASONING_EFFORT_ORDER = {
+    "max": 0,
+    "xhigh": 1,
+    "high": 2,
+    "medium": 3,
+    "low": 4,
+    "minimal": 5,
+    "none": 6,
+    "unknown": 8,
+}
+
+
+def _reasoning_effort_sort_key(effort: str) -> tuple[int, str]:
+    return _REASONING_EFFORT_ORDER.get(effort, 7), effort
+
+
+def _valid_reasoning_effort(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().casefold()
+    return normalized if re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", normalized) else None
+
+
 def _timestamp(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -2005,6 +2126,7 @@ __all__ = [
     "CodexDeviceUsageSnapshot",
     "CodexDeviceUsageStore",
     "CodexModelUsage",
+    "CodexReasoningUsage",
     "CodexRateLimit",
     "CodexRateWindow",
     "CodexTokenUsage",
