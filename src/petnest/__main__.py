@@ -22,10 +22,23 @@ from .core.settings_manager import SettingsManager
 from .core.single_instance import InstanceClaim, SingleInstanceCoordinator
 from .core.windows_lan_firewall import configure_public_firewall_rules
 from .platforms import remove_startup_registrations
+from .platforms.windows import terminate_wechat_processes
 from .ui.tray_icon import application_icon
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _terminate_wechat_on_windows_startup(
+    startup_requested: bool,
+    *,
+    platform_name: str | None = None,
+) -> tuple[str, ...]:
+    """只在 Windows 登录启动入口执行微信强制退出。"""
+    name = platform_name or sys.platform
+    if not startup_requested or name != "win32":
+        return ()
+    return terminate_wechat_processes(platform_name=name)
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -63,6 +76,7 @@ def main(arguments: list[str] | None = None) -> int:
         return 0
     configure_logging()
     install_diagnostic_hooks(install_qt=False)
+    _terminate_wechat_on_windows_startup(args.startup)
     LOGGER.info(
         "PetNest 进程启动：pid=%s executable=%s argv=%r version=%s",
         os.getpid(),

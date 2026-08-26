@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, QTime, Qt
 from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_discovery import (
@@ -35,6 +35,9 @@ def test_settings_dialog_is_the_shared_six_section_center(qtbot, tmp_path: Path)
     assert dialog.page_title.text() == "鼠标与行为"
     assert dialog.cursor_scale_slider.value() == 100
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "windowShell") is not None
+    header = dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "headerBar")
+    assert header is not None
+    assert all(label.text() != "×" for label in header.findChildren(QLabel))
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "settingsSidebar") is not None
     assert dialog.findChild(__import__("PySide6").QtWidgets.QFrame, "statusCard") is not None
     assert dialog.section_list.count() == 6

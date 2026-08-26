@@ -16,6 +16,22 @@ def test_startup_marker_is_accepted_by_the_normal_entrypoint(monkeypatch) -> Non
     assert main(["--startup", "--check"]) == 0
 
 
+def test_only_windows_login_start_forces_wechat_to_exit(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        main_module,
+        "terminate_wechat_processes",
+        lambda *, platform_name: calls.append(platform_name) or ("WeChat.exe",),
+    )
+
+    assert main_module._terminate_wechat_on_windows_startup(True, platform_name="win32") == (
+        "WeChat.exe",
+    )
+    assert main_module._terminate_wechat_on_windows_startup(False, platform_name="win32") == ()
+    assert main_module._terminate_wechat_on_windows_startup(True, platform_name="darwin") == ()
+    assert calls == ["win32"]
+
+
 def test_remove_startup_runs_before_qt(monkeypatch) -> None:
     calls: list[bool] = []
     monkeypatch.setattr(

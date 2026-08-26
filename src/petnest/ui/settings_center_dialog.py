@@ -392,9 +392,6 @@ class SettingsCenterDialog(QDialog):
         header_text.addWidget(brand_subtitle)
         header_layout.addLayout(header_text)
         header_layout.addStretch(1)
-        close_hint = QLabel("×", header_bar)
-        close_hint.setStyleSheet("font-size: 23px; color: #A7978E;")
-        header_layout.addWidget(close_hint)
         shell_layout.addWidget(header_bar)
 
         body = QHBoxLayout()
