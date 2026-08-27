@@ -9,12 +9,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Callable
+from typing import Any, Callable
 
 
 LAN_PORT = 18487
 UDP_RULE_NAME = "PetNest LAN UDP 18487"
 TCP_RULE_NAME = "PetNest LAN TCP 18487"
+FIREWALL_PREFERENCE_SUBKEY = r"Software\PetNest"
+FIREWALL_PREFERENCE_VALUE_NAME = "LanFirewallPublicEnabled"
 FIREWALL_HELPER_ARGUMENT = "--configure-lan-firewall-public"
 FIREWALL_EXIT_INVALID_TARGET = 2
 FIREWALL_EXIT_FAILED = 10
@@ -180,6 +182,7 @@ def configure_public_firewall_rules(
     executable: Path,
     *,
     command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    preference_writer: Callable[[], None] | None = None,
 ) -> int:
     executable = executable.resolve()
     if not executable.is_file():
@@ -197,12 +200,27 @@ def configure_public_firewall_rules(
     )
     for name in (UDP_RULE_NAME, TCP_RULE_NAME):
         try:
-            command_runner(
+            removed = command_runner(
                 [str(netsh), "advfirewall", "firewall", "delete", "rule", f"name={name}"],
                 **common,
             )
         except (OSError, subprocess.SubprocessError):
-            pass
+            return FIREWALL_EXIT_FAILED
+        if removed.returncode == 5:
+            return FIREWALL_EXIT_POLICY_BLOCKED
+        if removed.returncode not in (0, 1):
+            return FIREWALL_EXIT_FAILED
+        try:
+            verified = command_runner(
+                [str(netsh), "advfirewall", "firewall", "show", "rule", f"name={name}"],
+                **common,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return FIREWALL_EXIT_FAILED
+        if verified.returncode == 5:
+            return FIREWALL_EXIT_POLICY_BLOCKED
+        if verified.returncode != 1:
+            return FIREWALL_EXIT_FAILED
     for name, protocol in ((UDP_RULE_NAME, "UDP"), (TCP_RULE_NAME, "TCP")):
         command = [
             str(netsh),
@@ -229,7 +247,33 @@ def configure_public_firewall_rules(
                 if completed.returncode == 5
                 else FIREWALL_EXIT_FAILED
             )
+    preference_writer = preference_writer or remember_public_firewall_permission
+    try:
+        preference_writer()
+    except OSError:
+        return FIREWALL_EXIT_FAILED
     return 0
+
+
+def remember_public_firewall_permission(*, registry_module: Any = None) -> None:
+    """记录本机已明确允许 Public 防火墙规则。"""
+    if registry_module is None:
+        import winreg
+
+        registry_module = winreg
+    with registry_module.CreateKeyEx(
+        registry_module.HKEY_LOCAL_MACHINE,
+        FIREWALL_PREFERENCE_SUBKEY,
+        0,
+        registry_module.KEY_SET_VALUE | registry_module.KEY_WOW64_32KEY,
+    ) as key:
+        registry_module.SetValueEx(
+            key,
+            FIREWALL_PREFERENCE_VALUE_NAME,
+            0,
+            registry_module.REG_DWORD,
+            1,
+        )
 
 
 def run_elevated_firewall_helper(executable: Path) -> FirewallRepairResult:

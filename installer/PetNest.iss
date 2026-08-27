@@ -48,6 +48,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 const
   UdpFirewallRuleName = 'PetNest LAN UDP 18487';
   TcpFirewallRuleName = 'PetNest LAN TCP 18487';
+  FirewallPreferenceSubkey = 'Software\PetNest';
+  FirewallPreferenceValueName = 'LanFirewallPublicEnabled';
 
 var
   PetsRootDirectory: TInputDirWizardPage;
@@ -59,6 +61,63 @@ procedure PetsRootChanged(Sender: TObject);
 begin
   if not UpdatingPetsRoot then
     PetsRootIsAutomatic := False;
+end;
+
+function ExistingFirewallRuleMatchesPublic(const RuleName: String;
+  Protocol: Integer): Boolean;
+var
+  Policy: Variant;
+  Rule: Variant;
+  ProgramPath: String;
+begin
+  Result := False;
+  try
+    Policy := CreateOleObject('HNetCfg.FwPolicy2');
+    Rule := Policy.Rules.Item(RuleName);
+    ProgramPath := AddBackslash(WizardDirValue) + 'PetNest.exe';
+    Result :=
+      Boolean(Rule.Enabled) and
+      (Integer(Rule.Direction) = 1) and
+      (Integer(Rule.Action) = 1) and
+      ((Integer(Rule.Profiles) and 4) <> 0) and
+      (Integer(Rule.Protocol) = Protocol) and
+      (CompareText(String(Rule.LocalPorts), '18487') = 0) and
+      (CompareText(String(Rule.ApplicationName), ProgramPath) = 0);
+  except
+    Result := False;
+  end;
+end;
+
+function ExistingPublicFirewallRulesMatch: Boolean;
+begin
+  Result :=
+    ExistingFirewallRuleMatchesPublic(UdpFirewallRuleName, 17) and
+    ExistingFirewallRuleMatchesPublic(TcpFirewallRuleName, 6);
+end;
+
+function ReadPublicFirewallPreference: Boolean;
+var
+  StoredValue: Cardinal;
+begin
+  StoredValue := 0;
+  if RegQueryDWordValue(HKLM32, FirewallPreferenceSubkey,
+    FirewallPreferenceValueName, StoredValue) then
+    Result := StoredValue = 1
+  else
+    Result := ExistingPublicFirewallRulesMatch;
+end;
+
+procedure RememberPublicFirewallPreference(Enabled: Boolean);
+var
+  StoredValue: Cardinal;
+begin
+  if Enabled then
+    StoredValue := 1
+  else
+    StoredValue := 0;
+  if not RegWriteDWordValue(HKLM32, FirewallPreferenceSubkey,
+    FirewallPreferenceValueName, StoredValue) then
+    Log('Unable to remember the LAN public firewall preference.');
 end;
 
 procedure InitializeWizard;
@@ -76,7 +135,7 @@ begin
     '安装器会创建仅允许 PetNest 使用 UDP/TCP 18487 的入站规则。默认只允许专用网络；公用网络通常包括咖啡店、机场等不可信网络，请谨慎开启。',
     False, False);
   FirewallPage.Add('允许在公用网络中使用局域网互动（可选）');
-  FirewallPage.Values[0] := False;
+  FirewallPage.Values[0] := ReadPublicFirewallPreference;
 end;
 
 function PathIsInside(const Candidate, Parent: String): Boolean;
@@ -151,12 +210,34 @@ begin
     Result := 'private';
 end;
 
+function RunNetsh(const Parameters: String; var ResultCode: Integer): Boolean;
+begin
+  Result := Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+end;
+
 function ExecNetsh(const Parameters: String): Boolean;
 var
   ResultCode: Integer;
 begin
-  Result := Exec(ExpandConstant('{sys}\netsh.exe'), Parameters, '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Result := RunNetsh(Parameters, ResultCode) and (ResultCode = 0);
+end;
+
+function EnsureFirewallRuleRemoved(const RuleName: String): Boolean;
+var
+  ResultCode: Integer;
+  VerifyResultCode: Integer;
+begin
+  Result := False;
+  if not RunNetsh('advfirewall firewall delete rule name="' + RuleName + '"',
+    ResultCode) then
+    Exit;
+  if (ResultCode <> 0) and (ResultCode <> 1) then
+    Exit;
+  if not RunNetsh('advfirewall firewall show rule name="' + RuleName + '"',
+    VerifyResultCode) then
+    Exit;
+  Result := VerifyResultCode = 1;
 end;
 
 procedure ConfigureFirewallRule;
@@ -166,10 +247,17 @@ var
   TcpParameters: String;
   UdpSucceeded: Boolean;
   TcpSucceeded: Boolean;
+  UdpRemoved: Boolean;
+  TcpRemoved: Boolean;
 begin
   Profiles := GetFirewallProfiles('');
-  ExecNetsh('advfirewall firewall delete rule name="' + UdpFirewallRuleName + '"');
-  ExecNetsh('advfirewall firewall delete rule name="' + TcpFirewallRuleName + '"');
+  UdpRemoved := EnsureFirewallRuleRemoved(UdpFirewallRuleName);
+  TcpRemoved := EnsureFirewallRuleRemoved(TcpFirewallRuleName);
+  if not (UdpRemoved and TcpRemoved) then begin
+    MsgBox('无法移除旧的防火墙规则，安装器已保留原有规则和公用网络偏好。' + #13#10 +
+      '请检查 Windows 防火墙策略后重试。', mbError, MB_OK);
+    Exit;
+  end;
   UdpParameters :=
     'advfirewall firewall add rule name="' + UdpFirewallRuleName +
     '" dir=in action=allow protocol=UDP localport=18487 program="' +
@@ -180,10 +268,13 @@ begin
     ExpandConstant('{app}\PetNest.exe') + '" profile=' + Profiles + ' enable=yes';
   UdpSucceeded := ExecNetsh(UdpParameters);
   TcpSucceeded := ExecNetsh(TcpParameters);
-  if (not UdpSucceeded) or (not TcpSucceeded) then
+  if UdpSucceeded and TcpSucceeded then begin
+    RememberPublicFirewallPreference(FirewallPage.Values[0]);
+  end else begin
     MsgBox('防火墙规则创建失败。PetNest 仍可启动，但局域网设备可能无法发现它。' + #13#10 +
       '你可以将当前网络改为“专用网络”，或在 Windows 防火墙中允许 UDP 和 TCP 18487。',
       mbError, MB_OK);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -197,4 +288,10 @@ begin
   Result :=
     not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\pet.json') or
     not FileExists(AddBackslash(GetPetsRoot('')) + 'sample_pet\animations\idle\001.png');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RegDeleteValue(HKLM32, FirewallPreferenceSubkey, FirewallPreferenceValueName);
 end;

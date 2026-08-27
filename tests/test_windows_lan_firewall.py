@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import subprocess
 
+import petnest.core.windows_lan_firewall as firewall_module
 from petnest.core.windows_lan_firewall import (
+    FIREWALL_EXIT_FAILED,
     FIREWALL_EXIT_POLICY_BLOCKED,
     LanFirewallStatus,
     WindowsLanFirewallBackend,
     configure_public_firewall_rules,
+    run_elevated_firewall_helper,
 )
 
 
@@ -189,23 +193,32 @@ def test_configure_public_firewall_rules_uses_fixed_argv_and_program_scope(tmp_p
 
     def runner(command: list[str], **kwargs):
         calls.append((command, kwargs))
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 1 if "show" in command else 0, "", "")
 
-    assert configure_public_firewall_rules(executable, command_runner=runner) == 0
-    assert len(calls) == 4
+    remembered: list[bool] = []
+    parameters = inspect.signature(configure_public_firewall_rules).parameters
+    assert "preference_writer" in parameters
+
+    assert configure_public_firewall_rules(
+        executable,
+        command_runner=runner,
+        preference_writer=lambda: remembered.append(True),
+    ) == 0
+    assert len(calls) == 6
     assert calls[0][0][-1] == "name=PetNest LAN UDP 18487"
-    assert calls[1][0][-1] == "name=PetNest LAN TCP 18487"
-    for command, kwargs in calls[2:]:
+    assert calls[2][0][-1] == "name=PetNest LAN TCP 18487"
+    for command, kwargs in calls[-2:]:
         assert "profile=private,public" in command
         assert "localport=18487" in command
         assert f"program={executable.resolve()}" in command
         assert kwargs["shell"] is False
+    assert remembered == [True]
 
 
 def test_configure_public_firewall_rules_stops_when_add_fails(tmp_path: Path) -> None:
     executable = tmp_path / "PetNest.exe"
     executable.write_bytes(b"exe")
-    return_codes = iter((0, 0, 5))
+    return_codes = iter((0, 1, 0, 1, 5))
 
     def runner(command: list[str], **_kwargs):
         return subprocess.CompletedProcess(command, next(return_codes), "", "failed")
@@ -215,3 +228,125 @@ def test_configure_public_firewall_rules_stops_when_add_fails(tmp_path: Path) ->
 
 def test_configure_public_firewall_rules_rejects_missing_executable(tmp_path: Path) -> None:
     assert configure_public_firewall_rules(tmp_path / "missing.exe") == 2
+
+
+def test_remember_public_firewall_permission_writes_machine_dword() -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class Key:
+        def __enter__(self):
+            return "preference-key"
+
+        def __exit__(self, *_args):
+            return None
+
+    class Registry:
+        HKEY_LOCAL_MACHINE = "hklm"
+        KEY_SET_VALUE = 2
+        KEY_WOW64_32KEY = 512
+        REG_DWORD = 4
+
+        @staticmethod
+        def CreateKeyEx(*args):
+            calls.append(("create", *args))
+            return Key()
+
+        @staticmethod
+        def SetValueEx(*args):
+            calls.append(("set", *args))
+
+    writer = getattr(firewall_module, "remember_public_firewall_permission", None)
+    assert writer is not None
+
+    writer(registry_module=Registry)
+
+    assert calls == [
+        ("create", "hklm", r"Software\PetNest", 0, 514),
+        ("set", "preference-key", "LanFirewallPublicEnabled", 0, 4, 1),
+    ]
+
+
+def test_failed_rule_creation_does_not_remember_public_permission(tmp_path: Path) -> None:
+    executable = tmp_path / "PetNest.exe"
+    executable.write_bytes(b"exe")
+    remembered: list[bool] = []
+    return_codes = iter((0, 1, 0, 1, 5))
+
+    result = configure_public_firewall_rules(
+        executable,
+        command_runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            next(return_codes),
+            "",
+            "",
+        ),
+        preference_writer=lambda: remembered.append(True),
+    )
+
+    assert result == FIREWALL_EXIT_POLICY_BLOCKED
+    assert remembered == []
+
+
+def test_failed_rule_removal_does_not_create_or_remember_rules(tmp_path: Path) -> None:
+    executable = tmp_path / "PetNest.exe"
+    executable.write_bytes(b"exe")
+    remembered: list[bool] = []
+    return_codes = iter((5,))
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, next(return_codes), "", "denied")
+
+    result = configure_public_firewall_rules(
+        executable,
+        command_runner=runner,
+        preference_writer=lambda: remembered.append(True),
+    )
+
+    assert result == FIREWALL_EXIT_POLICY_BLOCKED
+    assert len(commands) == 1
+    assert "delete" in commands[0]
+    assert remembered == []
+
+
+def test_rule_lookup_failure_does_not_create_or_remember_rules(tmp_path: Path) -> None:
+    executable = tmp_path / "PetNest.exe"
+    executable.write_bytes(b"exe")
+    remembered: list[bool] = []
+    return_codes = iter((1, 2))
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, next(return_codes), "", "failed")
+
+    result = configure_public_firewall_rules(
+        executable,
+        command_runner=runner,
+        preference_writer=lambda: remembered.append(True),
+    )
+
+    assert result == FIREWALL_EXIT_FAILED
+    assert len(commands) == 2
+    assert "delete" in commands[0]
+    assert "show" in commands[1]
+    assert remembered == []
+
+
+def test_cancelled_elevated_repair_is_reported(monkeypatch, tmp_path: Path) -> None:
+    executable = tmp_path / "PetNest.exe"
+    executable.write_bytes(b"exe")
+    cancelled = OSError("cancelled")
+    cancelled.winerror = 1223
+    monkeypatch.setattr(firewall_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        firewall_module,
+        "_shell_execute_and_wait",
+        lambda *_args: (_ for _ in ()).throw(cancelled),
+    )
+
+    result = run_elevated_firewall_helper(executable)
+
+    assert result.succeeded is False
+    assert result.cancelled is True

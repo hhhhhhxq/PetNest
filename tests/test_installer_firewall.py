@@ -23,7 +23,18 @@ def test_installer_declares_scoped_lan_firewall_configuration() -> None:
     assert "PetNest LAN TCP 18487" in script
     assert "protocol=UDP" in script
     assert "protocol=TCP" in script
-    assert "FirewallPage.Values[0] := False" in script
+    assert r"FirewallPreferenceSubkey = 'Software\PetNest';" in script
+    assert "FirewallPreferenceValueName = 'LanFirewallPublicEnabled';" in script
+    assert "RegQueryDWordValue(HKLM32" in script
+    assert "CreateOleObject('HNetCfg.FwPolicy2')" in script
+    assert "ExistingPublicFirewallRulesMatch" in script
+    assert "FirewallPage.Values[0] := ReadPublicFirewallPreference;" in script
+    assert "RememberPublicFirewallPreference(FirewallPage.Values[0]);" in script
+    assert "EnsureFirewallRuleRemoved" in script
+    assert "if not (UdpRemoved and TcpRemoved) then begin" in script
+    assert "ResultCode = 1" in script
+    assert "VerifyResultCode" in script
+    assert "RegDeleteValue(HKLM32" in script
     assert "Result := 'private,public'" in script
     assert "Result := 'private'" in script
     assert "RunOnceId: \"RemovePetNestLanFirewall\"" in script
