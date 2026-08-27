@@ -479,7 +479,7 @@ def test_lightweight_account_observation_does_not_request_usage(tmp_path: Path) 
     assert seen_methods == ["initialize", "initialized", "account/read"]
 
 
-def test_explicit_model_survives_wrong_bengalfox_limit_and_is_weighted(tmp_path: Path) -> None:
+def test_explicit_model_accepts_codex_sub_limit_and_is_weighted(tmp_path: Path) -> None:
     now = datetime.now(UTC).replace(microsecond=0)
     reset = now + timedelta(days=6)
     event_time = now - timedelta(minutes=10)
@@ -510,7 +510,7 @@ def test_explicit_model_survives_wrong_bengalfox_limit_and_is_weighted(tmp_path:
     usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
 
     assert usage.tokens.total_tokens == 1_500
-    assert usage.anomaly_tokens.total_tokens == 1_500
+    assert usage.anomaly_tokens.total_tokens == 0
     assert usage.pending_tokens.total_tokens == 0
     assert usage.fast_uses == 1
     assert usage.reasoning_usage == (CodexReasoningUsage("unknown", uses=1),)
@@ -527,6 +527,39 @@ def test_explicit_model_survives_wrong_bengalfox_limit_and_is_weighted(tmp_path:
             weighted_credits=0.603125,
         ),
     )
+
+
+def test_explicit_model_keeps_foreign_limit_label_as_anomaly(tmp_path: Path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    event_time = now - timedelta(minutes=10)
+    session = (
+        tmp_path
+        / "sessions"
+        / event_time.strftime("%Y/%m/%d")
+        / f"rollout-{event_time:%Y-%m-%dT%H-%M-%S}-24242424-2424-2424-2424-242424242424.jsonl"
+    )
+    _write_model_context(
+        session,
+        timestamp=event_time - timedelta(seconds=1),
+        model="gpt-5.6-sol",
+    )
+    _write_token_event(
+        session,
+        timestamp=event_time,
+        reset=reset,
+        used_percent=2,
+        total_tokens=1_200,
+        input_tokens=900,
+        output_tokens=300,
+        limit_id="chatgpt_other",
+    )
+
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+
+    assert usage.tokens.total_tokens == 1_200
+    assert usage.anomaly_tokens.total_tokens == 1_200
+    assert usage.pending_tokens.total_tokens == 0
 
 
 def test_nested_thread_settings_supply_reasoning_effort_to_the_next_turn(tmp_path: Path) -> None:

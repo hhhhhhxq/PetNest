@@ -1968,8 +1968,13 @@ def _event_attribution(
         # A normal-Codex snapshot for another reset cycle is strong evidence of
         # replayed history or another account, so keep it visible but pending.
         return "pending", False
-    anomalous = event.limit_id not in {None, "codex"}
+    anomalous = not _is_codex_limit_id(event.limit_id)
     return "current", anomalous
+
+
+def _is_codex_limit_id(limit_id: str | None) -> bool:
+    """Accept Codex-owned sub-limit labels when the model context is explicit."""
+    return limit_id is None or limit_id == "codex" or limit_id.startswith("codex_")
 
 
 def _inside_account_interval(
