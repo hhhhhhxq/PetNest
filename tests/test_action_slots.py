@@ -11,6 +11,7 @@ from petnest.core.action_slots import (
     action_slots,
     action_trigger_label,
     resolve_slot,
+    resolve_slot_import_target,
     validate_action_name,
 )
 from petnest.models.pet_package import AnimationDefinition, Canvas, PetPackage
@@ -92,7 +93,7 @@ def test_unbound_success_slot_uses_review_and_requests_binding(tmp_path: Path) -
     assert resolution.binding == ("agent.success", "review")
 
 
-def test_bound_event_replaces_the_runtime_resolved_fallback_action(tmp_path: Path) -> None:
+def test_bound_event_import_target_does_not_follow_runtime_fallback(tmp_path: Path) -> None:
     package = _package(tmp_path, {"agent.success": "success"}, ("celebrate",))
     package = PetPackage(
         package.root,
@@ -105,11 +106,15 @@ def test_bound_event_replaces_the_runtime_resolved_fallback_action(tmp_path: Pat
         {"success": ("celebrate",)},
     )
 
-    resolution = resolve_slot(package, action_slot("agent_success"))
+    runtime_resolution = resolve_slot(package, action_slot("agent_success"))
 
-    assert resolution.action_name == "celebrate"
-    assert resolution.binding is None
+    assert runtime_resolution.action_name == "celebrate"
+    assert runtime_resolution.binding is None
     assert action_trigger_label(package, "celebrate") == "任务完成"
+    import_resolution = resolve_slot_import_target(package, action_slot("agent_success"))
+
+    assert import_resolution.action_name == "success"
+    assert import_resolution.binding is None
 
 
 @pytest.mark.parametrize("unsafe", ["../../outside", "C:\\outside", "NUL", "bad/name"])
@@ -119,9 +124,12 @@ def test_unsafe_or_missing_bound_action_is_never_used_as_an_output_path(
     package = _package(tmp_path, {"agent.success": unsafe})
 
     resolution = resolve_slot(package, action_slot("agent_success"))
+    import_resolution = resolve_slot_import_target(package, action_slot("agent_success"))
 
     assert resolution.action_name == "review"
     assert resolution.binding == ("agent.success", "review")
+    assert import_resolution.action_name == "review"
+    assert import_resolution.binding == ("agent.success", "review")
     with pytest.raises(ValueError, match="不安全"):
         validate_action_name(unsafe)
 

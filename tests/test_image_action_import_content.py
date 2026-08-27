@@ -323,6 +323,26 @@ def test_current_binding_alias_is_the_actual_replacement_target(qtbot, tmp_path:
     assert content.primary_text() == "替换动作"
 
 
+def test_missing_bound_action_is_created_instead_of_replacing_its_runtime_fallback(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    package = _pet_package(tmp_path / "pet")
+    package = replace(
+        package,
+        bindings={**package.bindings, "system.bored": "bored"},
+        fallbacks={"bored": ("idle",)},
+    )
+    content = ImageActionImportContent((package,), current_pet_id=package.identifier)
+    qtbot.addWidget(content)
+
+    content.select_slot("system_bored")
+
+    assert content.action_name() == "bored"
+    assert content.primary_text() == "安装动作"
+    assert content.action_target_label.text() == "将创建：bored"
+
+
 def test_oversized_frame_requires_visible_fit_confirmation(qtbot, tmp_path: Path) -> None:
     package = _pet_package(tmp_path / "pet")
     content = ImageActionImportContent((package,), current_pet_id=package.identifier)

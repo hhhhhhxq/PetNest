@@ -258,6 +258,26 @@ def resolve_slot(package: PetPackage, slot: ActionSlot) -> ResolvedActionSlot:
     return ResolvedActionSlot(slot, action_name, binding)
 
 
+def resolve_slot_import_target(
+    package: PetPackage,
+    slot: ActionSlot,
+) -> ResolvedActionSlot:
+    """解析用户选择槽位的导入目标，不跟随运行时 fallback。"""
+    bound = package.bindings.get(slot.binding_event) if slot.binding_event is not None else None
+    if bound is not None:
+        try:
+            bound = validate_action_name(bound)
+        except ValueError:
+            bound = None
+    action_name = validate_action_name(bound or slot.canonical_action)
+    binding = (
+        (slot.binding_event, action_name)
+        if slot.binding_event is not None and bound is None
+        else None
+    )
+    return ResolvedActionSlot(slot, action_name, binding)
+
+
 def action_trigger_label(package: PetPackage, action_name: str) -> str:
     for slot in _ACTION_SLOTS:
         if resolve_slot(package, slot).action_name == action_name:
@@ -286,5 +306,6 @@ __all__ = [
     "action_slots",
     "action_trigger_label",
     "resolve_slot",
+    "resolve_slot_import_target",
     "validate_action_name",
 ]

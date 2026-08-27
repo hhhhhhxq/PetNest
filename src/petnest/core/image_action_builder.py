@@ -14,7 +14,7 @@ from PIL import Image, UnidentifiedImageError
 
 from petnest.core.package_validator import natural_sort_key
 from petnest.core.action_pack import ActionPack, SourcePetInfo
-from petnest.core.action_slots import ActionSlot, resolve_slot
+from petnest.core.action_slots import ActionSlot, resolve_slot_import_target
 from petnest.core.action_transfer import TransferAction
 from petnest.models.pet_package import PetPackage
 from petnest.core.package_validator import MAX_TIMELINE_DURATION_MS
@@ -181,7 +181,7 @@ def build_image_action_pack(
         raise ImageActionSourceError(
             f"归一化后的输出画布总像素超过安全上限 {MAX_TOTAL_PIXELS:,}，请减少帧数或图片尺寸"
         )
-    resolution = resolve_slot(package, slot)
+    resolution = resolve_slot_import_target(package, slot)
     with tempfile.TemporaryDirectory(prefix="petnest-image-action-") as temporary:
         root = Path(temporary)
         animation_root = root / "animations" / resolution.action_name

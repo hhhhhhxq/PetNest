@@ -211,6 +211,28 @@ def test_missing_binding_is_included_but_existing_alias_is_preserved(tmp_path: P
         assert pack.bindings == {}
 
 
+def test_bound_bored_import_does_not_replace_its_runtime_idle_fallback(
+    tmp_path: Path,
+) -> None:
+    draft = inspect_image_files([_image(tmp_path / "bored.png", (64, 48))])
+    package = _package(
+        tmp_path / "pet",
+        bindings={"system.bored": "bored"},
+        animations=("idle",),
+    )
+    package = replace(package, fallbacks={"bored": ("idle",)})
+
+    with build_image_action_pack(
+        package,
+        action_slot("system_bored"),
+        draft,
+        fps=8,
+    ) as pack:
+        assert set(pack.actions) == {"bored"}
+        assert "idle" not in pack.actions
+        assert pack.bindings == {}
+
+
 def test_fullscreen_frames_use_one_maximum_canvas_and_slot_direction_defaults(tmp_path: Path) -> None:
     draft = inspect_image_files(
         [

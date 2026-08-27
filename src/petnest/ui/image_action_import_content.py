@@ -32,7 +32,12 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.core.action_pack import ActionPack
-from petnest.core.action_slots import ActionSlot, action_slot, action_slots, resolve_slot
+from petnest.core.action_slots import (
+    ActionSlot,
+    action_slot,
+    action_slots,
+    resolve_slot_import_target,
+)
 from petnest.core.image_action_builder import (
     ImageActionDraft,
     ImageActionFrame,
@@ -390,7 +395,11 @@ class ImageActionImportContent(QWidget):
 
     def action_name(self) -> str | None:
         package, slot = self.selected_package(), self.selected_slot()
-        return resolve_slot(package, slot).action_name if package is not None and slot is not None else None
+        return (
+            resolve_slot_import_target(package, slot).action_name
+            if package is not None and slot is not None
+            else None
+        )
 
     def ordered_paths(self) -> tuple[Path, ...]:
         return tuple(frame.path for frame in self._draft.frames) if self._draft is not None else ()
