@@ -38,6 +38,18 @@ def test_tray_visibility_action_labels_visible_window_as_hide(qtbot, tmp_path: P
     assert tray.toggle_visibility_action.text() == "隐藏"
 
 
+def test_tray_refreshes_visibility_label_before_menu_opens(qtbot, tmp_path: Path) -> None:
+    window = PetWindow(_package(tmp_path))
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window)
+    assert tray.toggle_visibility_action.text() == "显示"
+
+    window.show()
+    tray.menu.aboutToShow.emit()
+
+    assert tray.toggle_visibility_action.text() == "隐藏"
+
+
 def test_tray_omits_cursor_style_and_manual_resource_update_entries(qtbot, tmp_path: Path) -> None:
     window = PetWindow(_package(tmp_path))
     qtbot.addWidget(window)

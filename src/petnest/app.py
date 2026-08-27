@@ -631,6 +631,8 @@ class PetNest:
         if self.tray is not None:
             self.tray.show()
         self.window.show()
+        if self.tray is not None:
+            self.tray.sync_visibility_action()
         firewall_enabled = self.settings.lan_interaction_enabled and not (
             self._uses_default_lan_firewall_advisor
             and os.environ.get("PETNEST_TEST_DISABLE_LAN", "").strip() == "1"

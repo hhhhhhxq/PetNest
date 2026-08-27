@@ -289,6 +289,27 @@ def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, t
     application.shutdown()
 
 
+def test_start_syncs_tray_visibility_label_after_showing_pet(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=True,
+    )
+    qtbot.addWidget(application.window)
+    monkeypatch.setattr(application, "_schedule_resource_check", lambda force=False: None)
+    assert application.tray is not None
+    assert application.tray.toggle_visibility_action.text() == "显示"
+
+    application.start()
+
+    assert application.window.isVisible()
+    assert application.tray.toggle_visibility_action.text() == "隐藏"
+    application.shutdown()
+
+
 def test_app_shows_and_remembers_dismissed_public_firewall_notice(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

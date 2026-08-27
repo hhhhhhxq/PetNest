@@ -146,6 +146,7 @@ class PetTrayIcon(QSystemTrayIcon):
         self.set_codex_usage_unlocked(codex_usage_unlocked)
         self.menu.addSeparator()
         self.menu.addAction(self.quit_action)
+        self.menu.aboutToShow.connect(self.sync_visibility_action)
         self.setContextMenu(self.menu)
         self.sync_visibility_action()
 
