@@ -36,6 +36,7 @@ def test_confirm_dialog_lists_online_and_unavailable_recipients(qtbot) -> None:
     )
     qtbot.addWidget(dialog)
 
+    assert "PingFang SC" in dialog.styleSheet()
     assert "小林" in dialog.online_label.text()
     assert "小陈" in dialog.online_label.text()
     assert "小周" in dialog.unavailable_label.text()

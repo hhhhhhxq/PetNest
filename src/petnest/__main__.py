@@ -29,6 +29,17 @@ from .ui.tray_icon import application_icon
 LOGGER = logging.getLogger(__name__)
 
 
+def _application_font_family(*, platform_name: str | None = None) -> str:
+    """选择当前桌面平台原生可用的中文界面字体。"""
+
+    name = platform_name or sys.platform
+    if name == "darwin":
+        return "PingFang SC"
+    if name == "win32":
+        return "Microsoft YaHei UI"
+    return "Sans Serif"
+
+
 def _terminate_wechat_on_windows_startup(
     startup_requested: bool,
     *,
@@ -90,7 +101,7 @@ def main(arguments: list[str] | None = None) -> int:
     QCoreApplication.setApplicationVersion(__version__)
     QCoreApplication.setOrganizationName("PetNest")
     application = QApplication(sys.argv)
-    application.setFont(QFont("Microsoft YaHei UI", 10))
+    application.setFont(QFont(_application_font_family(), 10))
     install_diagnostic_hooks()
     application.aboutToQuit.connect(lambda: LOGGER.info("Qt aboutToQuit 信号已触发"))
     application.setApplicationDisplayName("PetNest")

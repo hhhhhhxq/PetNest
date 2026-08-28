@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QListWidget, QVBoxLayout
 
 from petnest.models.pet_package import PetPackage
+from petnest.ui.theme import dialog_stylesheet
 
 
 class PetSelectorDialog(QDialog):
@@ -15,6 +16,7 @@ class PetSelectorDialog(QDialog):
     def __init__(self, packages: Sequence[PetPackage], parent: QDialog | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("选择宠物")
+        self.setStyleSheet(dialog_stylesheet())
         self._packages = tuple(packages)
         layout = QVBoxLayout(self)
         self.package_list = QListWidget(self)

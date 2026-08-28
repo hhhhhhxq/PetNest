@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.core.app_update import AppUpdateInfo
+from petnest.ui.theme import dialog_stylesheet
 
 
 class AppUpdateDialog(QDialog):
@@ -32,6 +33,7 @@ class AppUpdateDialog(QDialog):
         self.setWindowTitle("PetNest 程序更新")
         self.setModal(False)
         self.setMinimumWidth(380)
+        self.setStyleSheet(dialog_stylesheet())
         self._current_version = current_version
         self._on_download = on_download
         self._update: AppUpdateInfo | None = None

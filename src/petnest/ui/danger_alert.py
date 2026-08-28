@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from petnest.models.lan_interaction import LanPeer
+from petnest.ui.theme import dialog_stylesheet
 
 
 class DangerAlertConfirmDialog(QDialog):
@@ -36,6 +37,7 @@ class DangerAlertConfirmDialog(QDialog):
         self.setWindowTitle("发送危险预警")
         self.setModal(True)
         self.setMinimumWidth(420)
+        self.setStyleSheet(dialog_stylesheet())
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 20, 22, 18)
         layout.setSpacing(12)
@@ -85,7 +87,7 @@ class DangerAlertConfirmDialog(QDialog):
         self.send_button.setStyleSheet(
             "QPushButton { background: #c62828; color: white; border: 0; "
             "border-radius: 7px; padding: 8px 18px; font-weight: 700; }"
-            "QPushButton:disabled { background: #d9a6a6; }"
+            "QPushButton:disabled { background: #d9a6a6; color: #6d3334; }"
         )
         self.send_button.clicked.connect(self.accept)
         buttons.addWidget(self.send_button)

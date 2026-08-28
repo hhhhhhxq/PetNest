@@ -9,11 +9,16 @@ COLORS = {
     "accent": "#D98663",
     "accent_soft": "#FFF0E8",
     "text": "#4B4641",
-    "muted_text": "#8F8680",
+    "muted_text": "#746B66",
     "border": "#E8DED5",
     "success": "#6D9A7A",
     "error": "#C66C62",
 }
+
+FONT_FAMILY = (
+    '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", '
+    '"Microsoft YaHei", "Segoe UI", sans-serif'
+)
 
 
 def dialog_stylesheet() -> str:
@@ -24,7 +29,7 @@ def dialog_stylesheet() -> str:
             background: {c['window_background']};
             color: {c['text']};
             font-size: 13px;
-            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+            font-family: {FONT_FAMILY};
         }}
         QFrame#windowShell {{
             background: rgba(255, 253, 249, 232);
@@ -215,6 +220,7 @@ def dialog_stylesheet() -> str:
         }}
         QFrame#modeSwitch QRadioButton {{
             background: transparent;
+            color: {c['text']};
             padding: 7px 10px;
             border-radius: 8px;
         }}
@@ -302,12 +308,14 @@ def dialog_stylesheet() -> str:
         }}
         QTableWidget#animationActionTable, QListWidget#animationFrameList {{
             background: rgba(255, 253, 249, 155);
+            color: {c['text']};
             border: 1px solid {c['border']};
             border-radius: 12px;
             gridline-color: transparent;
             outline: none;
         }}
         QTableWidget#animationActionTable::item, QListWidget#animationFrameList::item {{
+            color: {c['text']};
             padding: 8px;
             border-radius: 8px;
         }}
@@ -347,10 +355,30 @@ def dialog_stylesheet() -> str:
         }}
         QListWidget#imageActionFrameList, QTableWidget {{
             background: rgba(255, 253, 249, 155);
+            color: {c['text']};
             border: 1px solid {c['border']};
             border-radius: 10px;
             gridline-color: transparent;
             outline: none;
+        }}
+        QListWidget, QTableWidget, QTreeWidget {{
+            color: {c['text']};
+            selection-background-color: {c['accent_soft']};
+            selection-color: {c['accent']};
+        }}
+        QListWidget::item, QTableWidget::item, QTreeWidget::item {{
+            color: {c['text']};
+        }}
+        QListWidget::item:selected, QTableWidget::item:selected, QTreeWidget::item:selected {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
+        }}
+        QHeaderView::section {{
+            background: {c['surface_alt']};
+            color: {c['text']};
+            border: none;
+            border-bottom: 1px solid {c['border']};
+            padding: 7px 9px;
         }}
         QGroupBox {{
             background: rgba(255, 253, 249, 220);
@@ -369,6 +397,7 @@ def dialog_stylesheet() -> str:
         QLineEdit, QSpinBox, QDoubleSpinBox, QTimeEdit, QComboBox {{
             background: {c['surface']};
             color: {c['text']};
+            placeholder-text-color: {c['muted_text']};
             border: 1px solid {c['border']};
             border-radius: 8px;
             padding: 7px 9px;
@@ -377,11 +406,36 @@ def dialog_stylesheet() -> str:
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus, QComboBox:focus {{
             border: 1px solid {c['accent']};
         }}
+        QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+        QTimeEdit:disabled, QComboBox:disabled {{
+            background: {c['surface_alt']};
+            color: {c['muted_text']};
+            border-color: {c['border']};
+        }}
         QComboBox::drop-down {{
             border: none;
             width: 24px;
         }}
+        QComboBox QAbstractItemView {{
+            background: {c['surface']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            selection-background-color: {c['accent_soft']};
+            selection-color: {c['accent']};
+            outline: none;
+        }}
+        QTextEdit, QPlainTextEdit {{
+            background: {c['surface']};
+            color: {c['text']};
+            placeholder-text-color: {c['muted_text']};
+            border: 1px solid {c['border']};
+            border-radius: 8px;
+            padding: 7px 9px;
+            selection-background-color: {c['accent_soft']};
+            selection-color: {c['accent']};
+        }}
         QCheckBox {{
+            color: {c['text']};
             spacing: 8px;
             padding: 4px 0;
         }}
@@ -413,8 +467,15 @@ def dialog_stylesheet() -> str:
             border-color: {c['accent']};
         }}
         QRadioButton {{
+            color: {c['text']};
             spacing: 8px;
             padding: 5px 0;
+        }}
+        QCheckBox:disabled, QRadioButton:disabled {{
+            color: {c['muted_text']};
+        }}
+        QToolButton {{
+            color: {c['text']};
         }}
         QPushButton {{
             background: {c['surface']};
@@ -427,6 +488,9 @@ def dialog_stylesheet() -> str:
         QPushButton:hover {{
             background: {c['accent_soft']};
             border-color: {c['accent']};
+        }}
+        QPushButton:disabled, QToolButton:disabled {{
+            color: {c['muted_text']};
         }}
         QPushButton#primaryButton {{
             background: {c['accent']};
@@ -447,6 +511,24 @@ def dialog_stylesheet() -> str:
             background: #D8CEC6;
             color: {c['muted_text']};
             border-color: #D8CEC6;
+        }}
+        QProgressBar {{
+            background: {c['surface_alt']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            border-radius: 7px;
+            text-align: center;
+            min-height: 14px;
+        }}
+        QProgressBar::chunk {{
+            background: {c['accent']};
+            border-radius: 6px;
+        }}
+        QToolTip {{
+            background: {c['surface']};
+            color: {c['text']};
+            border: 1px solid {c['border']};
+            padding: 5px 7px;
         }}
         QSlider::groove:horizontal {{
             height: 5px;
@@ -504,7 +586,7 @@ def menu_stylesheet(object_name: str = "trayMenu") -> str:
             border-radius: 12px;
             padding: 7px;
             font-size: 13px;
-            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+            font-family: {FONT_FAMILY};
         }}
         QMenu#{object_name}::item {{
             padding: 8px 30px 8px 12px;

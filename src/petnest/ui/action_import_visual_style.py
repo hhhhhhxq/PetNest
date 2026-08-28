@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from petnest.ui.theme import FONT_FAMILY
+
 
 TOKENS: dict[str, str | int] = {
     "window_background": "#fdf9f5",
@@ -11,7 +13,7 @@ TOKENS: dict[str, str | int] = {
     "mode_background": "#f4e9e2",
     "summary_background": "#faf0e9",
     "text": "#4c423d",
-    "muted": "#95837a",
+    "muted": "#7c6b63",
     "accent": "#c7603e",
     "primary": "#d97955",
     "border": "#eadbd2",
@@ -38,7 +40,7 @@ def action_import_stylesheet() -> str:
         QDialog#petActionExchangeDialog {{
             background: {t['window_background']};
             color: {t['text']};
-            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI";
+            font-family: {FONT_FAMILY};
             font-size: 12px;
         }}
         QFrame#actionExchangeShell {{
@@ -73,7 +75,7 @@ def action_import_stylesheet() -> str:
             padding: 6px 0;
         }}
         QListWidget#settingsNavigation::item {{
-            color: #88776e;
+            color: {t['muted']};
             background: transparent;
             border: none;
             border-radius: 9px;

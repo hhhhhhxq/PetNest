@@ -18,6 +18,7 @@ def test_cursor_style_dialog_round_trips_selected_theme(qtbot, tmp_path: Path) -
     dialog = CursorStyleDialog(Settings(), [style])
     qtbot.addWidget(dialog)
 
+    assert "PingFang SC" in dialog.styleSheet()
     dialog.cursor_style_enabled_input.setChecked(True)
 
     assert dialog.updated_settings().cursor_style_id == "petnest-paw"

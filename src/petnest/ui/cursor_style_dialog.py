@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QCheckBox, QComboBox, QDialog, QDialogButtonBox, Q
 
 from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.models.settings import Settings
+from petnest.ui.theme import dialog_stylesheet
 
 
 class CursorStyleDialog(QDialog):
@@ -24,6 +25,7 @@ class CursorStyleDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("鼠标样式")
+        self.setStyleSheet(dialog_stylesheet())
         self._settings = settings
         self._styles = cursor_styles
         self._supported_roles = frozenset(supported_roles) if supported_roles is not None else None

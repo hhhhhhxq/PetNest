@@ -31,6 +31,7 @@ def test_update_dialog_exposes_check_and_download_states(qtbot) -> None:
     )
     qtbot.addWidget(dialog)
 
+    assert "PingFang SC" in dialog.styleSheet()
     assert dialog.download_button.isHidden()
     qtbot.mouseClick(dialog.check_button, Qt.MouseButton.LeftButton)
     assert checked == [True]

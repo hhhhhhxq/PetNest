@@ -15,7 +15,7 @@ def test_visual_tokens_match_the_approved_v4_prototype() -> None:
         "mode_background": "#f4e9e2",
         "summary_background": "#faf0e9",
         "text": "#4c423d",
-        "muted": "#95837a",
+        "muted": "#7c6b63",
         "accent": "#c7603e",
         "primary": "#d97955",
         "border": "#eadbd2",
@@ -66,5 +66,8 @@ def test_action_import_stylesheet_is_scoped_and_uses_prototype_colors() -> None:
     assert "QFrame#actionImportPanel" in stylesheet
     assert "QFrame#actionImportModeSwitch" in stylesheet
     assert "QWidget#actionImportPage QLineEdit" in stylesheet
+    assert 'font-family: "PingFang SC", "Hiragino Sans GB"' in stylesheet
+    assert TOKENS["muted"] == "#7c6b63"
+    assert f"color: {TOKENS['muted']};" in stylesheet
     assert "\n        QLineEdit," not in stylesheet
     assert "\n        QPushButton {{" not in stylesheet

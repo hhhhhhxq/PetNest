@@ -10,6 +10,12 @@ from petnest.__main__ import main
 from petnest.core.settings_manager import SettingsManager
 
 
+def test_application_font_uses_native_family_for_each_platform() -> None:
+    assert main_module._application_font_family(platform_name="darwin") == "PingFang SC"
+    assert main_module._application_font_family(platform_name="win32") == "Microsoft YaHei UI"
+    assert main_module._application_font_family(platform_name="linux") == "Sans Serif"
+
+
 def test_startup_marker_is_accepted_by_the_normal_entrypoint(monkeypatch) -> None:
     monkeypatch.setattr(main_module.PetNest, "check_installation", staticmethod(lambda: 0))
 
