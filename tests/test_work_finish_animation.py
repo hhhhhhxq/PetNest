@@ -81,7 +81,7 @@ def test_resolver_prefers_walk_over_drag(tmp_path: Path) -> None:
     assert resolved.walk.name == "walk"
 
 
-def test_resolver_uses_directional_drag_when_generic_drag_is_absent(tmp_path: Path) -> None:
+def test_resolver_uses_left_drag_for_default_right_side_entrance(tmp_path: Path) -> None:
     package = _package(tmp_path)
     source = package.animations["drag"]
     animations = {
@@ -94,7 +94,7 @@ def test_resolver_uses_directional_drag_when_generic_drag_is_absent(tmp_path: Pa
     resolved = resolve_work_finish_animation(package)
 
     assert resolved.walk is not None
-    assert resolved.walk.name == "drag_right"
+    assert resolved.walk.name == "drag_left"
 
 
 def test_resolver_skips_fullscreen_drag_in_ordinary_fallback(tmp_path: Path) -> None:

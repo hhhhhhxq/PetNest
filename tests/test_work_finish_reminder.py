@@ -6,8 +6,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QRect, Qt
 
+from petnest.core.work_finish_animation import resolve_work_finish_animation
 from petnest.models.pet_package import Canvas
 from petnest.ui.work_finish_reminder import WorkFinishReminder
 from tests.test_pet_window import _package
@@ -37,6 +39,61 @@ def _with_fullscreen_pair(package, direction: str, *, include_loop: bool = False
             loop=True,
         )
     return replace(package, animations=animations)
+
+
+def _with_directional_fallbacks(package):
+    source = package.animations["drag"]
+    return replace(
+        package,
+        animations={
+            **package.animations,
+            "walk_left": replace(source, name="walk_left"),
+            "walk_right": replace(source, name="walk_right"),
+            "drag_left": replace(source, name="drag_left"),
+            "drag_right": replace(source, name="drag_right"),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("entrance_direction", "expected"),
+    [("right", "walk_left"), ("left", "walk_right"), ("none", "drag")],
+)
+def test_pet_fallback_matches_motion_to_entrance_direction(tmp_path: Path, entrance_direction: str, expected: str) -> None:
+    animation = resolve_work_finish_animation(
+        _with_directional_fallbacks(_package(tmp_path)),
+        fallback_entrance_direction=entrance_direction,
+    )
+
+    assert animation.walk is not None
+    assert animation.walk.name == expected
+    assert animation.entrance_direction == entrance_direction
+
+
+@pytest.mark.parametrize(
+    ("entrance_direction", "expected"),
+    [("right", "drag_left"), ("left", "drag_right")],
+)
+def test_directional_drag_precedes_generic_drag_when_directional_walk_is_missing(
+    tmp_path: Path,
+    entrance_direction: str,
+    expected: str,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    package = replace(
+        package,
+        animations={
+            **package.animations,
+            "drag_left": replace(source, name="drag_left"),
+            "drag_right": replace(source, name="drag_right"),
+        },
+    )
+
+    animation = resolve_work_finish_animation(package, fallback_entrance_direction=entrance_direction)
+
+    assert animation.walk is not None
+    assert animation.walk.name == expected
 
 
 def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp_path: Path) -> None:
@@ -127,6 +184,23 @@ def test_animation_moves_from_offscreen_left_to_center(qtbot, tmp_path: Path) ->
     reminder.animation_window._refresh_frame()
     centered = reminder.animation_window.current_frame_rect()
     assert abs(centered.center().x() - 500) <= 1
+    reminder.hide()
+
+
+def test_pet_fallback_direction_is_forwarded_to_animation_window(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(
+        _with_directional_fallbacks(_package(tmp_path)),
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+        fallback_entrance_direction="left",
+    )
+
+    assert reminder.animation_window._entrance_direction == "left"
+    assert reminder.animation_window.current_frame_rect().right() < 0
     reminder.hide()
 
 

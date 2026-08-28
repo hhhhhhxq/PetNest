@@ -53,21 +53,28 @@ class WorkFinishAnimationWindow(QWidget):
         self.timer.setInterval(16)
         self.timer.timeout.connect(self._refresh_frame)
 
-    def show_for(self, package: PetPackage, geometry: QRect) -> None:
+    def show_for(
+        self,
+        package: PetPackage,
+        geometry: QRect,
+        *,
+        fallback_entrance_direction: str = "right",
+    ) -> None:
         self.timer.stop()
         self._display_generation += 1
         self._paint_pending = True
         self.setWindowOpacity(0.0)
-        animation = resolve_work_finish_animation(package)
+        animation = resolve_work_finish_animation(
+            package,
+            fallback_entrance_direction=fallback_entrance_direction,
+        )
         self._walk_frames = _pixmaps(animation.walk)
         self._lie_frames = _pixmaps(animation.lie_down)
         self._lie_loop_frames = _pixmaps(animation.lie_loop)
         self._walk_durations = _durations(animation.walk, len(self._walk_frames))
         self._lie_durations = _durations(animation.lie_down, len(self._lie_frames))
         self._lie_loop_durations = _durations(animation.lie_loop, len(self._lie_loop_frames))
-        self._entrance_direction = getattr(animation.walk, "entrance_direction", "right")
-        if self._entrance_direction not in {"left", "right", "none"}:
-            self._entrance_direction = "right"
+        self._entrance_direction = animation.entrance_direction
         self.setGeometry(geometry)
         self.target_frame_width = round(geometry.width() * self.WIDTH_RATIO)
         self._started_at = self._clock()
@@ -284,8 +291,13 @@ class WorkFinishReminder(QObject):
         prompt_started_at: datetime,
         *,
         available_geometry: QRect | None = None,
+        fallback_entrance_direction: str = "right",
     ) -> None:
-        self.animation_window.show_for(package, geometry)
+        self.animation_window.show_for(
+            package,
+            geometry,
+            fallback_entrance_direction=fallback_entrance_direction,
+        )
         self.control_window.show_for(available_geometry or geometry, prompt_started_at)
 
     def hide(self) -> None:
