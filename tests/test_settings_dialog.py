@@ -21,7 +21,17 @@ from petnest.core.codex_discovery import (
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.core.cursor_style_catalog import CursorStyle
 from petnest.models.settings import Settings
+from petnest.ui.adaptive_navigation import AdaptiveNavigationList
 from petnest.ui.settings_dialog import SettingsCenterDialog, SettingsDialog
+
+
+def _assert_navigation_rows_do_not_overlap(navigation: AdaptiveNavigationList) -> None:
+    rects = [
+        navigation.visualItemRect(navigation.item(row))
+        for row in range(navigation.count())
+    ]
+    assert all(rect.isValid() and rect.height() > 0 for rect in rects)
+    assert all(first.bottom() < second.top() for first, second in zip(rects, rects[1:]))
 
 
 def test_settings_dialog_is_the_shared_six_section_center(qtbot, tmp_path: Path) -> None:
@@ -420,8 +430,10 @@ def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:
 
     dialog._fit_to_available_geometry(QRect(0, 0, 1920, 1040))
 
+    assert isinstance(dialog.section_list, AdaptiveNavigationList)
     assert dialog.minimumSize() == QSize(1000, 680)
     assert dialog.size() == QSize(1180, 760)
+    assert dialog.sidebar.width() == 246
     assert not dialog.status_title.isHidden()
     assert not dialog.status_card.isHidden()
 
@@ -438,7 +450,7 @@ def test_settings_center_keeps_status_card_when_only_width_is_constrained(qtbot)
     assert not dialog.status_card.isHidden()
 
 
-def test_settings_center_prioritizes_complete_navigation_on_short_screen(qtbot) -> None:
+def test_settings_center_prioritizes_accessible_navigation_on_short_screen(qtbot) -> None:
     dialog = SettingsDialog(Settings(), initial_section="mouse_behavior")
     qtbot.addWidget(dialog)
 
@@ -451,25 +463,30 @@ def test_settings_center_prioritizes_complete_navigation_on_short_screen(qtbot) 
     assert dialog.height() <= available.height() - 32
     assert dialog.status_title.isHidden()
     assert dialog.status_card.isHidden()
-    last_row = dialog.section_list.visualItemRect(
-        dialog.section_list.item(dialog.section_list.count() - 1)
-    )
-    assert last_row.bottom() < dialog.section_list.viewport().height()
+    _assert_navigation_rows_do_not_overlap(dialog.section_list)
+    last_item = dialog.section_list.item(dialog.section_list.count() - 1)
+    dialog.section_list.scrollToItem(last_item)
+    qtbot.wait(10)
+    assert dialog.section_list.visualItemRect(last_item).bottom() < dialog.section_list.viewport().height()
 
 
-def test_settings_center_navigation_height_follows_larger_system_font(qtbot) -> None:
+def test_settings_center_navigation_reflows_for_larger_system_font(qtbot) -> None:
     dialog = SettingsDialog(Settings())
     qtbot.addWidget(dialog)
-    dialog.section_list.setFont(QFont("Microsoft YaHei UI", 16))
+    original_height = dialog.section_list.sizeHintForRow(0)
+    font = QFont(dialog.section_list.font())
+    font.setPointSize(20)
 
+    dialog.section_list.setFont(font)
     dialog._fit_to_available_geometry(QRect(0, 0, 960, 640))
     dialog.show()
-    qtbot.wait(20)
 
-    last_row = dialog.section_list.visualItemRect(
-        dialog.section_list.item(dialog.section_list.count() - 1)
-    )
-    assert last_row.bottom() < dialog.section_list.viewport().height()
+    qtbot.waitUntil(lambda: dialog.section_list.sizeHintForRow(0) > original_height)
+    _assert_navigation_rows_do_not_overlap(dialog.section_list)
+    last_item = dialog.section_list.item(dialog.section_list.count() - 1)
+    dialog.section_list.scrollToItem(last_item)
+    qtbot.wait(10)
+    assert dialog.section_list.visualItemRect(last_item).bottom() < dialog.section_list.viewport().height()
 
 
 def test_settings_dialog_persists_remote_partner_toggle(qtbot) -> None:

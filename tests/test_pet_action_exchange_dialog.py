@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from PIL import Image
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QMessageBox
 
 from petnest.core.package_loader import PackageLoader
+from petnest.ui.adaptive_navigation import AdaptiveNavigationList
 from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 from tests.test_package_validator import _write_package
 
@@ -164,6 +166,36 @@ def test_exchange_shell_uses_v4_geometry_and_lucide_navigation(
     footer_left = dialog.footer_status_label.mapTo(dialog.window_shell, dialog.footer_status_label.rect().topLeft()).x()
     sidebar_right = dialog.sidebar.mapTo(dialog.window_shell, dialog.sidebar.rect().topRight()).x()
     assert footer_left > sidebar_right
+
+
+def test_exchange_navigation_reflows_and_grows_sidebar_for_large_font(
+    qtbot: object, tmp_path: Path
+) -> None:
+    package = PackageLoader().load(_write_package(tmp_path / "pet"))
+    dialog = PetActionExchangeDialog([package], tmp_path / "pets")
+    qtbot.addWidget(dialog)
+    dialog.navigation.setCurrentRow(1)
+    original_row_height = dialog.navigation.sizeHintForRow(0)
+    font = QFont(dialog.navigation.font())
+    font.setPointSize(24)
+
+    dialog.navigation.setFont(font)
+    dialog.show()
+
+    qtbot.waitUntil(lambda: dialog.navigation.sizeHintForRow(0) > original_row_height)
+    assert isinstance(dialog.navigation, AdaptiveNavigationList)
+    assert dialog.navigation.currentRow() == 1
+    assert dialog.sidebar.width() > 145
+    rects = [
+        dialog.navigation.visualItemRect(dialog.navigation.item(row))
+        for row in range(dialog.navigation.count())
+    ]
+    assert all(rect.isValid() and rect.height() > 0 for rect in rects)
+    assert all(first.bottom() < second.top() for first, second in zip(rects, rects[1:]))
+    assert dialog.navigation.sizeHintForColumn(0) >= max(
+        dialog.navigation.fontMetrics().horizontalAdvance(dialog.navigation.item(row).text())
+        for row in range(dialog.navigation.count())
+    )
 
 
 def test_action_import_footer_moves_inside_the_active_prototype_panel(

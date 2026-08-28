@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QPoint, QSignalBlocker, QTime, QTimer, Qt, QRect, QSize, Signal
+from PySide6.QtCore import QEventLoop, QMargins, QPoint, QSignalBlocker, QTime, QTimer, Qt, QRect, QSize, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -50,6 +50,10 @@ from petnest.core.codex_discovery import (
 )
 from petnest.core.codex_session_log import CodexLogSourceStatus
 from petnest.models.settings import Settings
+from petnest.ui.adaptive_navigation import (
+    AdaptiveNavigationList,
+    bounded_navigation_sidebar_width,
+)
 from petnest.ui.theme import dialog_stylesheet
 
 
@@ -396,28 +400,35 @@ class SettingsCenterDialog(QDialog):
 
         body = QHBoxLayout()
         body.setSpacing(18)
-        sidebar = QFrame(window_shell)
-        sidebar.setObjectName("settingsSidebar")
-        sidebar.setFixedWidth(246)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(16, 18, 16, 16)
-        sidebar_layout.setSpacing(10)
-        sidebar_title = QLabel("偏好设置", sidebar)
+        self.sidebar = QFrame(window_shell)
+        self.sidebar.setObjectName("settingsSidebar")
+        self.sidebar.setFixedWidth(246)
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(16, 18, 16, 16)
+        self.sidebar_layout.setSpacing(10)
+        sidebar_title = QLabel("偏好设置", self.sidebar)
         sidebar_title.setObjectName("mutedLabel")
         sidebar_title.setStyleSheet("font-size: 12px; font-weight: 700; letter-spacing: 1px;")
-        sidebar_layout.addWidget(sidebar_title)
-        self.section_list = QListWidget(sidebar)
+        self.sidebar_layout.addWidget(sidebar_title)
+        self.section_list = AdaptiveNavigationList(
+            minimum_row_height=46,
+            vertical_padding=11,
+            horizontal_padding=14,
+            item_margin=3,
+            outer_padding=QMargins(4, 8, 4, 8),
+            parent=self.sidebar,
+        )
         self.section_list.setObjectName("settingsNavigation")
         self.section_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.section_list.setFrameShape(QFrame.Shape.NoFrame)
         for _key, label in self._SECTION_NAMES:
             self.section_list.addItem(QListWidgetItem(label))
-        sidebar_layout.addWidget(self.section_list, 1)
-        self.status_title = QLabel("当前状态", sidebar)
+        self.sidebar_layout.addWidget(self.section_list, 1)
+        self.status_title = QLabel("当前状态", self.sidebar)
         self.status_title.setObjectName("mutedLabel")
         self.status_title.setStyleSheet("font-size: 12px; font-weight: 700; letter-spacing: 1px;")
-        sidebar_layout.addWidget(self.status_title)
-        self.status_card = QFrame(sidebar)
+        self.sidebar_layout.addWidget(self.status_title)
+        self.status_card = QFrame(self.sidebar)
         self.status_card.setObjectName("statusCard")
         status_layout = QVBoxLayout(self.status_card)
         status_layout.setContentsMargins(14, 11, 14, 11)
@@ -434,8 +445,8 @@ class SettingsCenterDialog(QDialog):
         current_pet.setObjectName("mutedLabel")
         current_pet.setWordWrap(True)
         status_layout.addWidget(current_pet)
-        sidebar_layout.addWidget(self.status_card)
-        body.addWidget(sidebar)
+        self.sidebar_layout.addWidget(self.status_card)
+        body.addWidget(self.sidebar)
 
         content_pane = QFrame(window_shell)
         content_pane.setObjectName("contentPane")
@@ -511,9 +522,27 @@ class SettingsCenterDialog(QDialog):
 
         self.section_list.currentRowChanged.connect(self._change_section)
         self.section_list.setCurrentRow(self._section_index(initial_section))
+        self.section_list.metrics_changed.connect(self._refresh_navigation_geometry)
         screen = self.screen() or QApplication.primaryScreen()
         if screen is not None:
             self._fit_to_available_geometry(screen.availableGeometry())
+
+    def _refresh_navigation_geometry(self, *_metrics: int) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            self._fit_to_available_geometry(screen.availableGeometry())
+
+    def _sync_navigation_sidebar_width(self, usable_width: int) -> None:
+        margins = self.sidebar_layout.contentsMargins()
+        surrounding_width = margins.left() + margins.right()
+        self.sidebar.setFixedWidth(
+            bounded_navigation_sidebar_width(
+                base_width=246,
+                available_width=usable_width,
+                navigation_width=self.section_list.recommended_content_width(),
+                surrounding_width=surrounding_width,
+            )
+        )
 
     def _fit_to_available_geometry(self, available: QRect) -> None:
         """在小屏或高 DPI 环境中保住导航，空间充足时保持设计尺寸。"""
@@ -527,13 +556,11 @@ class SettingsCenterDialog(QDialog):
         self.status_title.setVisible(not short_screen)
         self.status_card.setVisible(not short_screen)
 
-        navigation_height = sum(
-            max(1, self.section_list.sizeHintForRow(row))
-            for row in range(self.section_list.count())
+        self.section_list.reflow()
+        maximum_navigation_height = max(1, usable_height * 3 // 5)
+        self.section_list.setMinimumHeight(
+            min(self.section_list.full_content_height(), maximum_navigation_height)
         )
-        frame_height = self.section_list.frameWidth() * 2
-        navigation_padding = 16  # 与 settingsNavigation 的上下 QSS padding 一致。
-        self.section_list.setMinimumHeight(navigation_height + frame_height + navigation_padding)
 
         if constrained:
             self.setMinimumSize(
@@ -546,6 +573,7 @@ class SettingsCenterDialog(QDialog):
             min(self._PREFERRED_SIZE.width(), usable_width),
             min(self._PREFERRED_SIZE.height(), usable_height),
         )
+        self._sync_navigation_sidebar_width(usable_width)
 
     def _section_index(self, section: str) -> int:
         aliases = {

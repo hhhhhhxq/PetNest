@@ -5,15 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QMargins, QSignalBlocker, Qt, Signal
+from PySide6.QtGui import QCloseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
-    QListWidget,
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
@@ -26,6 +25,10 @@ from petnest.core.pet_store_cache import PetStoreCache
 from petnest.core.pet_store_service import PetStoreService
 from petnest.core.pet_store_state import PetStoreStateStore
 from petnest.models.pet_package import PetPackage
+from petnest.ui.adaptive_navigation import (
+    AdaptiveNavigationList,
+    bounded_navigation_sidebar_width,
+)
 from petnest.ui.action_export_page import ActionExportPage
 from petnest.ui.action_import_visual_style import action_import_stylesheet
 from petnest.ui.action_import_page import ActionImportPage
@@ -129,15 +132,22 @@ class PetActionExchangeDialog(QDialog):
         self.sidebar = QFrame(body_widget)
         self.sidebar.setObjectName("actionExchangeSidebar")
         self.sidebar.setFixedWidth(145)
-        sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(11, 11, 11, 11)
-        self.navigation = QListWidget(self.sidebar)
+        self.sidebar_layout = QVBoxLayout(self.sidebar)
+        self.sidebar_layout.setContentsMargins(11, 11, 11, 11)
+        self.navigation = AdaptiveNavigationList(
+            minimum_row_height=40,
+            vertical_padding=9,
+            horizontal_padding=11,
+            item_margin=2,
+            outer_padding=QMargins(0, 6, 0, 6),
+            parent=self.sidebar,
+        )
         self.navigation.setObjectName("settingsNavigation")
         for label, icon_name in zip(self._PAGE_LABELS, self._PAGE_ICONS, strict=True):
             self.navigation.addItem(
                 QListWidgetItem(lucide_icon(icon_name, color="#88776e", size=16), label)
             )
-        sidebar_layout.addWidget(self.navigation)
+        self.sidebar_layout.addWidget(self.navigation)
         body.addWidget(self.sidebar)
 
         self.content = QWidget(body_widget)
@@ -226,7 +236,10 @@ class PetActionExchangeDialog(QDialog):
         root.addWidget(self.window_shell)
 
         self.navigation.currentRowChanged.connect(self._on_navigation_changed)
+        self.navigation.metrics_changed.connect(self._sync_navigation_sidebar_width)
         self.navigation.setCurrentRow(0)
+        self.navigation.reflow()
+        self._sync_navigation_sidebar_width()
         self._sync_page_header()
         self._sync_navigation_icons()
         self._place_footer_bar()
@@ -240,6 +253,24 @@ class PetActionExchangeDialog(QDialog):
         self.setMinimumHeight(680)
         self.setMaximumHeight(760)
         self.resize(self.width(), 760)
+
+    def _sync_navigation_sidebar_width(self, *_metrics: int) -> None:
+        if not hasattr(self, "navigation"):
+            return
+        margins = self.sidebar_layout.contentsMargins()
+        surrounding_width = margins.left() + margins.right()
+        self.sidebar.setFixedWidth(
+            bounded_navigation_sidebar_width(
+                base_width=145,
+                available_width=max(1, self.width()),
+                navigation_width=self.navigation.recommended_content_width(),
+                surrounding_width=surrounding_width,
+            )
+        )
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_navigation_sidebar_width()
 
     def page_names(self) -> list[str]:
         return list(self._PAGE_LABELS)
