@@ -143,6 +143,8 @@ class CodexSessionLogWatcher:
         for candidate in candidates:
             path = candidate.path
             stat = candidate.stat
+            if not self._verify_candidate_snapshot(candidate):
+                continue
             self._cursors[path] = _FileCursor(
                 offset=stat.st_size,
                 modified_ns=stat.st_mtime_ns,
@@ -194,7 +196,38 @@ class CodexSessionLogWatcher:
         date_paths = {candidate.path for candidate in date_candidates}
         candidates = self._candidate_files(date_candidates)
         selected_paths = {candidate.path for candidate in candidates}
-        self._baseline_new_indexed_paths(candidates, date_paths)
+        self._baseline_new_paths(candidates)
+        rebaselined: list[_CandidateFile] = []
+        rebaseline_time = self._monotonic_time()
+        for candidate in candidates:
+            cursor = self._cursors.get(candidate.path)
+            if cursor is None:
+                continue
+            stat = candidate.stat
+            if not (
+                cursor.identity != _stat_identity(stat)
+                or stat.st_size < cursor.offset
+                or (
+                    stat.st_size == cursor.offset
+                    and cursor.offset > 0
+                    and stat.st_mtime_ns != cursor.modified_ns
+                )
+            ):
+                continue
+            self._abort_recovered_path(candidate.path)
+            if not self._verify_candidate_snapshot(candidate):
+                self._cursors.pop(candidate.path, None)
+                continue
+            cursor.offset = stat.st_size
+            cursor.modified_ns = stat.st_mtime_ns
+            cursor.pending = b""
+            cursor.session_id = self._session_id_from_name(candidate.path)
+            cursor.compatible = True
+            cursor.identity = _stat_identity(stat)
+            cursor.last_seen_at = rebaseline_time
+            rebaselined.append(candidate)
+        if rebaselined:
+            self._recover_recent_running_turns(tuple(rebaselined))
         if self._pending_recovery_events:
             emitted.extend(self._pending_recovery_events)
             self._pending_recovery_events.clear()
@@ -205,24 +238,7 @@ class CodexSessionLogWatcher:
             stat = candidate.stat
             cursor = self._cursors.get(path)
             if cursor is None:
-                cursor = _FileCursor(
-                    0,
-                    stat.st_mtime_ns,
-                    self._session_id_from_name(path),
-                    identity=_stat_identity(stat),
-                    last_seen_at=poll_time,
-                )
-                self._cursors[path] = cursor
-            elif cursor.identity != _stat_identity(stat) or stat.st_size < cursor.offset or (
-                stat.st_size == cursor.offset
-                and cursor.offset > 0
-                and stat.st_mtime_ns != cursor.modified_ns
-            ):
-                cursor.offset = 0
-                cursor.pending = b""
-                cursor.session_id = self._session_id_from_name(path)
-                cursor.compatible = True
-                cursor.identity = _stat_identity(stat)
+                continue
             cursor.last_seen_at = poll_time
             if stat.st_size <= cursor.offset:
                 cursor.modified_ns = stat.st_mtime_ns
@@ -273,29 +289,72 @@ class CodexSessionLogWatcher:
         self,
         candidates: tuple[_CandidateFile, ...],
     ) -> None:
-        if self._startup_recovery_window_seconds <= 0:
-            return
         selected = sorted(
             candidates,
             key=lambda candidate: candidate.stat.st_mtime_ns,
             reverse=True,
-        )[: self._startup_recovery_max_files]
+        )
         if not selected:
             return
-        per_file_bytes = max(1024, self._startup_recovery_max_bytes // len(selected))
+        recovery_paths = {
+            candidate.path
+            for candidate in selected[: self._startup_recovery_max_files]
+        }
+        per_file_bytes = max(1, self._startup_recovery_max_bytes // len(selected))
         total_remaining = self._startup_recovery_max_bytes
+        prepared_paths: set[Path] = set()
         now = self._utc_now()
         lower_bound = now - timedelta(seconds=self._startup_recovery_window_seconds)
         for candidate in selected:
             if total_remaining <= 0:
                 break
             path = candidate.path
-            cursor = self._cursors[path]
-            read_limit = min(per_file_bytes, total_remaining, cursor.offset)
+            cursor = self._cursors.get(path)
+            if cursor is None:
+                continue
+            file_remaining = min(per_file_bytes, total_remaining)
+            if cursor.session_id is None and cursor.offset > 0:
+                prefix_limit = min(
+                    cursor.offset,
+                    max(1, file_remaining // 4),
+                    self._max_line_bytes + 1,
+                )
+                prefix = self._read_verified_candidate(
+                    candidate,
+                    offset=0,
+                    limit=prefix_limit,
+                )
+                total_remaining -= prefix_limit
+                file_remaining -= prefix_limit
+                if prefix is None:
+                    self._cursors.pop(path, None)
+                    continue
+                cursor.session_id = self._first_session_id(prefix)
+            read_limit = min(file_remaining, total_remaining, cursor.offset)
             total_remaining -= read_limit
             if read_limit <= 0:
+                if cursor.offset > 0:
+                    self._cursors.pop(path, None)
                 continue
-            record = self._latest_lifecycle_record(candidate, cursor, read_limit)
+            tail_safe, record = self._latest_lifecycle_record(
+                candidate,
+                cursor,
+                read_limit,
+            )
+            if not tail_safe:
+                self._cursors.pop(path, None)
+                continue
+            if cursor.session_id is None and cursor.offset > 0 and not (
+                cursor.pending and read_limit >= cursor.offset
+            ):
+                self._cursors.pop(path, None)
+                continue
+            prepared_paths.add(path)
+            if (
+                self._startup_recovery_window_seconds <= 0
+                or path not in recovery_paths
+            ):
+                continue
             if record is None:
                 continue
             event_name, session_id, turn_id, timestamp = record
@@ -319,16 +378,21 @@ class CodexSessionLogWatcher:
                     },
                 )
             )
+        for candidate in selected:
+            path = candidate.path
+            cursor = self._cursors.get(path)
+            if path not in prepared_paths and cursor is not None and cursor.offset > 0:
+                self._cursors.pop(path, None)
 
     def _latest_lifecycle_record(
         self,
         candidate: _CandidateFile,
         cursor: _FileCursor,
         read_limit: int,
-    ) -> tuple[str, str, str, datetime] | None:
+    ) -> tuple[bool, tuple[str, str, str, datetime] | None]:
         path = candidate.path
         if _is_link_like(path) or not _path_chain_is_safe(self.root.parent, path):
-            return None
+            return False, None
         start = max(0, cursor.offset - read_limit)
         data = self._read_verified_candidate(
             candidate,
@@ -336,50 +400,48 @@ class CodexSessionLogWatcher:
             limit=read_limit,
         )
         if data is None:
-            return None
-        if data and not data.endswith(b"\n"):
-            return None
+            return False, None
         lines = data.split(b"\n")
+        cursor.pending = b""
+        if data and not data.endswith(b"\n"):
+            pending = lines.pop()
+            if (start == 0 or b"\n" in data) and len(pending) <= self._max_line_bytes:
+                cursor.pending = pending
+                return True, None
+            return False, None
         if start > 0 and lines:
             lines.pop(0)
-        session_id = cursor.session_id or self._session_id_from_name(path)
+        session_id = cursor.session_id
         latest: tuple[str, str, str, datetime] | None = None
         for raw_line in lines:
             if not raw_line:
                 continue
             if len(raw_line) > self._max_line_bytes:
-                return None
+                return True, None
             try:
                 document = json.loads(raw_line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
-                return None
+                return True, None
             if not isinstance(document, dict):
-                return None
+                return True, None
             payload = document.get("payload")
             if document.get("type") == "session_meta":
-                if not isinstance(payload, dict):
-                    return None
-                candidate_id = payload.get("session_id")
-                if not _bounded_id(candidate_id):
-                    return None
-                session_id = str(candidate_id)
-                cursor.session_id = session_id
                 continue
             if document.get("type") != "event_msg":
                 continue
             if not isinstance(payload, dict):
-                return None
+                return True, None
             event_name = payload.get("type")
             turn_id = payload.get("turn_id")
             if event_name not in {"task_started", "task_complete", "turn_aborted"}:
                 continue
             if not _bounded_id(session_id) or not _bounded_id(turn_id):
-                return None
+                return True, None
             timestamp = _parse_timestamp(document.get("timestamp"))
             if timestamp is None:
-                return None
+                return True, None
             latest = (str(event_name), str(session_id), str(turn_id), timestamp)
-        return latest
+        return True, latest
 
     def _refresh_recovered_turns(
         self,
@@ -391,6 +453,17 @@ class CodexSessionLogWatcher:
             recovered = self._recovered_turns.get(key)
             if recovered is not None and recovered.path == path:
                 recovered.expires_at = expires_at
+
+    def _abort_recovered_path(self, path: Path) -> None:
+        stale = [
+            key
+            for key, recovered in self._recovered_turns.items()
+            if recovered.path == path
+        ]
+        self._pending_recovery_events.extend(
+            self._recovered_abort_event(self._recovered_turns.pop(key))
+            for key in stale
+        )
 
     def _reconcile_recovered_turn(
         self,
@@ -536,6 +609,8 @@ class CodexSessionLogWatcher:
         payload = document.get("payload")
         if document.get("type") == "session_meta" and isinstance(payload, dict):
             session_id = payload.get("session_id")
+            if cursor.session_id is not None:
+                return None, None
             if _bounded_id(session_id):
                 cursor.session_id = str(session_id)
             else:
@@ -599,16 +674,17 @@ class CodexSessionLogWatcher:
         current = {path for path in values if isinstance(path, Path)}
         self._indexed_paths = current
 
-    def _baseline_new_indexed_paths(
+    def _baseline_new_paths(
         self,
         candidates: tuple[_CandidateFile, ...],
-        date_paths: set[Path],
     ) -> None:
         baselined: list[_CandidateFile] = []
         now = self._monotonic_time()
         for candidate in candidates:
             path = candidate.path
-            if path in date_paths or path not in self._indexed_paths or path in self._cursors:
+            if path in self._cursors:
+                continue
+            if not self._verify_candidate_snapshot(candidate):
                 continue
             self._cursors[path] = _FileCursor(
                 offset=candidate.stat.st_size,
@@ -620,6 +696,25 @@ class CodexSessionLogWatcher:
             baselined.append(candidate)
         if baselined:
             self._recover_recent_running_turns(tuple(baselined))
+
+    @staticmethod
+    def _first_session_id(data: bytes) -> str | None:
+        lines = data.split(b"\n")
+        if data and not data.endswith(b"\n"):
+            lines.pop()
+        for raw_line in lines:
+            if not raw_line:
+                continue
+            try:
+                document = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(document, dict) or document.get("type") != "session_meta":
+                continue
+            payload = document.get("payload")
+            if isinstance(payload, dict) and _bounded_id(payload.get("session_id")):
+                return str(payload["session_id"])
+        return None
 
     def _date_candidate_files(self) -> tuple[_CandidateFile, ...]:
         current = self._today()
@@ -703,6 +798,20 @@ class CodexSessionLogWatcher:
                 return stream.read(read_limit)
         except (OSError, ValueError):
             return None
+
+    def _verify_candidate_snapshot(self, candidate: _CandidateFile) -> bool:
+        path = candidate.path
+        if _is_link_like(path) or not _path_chain_is_safe(self.root, path):
+            return False
+        try:
+            with path.open("rb") as stream:
+                opened = os.fstat(stream.fileno())
+                return stat_module.S_ISREG(opened.st_mode) and os.path.samestat(
+                    candidate.stat,
+                    opened,
+                )
+        except (OSError, ValueError):
+            return False
 
     def _bound_recovered_turns(self) -> tuple[PetEvent, ...]:
         overflow = len(self._recovered_turns) - self._max_files

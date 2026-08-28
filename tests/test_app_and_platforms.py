@@ -3055,6 +3055,14 @@ def test_runtime_incompatible_log_stops_fast_poll_and_retries_discovery(
     manager = SettingsManager(tmp_path / "settings.json")
     manager.save(Settings(codex_link_enabled=True, work_countdown_enabled=False))
     create_sample_pet(tmp_path / "pets" / "sample_pet")
+    day = home / "sessions" / "2026" / "08" / "20"
+    day.mkdir(parents=True)
+    path = day / "rollout-bad.jsonl"
+    path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"session_id": "session-1"}})
+        + "\n",
+        encoding="utf-8",
+    )
     application = PetNest(
         pets_root=tmp_path / "pets",
         settings_manager=manager,
@@ -3064,15 +3072,11 @@ def test_runtime_incompatible_log_stops_fast_poll_and_retries_discovery(
     )
     qtbot.addWidget(application.window)
     application.start()
-    day = home / "sessions" / "2026" / "08" / "20"
-    day.mkdir(parents=True)
-    (day / "rollout-bad.jsonl").write_text(
-        json.dumps({"type": "session_meta", "payload": {"session_id": "session-1"}})
-        + "\n"
-        + json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
-        + "\n",
-        encoding="utf-8",
-    )
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps({"type": "event_msg", "payload": {"type": "task_started"}})
+            + "\n"
+        )
 
     application._poll_codex_logs()
 

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from petnest.core.codex_link import CodexLinkCoordinator
 from petnest.core.codex_session_log import CodexSessionLogWatcher
 
 
@@ -93,6 +94,117 @@ def test_start_baselines_existing_file_without_replaying_history(tmp_path: Path)
         "session_id": "session-1",
         "turn_id": "turn-new",
     }
+
+
+def test_start_preserves_an_unfinished_last_line_until_it_is_completed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    session_id = "01a0437c-4699-7571-b916-d766c9198dea"
+    path = _day(root) / f"rollout-partial-{session_id}.jsonl"
+    complete = _meta(session_id) + _event("task_started", "turn-startup")
+    path.write_bytes(complete[:-5])
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+
+    watcher.start()
+    assert watcher.poll() == ()
+    with path.open("ab") as stream:
+        stream.write(complete[-5:])
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == [
+        "turn-startup"
+    ]
+
+
+def test_embedded_session_metadata_cannot_split_lifecycle_identity(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    file_session = "01a0437c-4699-7571-b916-d766c9198dea"
+    parent_session = "01a042d6-1dfa-7df2-bc26-56dace38139d"
+    path = _day(root) / f"rollout-fork-{file_session}.jsonl"
+    path.write_bytes(_meta(file_session))
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    watcher.start()
+    with path.open("ab") as stream:
+        stream.write(
+            _meta(parent_session)
+            + _event("task_started", "turn-fork")
+            + _meta(file_session)
+            + _event("task_complete", "turn-fork")
+        )
+
+    events = watcher.poll()
+    for event in events:
+        coordinator.consume(event)
+
+    assert [event.payload["session_id"] for event in events] == [
+        file_session,
+        file_session,
+    ]
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.count == 1
+
+
+def test_runtime_new_date_file_does_not_replay_completed_history(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
+    watcher.start()
+    session_id = "01a0437c-4699-7571-b916-d766c9198dea"
+    path = _day(root) / f"rollout-runtime-{session_id}.jsonl"
+    path.write_bytes(
+        _meta(session_id)
+        + _event("task_started", "turn-old", timestamp="2026-08-20T11:59:30Z")
+        + _event("task_complete", "turn-old", timestamp="2026-08-20T11:59:40Z")
+    )
+
+    assert watcher.poll() == ()
+
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "turn-new"))
+    assert [event.payload for event in watcher.poll()] == [
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": session_id,
+            "turn_id": "turn-new",
+        }
+    ]
+
+
+def test_runtime_new_date_file_recovers_only_recent_unfinished_turn(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
+    watcher.start()
+    file_session = "01a0437c-4699-7571-b916-d766c9198dea"
+    parent_session = "01a042d6-1dfa-7df2-bc26-56dace38139d"
+    path = _day(root) / f"rollout-runtime-{file_session}.jsonl"
+    path.write_bytes(
+        _meta(file_session)
+        + _meta(parent_session)
+        + _event("task_started", "turn-running")
+    )
+
+    assert [event.payload for event in watcher.poll()] == [
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": file_session,
+            "turn_id": "turn-running",
+        }
+    ]
+    assert watcher.poll() == ()
 
 
 def test_start_recovers_only_recent_unfinished_turn(tmp_path: Path) -> None:
@@ -453,6 +565,144 @@ def test_startup_recovery_budget_is_shared_across_latest_eight_files(tmp_path: P
     assert {str(event.payload["session_id"]) for event in events} == expected_sessions
 
 
+def test_runtime_baseline_tail_reads_share_the_recovery_budget(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        max_files=4,
+        max_line_bytes=4096,
+        startup_recovery_max_files=4,
+        startup_recovery_max_bytes=4096,
+    )
+    watcher.start()
+    for index in range(4):
+        session_id = f"0000000{index}-0000-0000-0000-00000000000{index}"
+        path = _day(root) / f"rollout-{session_id}.jsonl"
+        path.write_bytes(b"x" * 8192)
+    original_read = watcher._read_verified_candidate
+    read_bytes = [0]
+
+    def counted_read(*args: object, **kwargs: object) -> bytes | None:
+        result = original_read(*args, **kwargs)
+        if result is not None:
+            read_bytes[0] += len(result)
+        return result
+
+    monkeypatch.setattr(watcher, "_read_verified_candidate", counted_read)  # type: ignore[attr-defined]
+
+    assert watcher.poll() == ()
+    assert read_bytes[0] <= 4096
+
+
+def test_runtime_baseline_retries_nonempty_candidates_left_after_budget_exhaustion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY, max_files=3)
+    watcher.start()
+    oldest: Path | None = None
+    for index in range(3):
+        session_id = f"0000000{index}-0000-0000-0000-00000000000{index}"
+        path = _day(root) / f"rollout-{session_id}.jsonl"
+        path.write_bytes(_meta(session_id)[:-1])
+        modified_ns = (index + 1) * 1_000_000_000
+        os.utime(path, ns=(modified_ns, modified_ns))
+        if index == 0:
+            oldest = path
+    watcher._startup_recovery_max_bytes = 2
+
+    assert watcher.poll() == ()
+    assert oldest is not None
+    assert oldest not in watcher._cursors
+
+
+def test_runtime_baseline_preserves_partial_line_beyond_recovery_file_limit(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        max_files=9,
+        startup_recovery_max_files=8,
+        startup_recovery_max_bytes=64 * 1024,
+    )
+    watcher.start()
+    session_id = "00000000-0000-0000-0000-000000000000"
+    partial_path = _day(root) / f"rollout-partial-{session_id}.jsonl"
+    complete = _meta(session_id) + _event("task_started", "turn-partial")
+    partial_path.write_bytes(complete[:-5])
+    os.utime(partial_path, ns=(1_000_000_000, 1_000_000_000))
+    for index in range(1, 9):
+        other_id = f"0000000{index}-0000-0000-0000-00000000000{index}"
+        path = _day(root) / f"rollout-{other_id}.jsonl"
+        path.write_bytes(_meta(other_id))
+        modified_ns = (index + 1) * 1_000_000_000
+        os.utime(path, ns=(modified_ns, modified_ns))
+
+    assert watcher.poll() == ()
+    with partial_path.open("ab") as stream:
+        stream.write(complete[-5:])
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == [
+        "turn-partial"
+    ]
+
+
+def test_runtime_baseline_preserves_partial_line_when_recovery_is_disabled(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        startup_recovery_window_seconds=0,
+    )
+    watcher.start()
+    session_id = "01a0437c-4699-7571-b916-d766c9198dea"
+    path = _day(root) / f"rollout-partial-{session_id}.jsonl"
+    complete = _meta(session_id) + _event("task_started", "turn-disabled")
+    path.write_bytes(complete[:-5])
+
+    assert watcher.poll() == ()
+    with path.open("ab") as stream:
+        stream.write(complete[-5:])
+
+    assert [event.payload["turn_id"] for event in watcher.poll()] == [
+        "turn-disabled"
+    ]
+
+
+def test_recovery_uses_first_session_metadata_when_filename_has_no_uuid(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "sessions"
+    path = _day(root) / "rollout-without-id.jsonl"
+    path.write_bytes(
+        _meta("session-file")
+        + _line("event_msg", {"type": "future_event", "turn_id": "padding"}) * 80
+        + _meta("session-parent")
+        + _event("task_started", "turn-running")
+    )
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+        startup_recovery_max_bytes=4096,
+        max_line_bytes=1024,
+    )
+
+    watcher.start()
+
+    assert [event.payload["session_id"] for event in watcher.poll()] == [
+        "session-file"
+    ]
+
+
 def test_startup_baseline_does_not_pre_read_session_metadata(
     tmp_path: Path,
     monkeypatch: object,
@@ -529,15 +779,16 @@ def test_reconfigure_home_stops_old_source_and_baselines_new_history(tmp_path: P
 
 def test_new_file_maps_started_complete_and_aborted_without_content(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
+    path = _day(root) / "rollout-new.jsonl"
+    path.write_bytes(_meta("session-2"))
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    path = _day(root) / "rollout-new.jsonl"
-    path.write_bytes(
-        _meta("session-2")
-        + _event("task_started", "turn-1", prompt="private")
-        + _event("task_complete", "turn-1", last_agent_message="private")
-        + _event("turn_aborted", "turn-2", reason="private")
-    )
+    with path.open("ab") as stream:
+        stream.write(
+            _event("task_started", "turn-1", prompt="private")
+            + _event("task_complete", "turn-1", last_agent_message="private")
+            + _event("turn_aborted", "turn-2", reason="private")
+        )
 
     events = watcher.poll()
 
@@ -556,8 +807,9 @@ def test_partial_last_line_waits_for_completion(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    path = _day(root) / "rollout-partial.jsonl"
-    complete = _meta("session-3") + _event("task_started", "turn-1")
+    session_id = "01a0437c-4699-7571-b916-d766c9198dea"
+    path = _day(root) / f"rollout-partial-{session_id}.jsonl"
+    complete = _meta(session_id) + _event("task_started", "turn-1")
     path.write_bytes(complete[:-5])
 
     assert watcher.poll() == ()
@@ -568,15 +820,16 @@ def test_partial_last_line_waits_for_completion(tmp_path: Path) -> None:
 
 def test_malformed_and_unknown_lines_are_ignored(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
+    path = _day(root) / "rollout-broken.jsonl"
+    path.write_bytes(_meta("session-4"))
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    path = _day(root) / "rollout-broken.jsonl"
-    path.write_bytes(
-        _meta("session-4")
-        + b"{ broken\n"
-        + _line("event_msg", {"type": "future_event", "turn_id": "turn-x"})
-        + _event("task_started", "turn-ok")
-    )
+    with path.open("ab") as stream:
+        stream.write(
+            b"{ broken\n"
+            + _line("event_msg", {"type": "future_event", "turn_id": "turn-x"})
+            + _event("task_started", "turn-ok")
+        )
 
     events = watcher.poll()
 
@@ -587,8 +840,15 @@ def test_malformed_and_unknown_lines_are_ignored(tmp_path: Path) -> None:
 def test_file_truncation_resets_reader_without_crashing(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     path = _day(root) / "rollout-truncate.jsonl"
-    path.write_bytes(_meta("session-5") + _event("task_started", "turn-old"))
-    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    path.write_bytes(
+        _meta("session-5")
+        + _event("task_started", "turn-old", timestamp="2026-08-20T11:57:00Z")
+    )
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
     watcher.start()
 
     path.write_bytes(_meta("session-5") + _event("task_started", "turn-new"))
@@ -597,16 +857,50 @@ def test_file_truncation_resets_reader_without_crashing(tmp_path: Path) -> None:
     assert [event.payload["turn_id"] for event in events] == ["turn-new"]
 
 
+def test_file_rebaseline_aborts_the_previous_recovered_turn(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    session_id = "01a0437c-4699-7571-b916-d766c9198dea"
+    path = _day(root) / f"rollout-replaced-{session_id}.jsonl"
+    path.write_bytes(
+        _meta(session_id)
+        + _line("event_msg", {"type": "future_event", "turn_id": "padding"}) * 8
+        + _event("task_started", "turn-old")
+    )
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        utc_now=lambda: datetime(2026, 8, 20, 12, 0, 20, tzinfo=UTC),
+    )
+    watcher.start()
+    assert [event.payload["turn_id"] for event in watcher.poll()] == ["turn-old"]
+
+    path.write_bytes(
+        _meta(session_id)
+        + _event("task_started", "turn-finished")
+        + _event("task_complete", "turn-finished", timestamp="2026-08-20T12:00:10Z")
+    )
+
+    assert [event.payload for event in watcher.poll()] == [
+        {
+            "hook_event_name": "TurnAborted",
+            "session_id": session_id,
+            "turn_id": "turn-old",
+        }
+    ]
+
+
 def test_today_and_previous_day_are_scanned_but_older_days_are_not(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
+    yesterday = _day(root, date(2026, 8, 19)) / "rollout-yesterday.jsonl"
+    yesterday.write_bytes(_meta("session-y"))
+    old = _day(root, date(2026, 8, 18)) / "rollout-old.jsonl"
+    old.write_bytes(_meta("session-o"))
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    (_day(root, date(2026, 8, 19)) / "rollout-yesterday.jsonl").write_bytes(
-        _meta("session-y") + _event("task_started", "turn-y")
-    )
-    (_day(root, date(2026, 8, 18)) / "rollout-old.jsonl").write_bytes(
-        _meta("session-o") + _event("task_started", "turn-o")
-    )
+    with yesterday.open("ab") as stream:
+        stream.write(_event("task_started", "turn-y"))
+    with old.open("ab") as stream:
+        stream.write(_event("task_started", "turn-o"))
 
     events = watcher.poll()
 
@@ -650,13 +944,15 @@ def test_stop_clears_offsets_and_disables_polling(tmp_path: Path) -> None:
 
 def test_unrecognized_session_metadata_degrades_to_incompatible(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
+    path = _day(root) / "rollout-future.jsonl"
+    path.write_bytes(b"")
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    path = _day(root) / "rollout-future-01a01dec-4d89-7fc3-b977-4d69ae338466.jsonl"
-    path.write_bytes(
-        _line("session_meta", {"future_session_key": "session-future"})
-        + _event("task_started", "turn-future")
-    )
+    with path.open("ab") as stream:
+        stream.write(
+            _line("session_meta", {"future_session_key": "session-future"})
+            + _event("task_started", "turn-future")
+        )
 
     assert watcher.poll() == ()
     assert watcher.status.state == "incompatible"
@@ -664,13 +960,12 @@ def test_unrecognized_session_metadata_degrades_to_incompatible(tmp_path: Path) 
 
 def test_status_event_without_turn_id_degrades_to_incompatible(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
+    path = _day(root) / "rollout-missing-turn.jsonl"
+    path.write_bytes(_meta("session-missing-turn"))
     watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
     watcher.start()
-    path = _day(root) / "rollout-missing-turn.jsonl"
-    path.write_bytes(
-        _meta("session-missing-turn")
-        + _line("event_msg", {"type": "task_started"})
-    )
+    with path.open("ab") as stream:
+        stream.write(_line("event_msg", {"type": "task_started"}))
 
     assert watcher.poll() == ()
     assert watcher.status.state == "incompatible"
@@ -851,6 +1146,33 @@ def test_startup_recovery_rejects_file_swapped_after_safe_stat(
     assert watcher.poll() == ()
 
 
+def test_runtime_baseline_does_not_keep_cursor_when_snapshot_is_swapped(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    root = tmp_path / "sessions"
+    watcher = CodexSessionLogWatcher(root, today=lambda: TODAY)
+    watcher.start()
+    inside = _day(root) / "rollout-runtime-inside.jsonl"
+    outside = tmp_path / "runtime-outside.jsonl"
+    outside_data = _meta("session-outside") + _event(
+        "task_started", "turn-outside"
+    )
+    outside.write_bytes(outside_data)
+    inside.write_bytes(b"x" * len(outside_data))
+    original_open = Path.open
+
+    def swapped_open(target: Path, *args: object, **kwargs: object) -> object:
+        if target == inside and args and args[0] == "rb":
+            return original_open(outside, *args, **kwargs)
+        return original_open(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", swapped_open)  # type: ignore[attr-defined]
+
+    assert watcher.poll() == ()
+    assert inside not in watcher._cursors
+
+
 def test_indexed_old_file_is_discovered_at_runtime_and_incrementally_completes(
     tmp_path: Path,
 ) -> None:
@@ -944,14 +1266,16 @@ def test_index_failure_does_not_interrupt_date_based_watching(tmp_path: Path) ->
     root = tmp_path / "sessions"
     index = _FakeThreadIndex()
     index.error = RuntimeError("database is busy")
+    path = _day(root) / "rollout-date-fallback.jsonl"
+    path.write_bytes(_meta("session-date"))
     watcher = CodexSessionLogWatcher(
         root,
         today=lambda: TODAY,
         thread_index_factory=lambda _home: index,
     )
     watcher.start()
-    path = _day(root) / "rollout-date-fallback.jsonl"
-    path.write_bytes(_meta("session-date") + _event("task_started", "turn-date"))
+    with path.open("ab") as stream:
+        stream.write(_event("task_started", "turn-date"))
 
     assert [event.payload["turn_id"] for event in watcher.poll()] == ["turn-date"]
     assert watcher.status.state == "active"
