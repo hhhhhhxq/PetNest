@@ -12,6 +12,10 @@ import ntpath
 
 
 _STATE_DATABASE_NAME = re.compile(r"state_(\d+)\.sqlite\Z", re.IGNORECASE)
+_UUID_IDENTIFIER = re.compile(
+    r"(?<![0-9a-f])([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![0-9a-f])",
+    re.IGNORECASE,
+)
 _MAX_LIMIT = 4096
 _SQLITE_TIMEOUT_SECONDS = 0.05
 _IndexStatus = Literal["ready", "unavailable", "incompatible"]
@@ -50,6 +54,35 @@ class CodexThreadIndex:
             saw_incompatible = True
         self._last_status = "incompatible" if saw_incompatible else "unavailable"
         return ()
+
+    def resolve_thread_id(self, candidate_id: str) -> str | None:
+        """Resolve a callback/session identifier to Desktop's canonical thread ID.
+
+        Resumed Desktop rollouts can include a second UUID in the rollout filename.
+        Some callback producers report that rollout identifier instead of the stable
+        thread ID stored in the ``threads`` table.  Resolve both forms without
+        opening or parsing conversation bodies.
+        """
+        if not isinstance(candidate_id, str) or not (0 < len(candidate_id) <= 200):
+            return None
+        if not _path_chain_is_safe(self._home.parent, self._home):
+            self._last_status = "unavailable"
+            return None
+        if not _path_chain_is_safe(self._home, self._sessions) or not self._sessions.is_dir():
+            self._last_status = "unavailable"
+            return None
+        saw_incompatible = False
+        for database in self._candidate_databases():
+            status, thread_id = self._resolve_database_thread_id(database, candidate_id)
+            if status == "unavailable":
+                self._last_status = "unavailable"
+                return None
+            if status == "ready":
+                self._last_status = "ready"
+                return thread_id
+            saw_incompatible = True
+        self._last_status = "incompatible" if saw_incompatible else "unavailable"
+        return None
 
     def _candidate_databases(self) -> tuple[Path, ...]:
         try:
@@ -114,6 +147,64 @@ class CodexThreadIndex:
                 connection.close()
         except (OSError, sqlite3.Error, ValueError):
             return "unavailable", ()
+
+    def _resolve_database_thread_id(
+        self, database: Path, candidate_id: str
+    ) -> tuple[Literal["incompatible", "ready", "unavailable"], str | None]:
+        if not _sqlite_read_only_preflight(self._home, database):
+            return "unavailable", None
+        try:
+            connection = sqlite3.connect(
+                f"{database.as_uri()}?mode=ro",
+                uri=True,
+                timeout=_SQLITE_TIMEOUT_SECONDS,
+            )
+            try:
+                connection.execute("PRAGMA query_only=ON")
+                columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(threads)")
+                }
+                timestamp_column = (
+                    "updated_at_ms"
+                    if "updated_at_ms" in columns
+                    else "updated_at"
+                    if "updated_at" in columns
+                    else None
+                )
+                if timestamp_column is None or not {"id", "rollout_path"}.issubset(columns):
+                    return "incompatible", None
+                exact = connection.execute(
+                    "SELECT id FROM threads WHERE id = ? LIMIT 1",
+                    (candidate_id,),
+                ).fetchone()
+                if exact is not None and isinstance(exact[0], str) and exact[0]:
+                    return "ready", exact[0]
+                if _UUID_IDENTIFIER.fullmatch(candidate_id) is None:
+                    return "ready", None
+                rows = connection.execute(
+                    "SELECT id, rollout_path FROM threads "
+                    f'ORDER BY "{timestamp_column}" DESC, id DESC LIMIT ?',
+                    (_MAX_LIMIT,),
+                )
+                expected = candidate_id.casefold()
+                for thread_id, rollout_path in rows:
+                    if not isinstance(thread_id, str) or not thread_id:
+                        continue
+                    path = self._safe_rollout_path(rollout_path)
+                    if path is None:
+                        continue
+                    identifiers = {
+                        match.group(1).casefold()
+                        for match in _UUID_IDENTIFIER.finditer(path.stem)
+                    }
+                    if expected in identifiers:
+                        return "ready", thread_id
+                return "ready", None
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error, ValueError):
+            return "unavailable", None
 
     def _safe_rollout_path(self, value: object) -> Path | None:
         if not isinstance(value, str) or not value:

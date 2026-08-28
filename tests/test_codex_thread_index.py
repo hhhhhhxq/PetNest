@@ -75,6 +75,40 @@ def test_uses_latest_compatible_database_for_an_old_rollout_path(tmp_path: Path)
     assert index.last_status == "ready"
 
 
+def test_resolves_rollout_suffix_identifier_to_canonical_thread_id(tmp_path: Path) -> None:
+    thread_id = "01a04792-35f6-7833-b686-032b645972e3"
+    rollout_id = "01a04799-9b90-71d2-816e-659670a7ccd3"
+    rollout = _session_file(
+        tmp_path,
+        f"rollout-2026-08-28T17-00-44-{thread_id}_{rollout_id}.jsonl",
+    )
+    _create_database(tmp_path, 1, rows=[(thread_id, str(rollout), 10)])
+
+    index = CodexThreadIndex(tmp_path)
+
+    assert index.resolve_thread_id(rollout_id) == thread_id
+    assert index.last_status == "ready"
+
+
+def test_resolve_thread_id_accepts_an_exact_canonical_id(tmp_path: Path) -> None:
+    thread_id = "01a04792-35f6-7833-b686-032b645972e3"
+    rollout = _session_file(tmp_path, f"rollout-{thread_id}.jsonl")
+    _create_database(tmp_path, 1, rows=[(thread_id, str(rollout), 10)])
+
+    assert CodexThreadIndex(tmp_path).resolve_thread_id(thread_id) == thread_id
+
+
+def test_resolve_thread_id_does_not_guess_from_partial_or_unknown_values(tmp_path: Path) -> None:
+    thread_id = "01a04792-35f6-7833-b686-032b645972e3"
+    rollout = _session_file(tmp_path, f"rollout-{thread_id}.jsonl")
+    _create_database(tmp_path, 1, rows=[(thread_id, str(rollout), 10)])
+
+    index = CodexThreadIndex(tmp_path)
+
+    assert index.resolve_thread_id("01a04792") is None
+    assert index.resolve_thread_id("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") is None
+
+
 def test_skips_newer_database_with_incompatible_schema(tmp_path: Path) -> None:
     rollout = _session_file(tmp_path)
     _create_database(tmp_path, 1, rows=[("usable", str(rollout), 10)])

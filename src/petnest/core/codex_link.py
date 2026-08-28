@@ -66,6 +66,7 @@ class CodexLinkSnapshot:
     count: int = 0
     unread_review_count: int = 0
     message: str = ""
+    target_session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +236,7 @@ class CodexLinkCoordinator:
             self._remember_completed_session_tombstone(session_id)
             task = _CodexTask(
                 "review",
-                session_id in self._unread_sessions,
+                True,
                 True,
             )
         elif hook_name == "PermissionRequest":
@@ -297,6 +298,25 @@ class CodexLinkCoordinator:
                     self._active_turns.pop(key[0], None)
         if removed:
             self._emit_snapshot()
+
+    def dismiss_review(self, session_id: str) -> bool:
+        """只确认一个会话的 review，保留其他任务的未读状态。"""
+        normalized = _bounded_identifier(session_id)
+        if normalized is None:
+            return False
+        removed = normalized in self._unread_sessions or normalized in self._completed_sessions
+        self._unread_sessions.discard(normalized)
+        self._completed_sessions.pop(normalized, None)
+        for key, task in tuple(self._tasks.items()):
+            if key[0] != normalized or task.state != "review":
+                continue
+            removed = True
+            del self._tasks[key]
+            if self._active_turns.get(normalized) == key[1]:
+                self._active_turns.pop(normalized, None)
+        if removed:
+            self._emit_snapshot()
+        return removed
 
     def clear(self) -> None:
         """关闭联动时清空所有任务并恢复宠物上下文。"""
@@ -388,7 +408,24 @@ class CodexLinkCoordinator:
             count,
             unread,
             _snapshot_message(message_state, message_count),
+            self._target_session_id(message_state),
         )
+
+    def _target_session_id(self, display_state: str) -> str | None:
+        """选择气泡点击时应打开的会话；完成任务按最近完成优先。"""
+        if display_state == "review":
+            review_sessions = {
+                key[0]
+                for key, task in self._tasks.items()
+                if task.state == "review"
+            }
+            for session_id, _turn_id in reversed(self._completed_turn_order):
+                if session_id in review_sessions:
+                    return session_id
+        for (session_id, _turn_id), task in reversed(tuple(self._tasks.items())):
+            if task.state == display_state:
+                return session_id
+        return None
 
 
 class CodexHookManager:

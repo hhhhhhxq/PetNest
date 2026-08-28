@@ -232,7 +232,7 @@ def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
     assert coordinator.consume(_hook("Stop"))
     assert coordinator.snapshot.state == "review"
     assert coordinator.snapshot.message == "Codex 任务已完成，等待查看"
-    assert coordinator.snapshot.unread_review_count == 0
+    assert coordinator.snapshot.unread_review_count == 1
     assert published[-1].event_name == "agent.success"
     assert snapshots[-1] == coordinator.snapshot
 
@@ -455,7 +455,7 @@ def test_delayed_duplicate_stop_after_animation_does_not_replay_review() -> None
     assert coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
 
     assert coordinator.snapshot.state == "idle"
-    assert coordinator.snapshot.unread_review_count == 0
+    assert coordinator.snapshot.unread_review_count == 1
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
 
 
@@ -572,7 +572,7 @@ def test_marking_reviews_read_keeps_review_state_but_clears_unread_count() -> No
     assert coordinator.snapshot.unread_review_count == 0
 
 
-def test_foreground_completion_returns_idle_after_review_animation_without_badge() -> None:
+def test_foreground_completion_keeps_local_unread_badge_after_review_animation() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)
     coordinator.consume(_log("Stop"))
@@ -580,7 +580,8 @@ def test_foreground_completion_returns_idle_after_review_animation_without_badge
     coordinator.finish_review_animation()
 
     assert coordinator.snapshot.state == "idle"
-    assert coordinator.snapshot.unread_review_count == 0
+    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.target_session_id == "s1"
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
 
 
@@ -608,7 +609,7 @@ def test_thread_unread_before_stop_is_applied_when_completion_arrives() -> None:
     assert coordinator.snapshot.unread_review_count == 1
 
 
-def test_late_unread_after_completion_correlation_ttl_is_ignored() -> None:
+def test_local_completion_unread_survives_correlation_ttl() -> None:
     now = [0.0]
     coordinator = CodexLinkCoordinator(
         lambda _event: None,
@@ -622,7 +623,8 @@ def test_late_unread_after_completion_correlation_ttl_is_ignored() -> None:
     coordinator.consume(_log("ThreadUnread", session="foreground", turn="ignored"))
 
     assert coordinator.snapshot.state == "idle"
-    assert coordinator.snapshot.unread_review_count == 0
+    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.target_session_id == "foreground"
 
 
 def test_two_confirmed_background_completions_report_two_unread() -> None:
@@ -637,7 +639,22 @@ def test_two_confirmed_background_completions_report_two_unread() -> None:
     assert coordinator.snapshot.state == "idle"
     assert coordinator.snapshot.unread_review_count == 2
     assert coordinator.snapshot.message == "2 个 Codex 任务已完成，等待查看"
+    assert coordinator.snapshot.target_session_id == "second"
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
+
+
+def test_dismissing_target_review_keeps_other_unread_task() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    for session, turn in (("first", "t1"), ("second", "t2")):
+        coordinator.consume(_log("Stop", session=session, turn=turn))
+        coordinator.consume(_log("ThreadUnread", session=session, turn="ignored"))
+    coordinator.finish_review_animation()
+
+    assert coordinator.dismiss_review("second")
+
+    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.target_session_id == "first"
+    assert not coordinator.dismiss_review("missing")
 
 
 def test_dismissing_reviews_removes_review_tasks_and_restores_idle() -> None:

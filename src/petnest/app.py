@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from threading import Lock, Thread, current_thread
 from time import monotonic
+from urllib.parse import quote
 import uuid
 
 from PySide6.QtCore import QObject, QPoint, QRect, QTimer, QUrl, Qt, Signal
@@ -57,6 +58,7 @@ from petnest.core.codex_discovery import (
 )
 from petnest.core.codex_plugin import CodexPluginManager, CodexPluginStatus
 from petnest.core.codex_session_log import CodexSessionLogWatcher
+from petnest.core.codex_thread_index import CodexThreadIndex
 from petnest.core.event_bus import EventBus
 from petnest.core.lan_service import LanInteractionService
 from petnest.core.lan_firewall_advisor import LanFirewallAdvisorCoordinator
@@ -1360,9 +1362,23 @@ class PetNest:
             self.window.clear_codex_status()
 
     def _activate_codex_status(self) -> None:
+        snapshot = self.codex_link.snapshot
+        session_id = snapshot.target_session_id
+        if session_id is None:
+            self.window.clear_codex_status()
+            return
+        thread_id = _resolve_codex_thread_id(self.codex_hook_manager.codex_home, session_id)
+        LOGGER.info("Codex 气泡跳转：callback=%s thread=%s", session_id, thread_id)
+        if not _open_codex_thread(thread_id):
+            # 气泡会在发出 activated 信号前自行隐藏；协议未注册或系统拒绝
+            # 打开时恢复原提示，避免一次失败点击丢失未读状态。
+            self._handle_codex_snapshot(snapshot)
+            return
         self.codex_review_animation_timer.stop()
-        self.codex_link.dismiss_reviews()
-        self.window.clear_codex_status()
+        if not self.codex_link.dismiss_review(session_id):
+            # waiting/failed 也使用同一个可点击气泡；打开对应任务后只隐藏
+            # 当前提示，任务的后续状态事件仍可再次刷新它。
+            self.window.clear_codex_status()
 
     def _dismiss_codex_status(self) -> None:
         self.codex_review_animation_timer.stop()
@@ -2934,39 +2950,22 @@ class PetNest:
         return _scaled_timeline(source, target_total)
 
 
-def _bring_codex_window_to_front() -> bool:
-    """只尝试前置现有 Codex 窗口，不启动程序或打开不稳定深链。"""
-    if sys.platform != "win32":
+def _codex_thread_url(session_id: str) -> QUrl:
+    """生成官方 canonical 任务深链，并把任务 ID 编码为单个路径段。"""
+    encoded_session_id = quote(session_id, safe="")
+    return QUrl.fromEncoded(f"codex://threads/{encoded_session_id}".encode("ascii"))
+
+
+def _resolve_codex_thread_id(codex_home: Path, session_id: str) -> str:
+    """把 Hook/rollout 标识转换为桌面端 canonical thread ID。"""
+    return CodexThreadIndex(codex_home).resolve_thread_id(session_id) or session_id
+
+
+def _open_codex_thread(session_id: str) -> bool:
+    """通过系统 URL 协议在 macOS 或 Windows Codex 中打开指定任务。"""
+    if not isinstance(session_id, str) or not session_id:
         return False
-    try:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        found: list[int] = []
-        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-        @callback_type
-        def visit(window_handle: int, _parameter: int) -> bool:
-            if not user32.IsWindowVisible(window_handle):
-                return True
-            length = user32.GetWindowTextLengthW(window_handle)
-            if length <= 0:
-                return True
-            title = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(window_handle, title, length + 1)
-            if "codex" in title.value.casefold():
-                found.append(window_handle)
-                return False
-            return True
-
-        user32.EnumWindows(visit, 0)
-        if not found:
-            return False
-        user32.ShowWindow(found[0], 9)  # SW_RESTORE
-        return bool(user32.SetForegroundWindow(found[0]))
-    except (AttributeError, OSError):
-        LOGGER.debug("无法前置 Codex 窗口", exc_info=True)
-        return False
+    return bool(QDesktopServices.openUrl(_codex_thread_url(session_id)))
 
 
 def _pet_context_menu_stylesheet(palette: QPalette) -> str:

@@ -21,7 +21,7 @@ from PIL import Image
 from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox
 from PySide6.QtCore import QObject, QPoint, QRect, QThread, Qt, Signal
 
-from petnest.app import PetNest, effect_directories_for, resource_directory_for_cache
+from petnest.app import PetNest, _codex_thread_url, effect_directories_for, resource_directory_for_cache
 from petnest.core.animation_action_synchronizer import AnimationActionSyncError
 from petnest.core.app_update import AppUpdateCheckResult
 from petnest.core.cursor_style_catalog import CursorStyleCatalog
@@ -2286,7 +2286,7 @@ def test_codex_review_finishes_back_to_active_keyboard(
 
     assert application.work_activity.effective_event == "agent.working"
     assert application.window.current_action == application.package.bindings.get("agent.success", "review")
-    assert application.codex_link.snapshot.unread_review_count == 0
+    assert application.codex_link.snapshot.unread_review_count == 1
     application.shutdown()
 
 
@@ -2992,8 +2992,11 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     )
     application._poll_codex_logs()
     assert dialog.codex_link_runtime_label.text() == "任务已完成"
-    assert application.codex_link.snapshot.unread_review_count == 0
-    assert application.window.codex_status_text is None
+    assert application.codex_link.snapshot.unread_review_count == 1
+    if sys.platform == "darwin":
+        assert application.window.codex_status_text is None
+    else:
+        assert application.window.codex_status_text == "Codex 任务已完成，等待查看"
 
     watcher.events.append(
         PetEvent(
@@ -3237,11 +3240,51 @@ def test_default_codex_log_watcher_honors_codex_home_override(
     application.shutdown()
 
 
-def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activation(
+def test_codex_thread_url_encodes_session_id_as_one_path_segment() -> None:
+    assert bytes(_codex_thread_url("thread /?#").toEncoded()).decode("ascii") == (
+        "codex://threads/thread%20%2F%3F%23"
+    )
+
+
+def test_clicking_codex_bubble_opens_exact_thread_and_marks_only_it_read(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    calls: list[bool] = []
-    monkeypatch.setattr("petnest.app._bring_codex_window_to_front", lambda: calls.append(True) or True)
+    calls: list[str] = []
+    monkeypatch.setattr("petnest.app._open_codex_thread", lambda session_id: calls.append(session_id) or True)
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(codex_link_enabled=True))
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=settings_manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    for session_id in ("first", "second"):
+        application.codex_link.consume(
+            PetEvent(
+                "codex.hook",
+                source="codex-log",
+                payload={"hook_event_name": "Stop", "session_id": session_id, "turn_id": "t"},
+            )
+        )
+
+    assert application.window.codex_status_bubble.isVisible()
+    assert application.codex_link.snapshot.unread_review_count == 2
+
+    application._activate_codex_status()
+
+    assert calls == ["second"]
+    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.codex_link.snapshot.target_session_id == "first"
+    assert application.window.codex_status_bubble.isVisible()
+    application.shutdown()
+
+
+def test_failed_codex_deep_link_keeps_unread_bubble(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("petnest.app._open_codex_thread", lambda _session_id: False)
     create_sample_pet(tmp_path / "pets" / "sample_pet")
     settings_manager = SettingsManager(tmp_path / "settings.json")
     settings_manager.save(Settings(codex_link_enabled=True))
@@ -3255,15 +3298,15 @@ def test_clicking_codex_bubble_only_marks_read_without_title_based_window_activa
         PetEvent(
             "codex.hook",
             source="codex-log",
-            payload={"hook_event_name": "Stop", "session_id": "s", "turn_id": "t"},
+            payload={"hook_event_name": "Stop", "session_id": "session", "turn_id": "turn"},
         )
     )
 
     application._activate_codex_status()
 
-    assert application.codex_link.snapshot.state == "idle"
-    assert application.codex_link.snapshot.unread_review_count == 0
-    assert calls == []
+    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.codex_link.snapshot.target_session_id == "session"
+    assert application.window.codex_status_bubble.isVisible()
     application.shutdown()
 
 
