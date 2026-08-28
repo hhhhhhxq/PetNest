@@ -293,9 +293,11 @@ def test_start_syncs_tray_visibility_label_after_showing_pet(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(work_countdown_enabled=False))
     application = PetNest(
         pets_root=tmp_path / "pets",
-        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        settings_manager=settings_manager,
         enable_tray=True,
     )
     qtbot.addWidget(application.window)
