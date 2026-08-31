@@ -52,18 +52,32 @@ _NODES = {
 
 
 @lru_cache(maxsize=128)
-def lucide_icon(name: str, *, color: str = "#4c423d", size: int = 18) -> QIcon:
+def lucide_icon(
+    name: str,
+    *,
+    color: str = "#4c423d",
+    fill: str | None = None,
+    size: int = 18,
+) -> QIcon:
     nodes = _NODES.get(name)
     if nodes is None or size <= 0:
         return QIcon()
     safe_color = QColor(color)
     if not safe_color.isValid():
         return QIcon()
+    safe_fill = QColor(fill) if fill is not None else None
+    if safe_fill is not None and not safe_fill.isValid():
+        return QIcon()
+    fill_layer = (
+        f'<g fill="{safe_fill.name()}" stroke="none">{nodes}</g>'
+        if safe_fill is not None
+        else ""
+    )
     svg = (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" '
         f'width="{size}" height="{size}" fill="none" stroke="{safe_color.name()}" '
         'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-        f"{nodes}</svg>"
+        f"{fill_layer}{nodes}</svg>"
     )
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
     if not renderer.isValid():

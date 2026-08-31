@@ -1268,7 +1268,10 @@ def test_interaction_toolbox_hover_bridges_pet_leave_with_delayed_hide(
     QApplication.sendEvent(window, QEvent(QEvent.Type.Leave))
     assert not window._pet_hovered
     assert window._interaction_hide_timer.isActive()
-    assert window._interaction_hide_timer.interval() == 180
+    assert window._interaction_hide_timer.interval() == 700
+    assert window.interaction_toolbox.isVisible()
+
+    qtbot.wait(250)
     assert window.interaction_toolbox.isVisible()
 
     window.interaction_toolbox.hover_changed.emit(True)
@@ -1276,6 +1279,7 @@ def test_interaction_toolbox_hover_bridges_pet_leave_with_delayed_hide(
     assert not window._interaction_hide_timer.isActive()
     assert window.interaction_toolbox.isVisible()
 
+    window._pet_hovered = False
     window.interaction_toolbox.hover_changed.emit(False)
     assert window._interaction_hide_timer.isActive()
     window._interaction_hide_timer.timeout.emit()

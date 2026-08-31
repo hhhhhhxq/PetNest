@@ -117,7 +117,7 @@ class PetWindow(QWidget):
         self._toolbox_hovered = False
         self._interaction_hide_timer = QTimer(self)
         self._interaction_hide_timer.setSingleShot(True)
-        self._interaction_hide_timer.setInterval(180)
+        self._interaction_hide_timer.setInterval(700)
         self._interaction_hide_timer.timeout.connect(self._hide_interaction_toolbox_if_unhovered)
         self.interaction_toolbox = InteractionItemToolbox(None)
         self.interaction_toolbox.set_items(self._interaction_items)
