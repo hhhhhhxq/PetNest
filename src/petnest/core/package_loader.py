@@ -6,7 +6,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from petnest.models import AnimationDefinition, Canvas, DisplaySettings, PetPackage
+from petnest.models import (
+    AnimationDefinition,
+    Canvas,
+    DisplaySettings,
+    InteractionItemDefinition,
+    PetPackage,
+)
 
 from .package_validator import PackageValidationError, PackageValidator
 
@@ -22,7 +28,12 @@ class PackageLoader:
         result = self._validator.validate(package_root)
         if not result.is_valid or result.config is None:
             raise PackageValidationError("；".join(result.errors))
-        return self._build_package(result.root, result.config, result.frames)
+        return self._build_package(
+            result.root,
+            result.config,
+            result.frames,
+            result.interaction_item_icons,
+        )
 
     def discover(self, pets_root: Path) -> list[PetPackage]:
         """扫描一层子目录，并忽略损坏或不完整的宠物包。"""
@@ -41,7 +52,12 @@ class PackageLoader:
         return packages
 
     @staticmethod
-    def _build_package(root: Path, config: dict[str, Any], frames: dict[str, tuple[Path, ...]]) -> PetPackage:
+    def _build_package(
+        root: Path,
+        config: dict[str, Any],
+        frames: dict[str, tuple[Path, ...]],
+        interaction_item_icons: dict[str, Path],
+    ) -> PetPackage:
         canvas_config = _mapping(config["canvas"])
         animations: dict[str, AnimationDefinition] = {}
         for name, raw_definition in _mapping(config["animations"]).items():
@@ -77,6 +93,10 @@ class PackageLoader:
             display=display,
             author=_optional_string(config.get("author")),
             description=_optional_string(config.get("description")),
+            interaction_items=_interaction_items(
+                config.get("interaction_items"),
+                interaction_item_icons,
+            ),
         )
 
 
@@ -116,3 +136,33 @@ def _animation_canvas(definition: Mapping[str, Any]) -> Canvas | None:
         return None
     canvas = _mapping(definition.get("canvas"))
     return Canvas(width=int(canvas["width"]), height=int(canvas["height"]))
+
+
+def _interaction_items(
+    configured_items: object,
+    approved_icons: Mapping[str, Path],
+) -> tuple[InteractionItemDefinition, ...]:
+    if not isinstance(configured_items, list):
+        return ()
+
+    items: list[InteractionItemDefinition] = []
+    seen: set[str] = set()
+    for raw_item in configured_items:
+        if not isinstance(raw_item, Mapping):
+            continue
+        identifier = raw_item.get("id")
+        if not isinstance(identifier, str) or identifier in seen:
+            continue
+        seen.add(identifier)
+        icon = approved_icons.get(identifier)
+        label = raw_item.get("label")
+        if icon is None or not isinstance(label, str):
+            continue
+        items.append(
+            InteractionItemDefinition(
+                identifier=identifier,
+                label=label.strip(),
+                icon=icon,
+            )
+        )
+    return tuple(items)

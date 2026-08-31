@@ -95,3 +95,30 @@ def test_loader_preserves_fullscreen_entrance_direction(tmp_path: Path) -> None:
 
     assert package.animations["work_finish_walk"].entrance_direction == "none"
     assert package.animations["idle"].entrance_direction == "right"
+
+
+def test_loader_only_builds_validator_approved_interaction_items(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "loaded-interaction-items",
+        interaction_items=[
+            {"id": "ball", "label": "  Ball  ", "icon": "items/ball.png"},
+            {"id": "missing", "label": "Missing", "icon": "items/missing.png"},
+        ],
+    )
+    _write_png(root / "items" / "ball.png")
+
+    package = PackageLoader().load(root)
+
+    assert len(package.interaction_items) == 1
+    item = package.interaction_items[0]
+    assert item.identifier == "ball"
+    assert item.label == "Ball"
+    assert item.icon == (root / "items" / "ball.png").resolve()
+
+
+def test_loader_uses_empty_interaction_items_for_legacy_packages(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "legacy-package")
+
+    package = PackageLoader().load(root)
+
+    assert package.interaction_items == ()

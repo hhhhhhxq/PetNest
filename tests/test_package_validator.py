@@ -9,9 +9,11 @@ import zlib
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
+from petnest.core import package_validator as package_validator_module
 from petnest.core.package_validator import PackageValidator
 
 
@@ -314,3 +316,236 @@ def test_missing_bound_animation_with_a_valid_fallback_does_not_emit_warning(tmp
 
     assert result.is_valid
     assert not result.warnings
+
+
+def test_interaction_items_isolate_duplicate_invalid_id_and_escaping_icon(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "interaction-items",
+        interaction_items=[
+            {"id": "ball", "label": " Ball ", "icon": "items/ball.png"},
+            {"id": "ball", "label": "Duplicate", "icon": "items/duplicate.png"},
+            {"id": "Bad ID", "label": "Invalid", "icon": "items/invalid.png"},
+            {"id": "wand", "label": "Wand", "icon": "../outside.png"},
+        ],
+    )
+    _write_png(root / "items" / "ball.png")
+    _write_png(root / "items" / "duplicate.png")
+    _write_png(root / "items" / "invalid.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.errors == []
+    assert result.interaction_item_icons == {"ball": (root / "items" / "ball.png").resolve()}
+    assert any("ball" in warning and "重复" in warning for warning in result.warnings)
+    assert any("Bad ID" in warning and "id" in warning.lower() for warning in result.warnings)
+    assert any("wand" in warning and "包目录之外" in warning for warning in result.warnings)
+
+
+def test_interaction_item_duplicate_id_is_reserved_before_icon_validation(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "duplicate-after-missing-icon",
+        interaction_items=[
+            {"id": "ball", "label": "Missing", "icon": "items/missing.png"},
+            {"id": "ball", "label": "Existing", "icon": "items/ball.png"},
+        ],
+    )
+    _write_png(root / "items" / "ball.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("ball" in warning and "不存在" in warning for warning in result.warnings)
+    assert any("ball" in warning and "重复" in warning for warning in result.warnings)
+
+
+def test_interaction_item_icons_require_alpha_and_safe_dimensions(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "bad-interaction-icons",
+        interaction_items=[
+            {"id": "opaque", "label": "Opaque", "icon": "items/opaque.png"},
+            {"id": "large", "label": "Large", "icon": "items/large.png"},
+        ],
+    )
+    _write_png(root / "items" / "opaque.png", alpha=False)
+    _write_png(root / "items" / "large.png", width=513, height=16)
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.errors == []
+    assert result.interaction_item_icons == {}
+    assert len(result.warnings) == 2
+    assert any("opaque" in warning and "透明通道" in warning for warning in result.warnings)
+    assert any("large" in warning and "512" in warning for warning in result.warnings)
+
+
+def test_interaction_item_icon_with_invalid_path_characters_is_isolated(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "invalid-icon-path",
+        interaction_items=[
+            {"id": "broken", "label": "Broken", "icon": "items/broken\x00.png"},
+        ],
+    )
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("broken" in warning and "路径" in warning for warning in result.warnings)
+
+
+def test_interaction_item_icon_rejects_non_png_content_with_png_suffix(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "disguised-icon",
+        interaction_items=[
+            {"id": "disguised", "label": "Disguised", "icon": "items/disguised.png"},
+        ],
+    )
+    icon = root / "items" / "disguised.png"
+    icon.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (16, 16)).save(icon, format="TIFF")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("disguised" in warning and "PNG" in warning for warning in result.warnings)
+
+
+def test_interaction_item_icon_rejects_oversized_header_before_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_package(
+        tmp_path / "oversized-icon-header",
+        interaction_items=[
+            {"id": "large", "label": "Large", "icon": "items/large.png"},
+        ],
+    )
+    _write_png(root / "items" / "large.png")
+    original_open = package_validator_module.Image.open
+
+    class OversizedImage:
+        format = "PNG"
+        size = (513, 16)
+
+        def __enter__(self) -> OversizedImage:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def load(self) -> None:
+            raise AssertionError("oversized icons must be rejected before pixel decoding")
+
+        def getbands(self) -> tuple[str, ...]:
+            return ("R", "G", "B", "A")
+
+    def open_image(path: object) -> object:
+        if Path(path) == (root / "items" / "large.png"):
+            return OversizedImage()
+        return original_open(path)
+
+    monkeypatch.setattr(package_validator_module.Image, "open", open_image)
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("large" in warning and "512" in warning for warning in result.warnings)
+
+
+def test_interaction_item_decompression_bomb_error_is_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_package(
+        tmp_path / "decompression-bomb-icon",
+        interaction_items=[
+            {"id": "bomb", "label": "Bomb", "icon": "items/bomb.png"},
+        ],
+    )
+    _write_png(root / "items" / "bomb.png")
+    original_open = package_validator_module.Image.open
+
+    def open_image(path: object) -> object:
+        if Path(path) == (root / "items" / "bomb.png"):
+            raise Image.DecompressionBombError("unsafe image dimensions")
+        return original_open(path)
+
+    monkeypatch.setattr(package_validator_module.Image, "open", open_image)
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("bomb" in warning and "无法读取" in warning for warning in result.warnings)
+
+
+def test_interaction_item_decompression_bomb_warning_as_error_is_isolated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_package(
+        tmp_path / "decompression-bomb-warning-icon",
+        interaction_items=[
+            {"id": "bomb", "label": "Bomb", "icon": "items/bomb.png"},
+        ],
+    )
+    _write_png(root / "items" / "bomb.png")
+    original_open = package_validator_module.Image.open
+
+    def open_image(path: object) -> object:
+        if Path(path) == (root / "items" / "bomb.png"):
+            raise Image.DecompressionBombWarning("unsafe image dimensions")
+        return original_open(path)
+
+    monkeypatch.setattr(package_validator_module.Image, "open", open_image)
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any("bomb" in warning and "无法读取" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("interaction_items", "warning_text"),
+    [
+        ({"id": "ball"}, "数组"),
+        ([{"id": "ball", "label": "   ", "icon": "items/ball.png"}], "label"),
+    ],
+)
+def test_invalid_interaction_item_shapes_are_warnings(
+    tmp_path: Path,
+    interaction_items: object,
+    warning_text: str,
+) -> None:
+    root = _write_package(tmp_path / "invalid-interaction-items", interaction_items=interaction_items)
+    _write_png(root / "items" / "ball.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert result.interaction_item_icons == {}
+    assert any(warning_text in warning for warning in result.warnings)
+
+
+def test_interaction_items_warns_and_only_reads_first_eight_entries(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "too-many-interaction-items",
+        interaction_items=[
+            {"id": f"item-{index}", "label": f"Item {index}", "icon": f"items/{index}.png"}
+            for index in range(9)
+        ],
+    )
+    for index in range(9):
+        _write_png(root / "items" / f"{index}.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert tuple(result.interaction_item_icons) == tuple(f"item-{index}" for index in range(8))
+    assert any("最多" in warning and "8" in warning for warning in result.warnings)

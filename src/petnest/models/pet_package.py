@@ -45,6 +45,15 @@ class AnimationDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class InteractionItemDefinition:
+    """宠物包声明的无动作语义互动道具。"""
+
+    identifier: str
+    label: str
+    icon: Path
+
+
+@dataclass(frozen=True, slots=True)
 class PetPackage:
     """已通过校验、可安全加载的宠物包。"""
 
@@ -59,3 +68,4 @@ class PetPackage:
     display: DisplaySettings = field(default_factory=DisplaySettings)
     author: str | None = None
     description: str | None = None
+    interaction_items: tuple[InteractionItemDefinition, ...] = field(default_factory=tuple)

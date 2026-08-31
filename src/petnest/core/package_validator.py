@@ -13,8 +13,11 @@ from PIL import Image, UnidentifiedImageError
 
 
 _NUMBER_PARTS = re.compile(r"(\d+)")
+_INTERACTION_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _REQUIRED_ANIMATION = "idle"
 _ENTRANCE_DIRECTIONS = {"left", "right", "none"}
+_MAX_INTERACTION_ITEMS = 8
+_MAX_INTERACTION_ICON_SIZE = 512
 MAX_TIMELINE_DURATION_MS = 2_147_483_647
 
 
@@ -31,6 +34,7 @@ class ValidationResult:
     warnings: list[str] = field(default_factory=list)
     config: dict[str, Any] | None = None
     frames: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+    interaction_item_icons: dict[str, Path] = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:
@@ -76,6 +80,7 @@ class PackageValidator:
         result.config = parsed
 
         self._validate_metadata(parsed, result)
+        self._validate_interaction_items(parsed.get("interaction_items"), root, result)
         canvas = self._validate_canvas(parsed, result)
         animations = parsed.get("animations")
         if not isinstance(animations, Mapping):
@@ -254,6 +259,122 @@ class PackageValidator:
                     )
         except (OSError, UnidentifiedImageError) as error:
             result.errors.append(f"动画 {animation_name} 的帧 {frame.name} 无法读取：{error}")
+
+    @staticmethod
+    def _validate_interaction_items(
+        configured_items: object,
+        root: Path,
+        result: ValidationResult,
+    ) -> None:
+        if configured_items is None:
+            return
+        if not isinstance(configured_items, list):
+            result.warnings.append("interaction_items 必须是数组，已忽略")
+            return
+        if len(configured_items) > _MAX_INTERACTION_ITEMS:
+            result.warnings.append(
+                f"interaction_items 最多读取 {_MAX_INTERACTION_ITEMS} 项，超出部分已忽略"
+            )
+
+        seen: set[str] = set()
+        for index, item in enumerate(configured_items[:_MAX_INTERACTION_ITEMS], start=1):
+            if not isinstance(item, Mapping):
+                result.warnings.append(f"互动道具第 {index} 项必须是对象，已忽略")
+                continue
+
+            identifier = item.get("id")
+            if not isinstance(identifier, str) or _INTERACTION_ITEM_ID.fullmatch(identifier) is None:
+                result.warnings.append(
+                    f"互动道具第 {index} 项的 id {identifier!r} 不合法，已忽略"
+                )
+                continue
+            if identifier in seen:
+                result.warnings.append(f"互动道具 {identifier} 的 id 重复，已忽略")
+                continue
+            seen.add(identifier)
+
+            label = item.get("label")
+            if not isinstance(label, str) or not 1 <= len(label.strip()) <= 40:
+                result.warnings.append(
+                    f"互动道具 {identifier} 的 label 去除首尾空白后长度必须为 1–40，已忽略"
+                )
+                continue
+
+            icon = PackageValidator._validate_interaction_item_icon(
+                identifier,
+                item.get("icon"),
+                root,
+                result,
+            )
+            if icon is not None:
+                result.interaction_item_icons[identifier] = icon
+
+    @staticmethod
+    def _validate_interaction_item_icon(
+        identifier: str,
+        configured_path: object,
+        root: Path,
+        result: ValidationResult,
+    ) -> Path | None:
+        if not isinstance(configured_path, str) or not configured_path.strip():
+            result.warnings.append(
+                f"互动道具 {identifier} 的 icon 必须是非空相对路径，已忽略"
+            )
+            return None
+
+        try:
+            candidate = Path(configured_path)
+            if candidate.is_absolute() or PureWindowsPath(configured_path).is_absolute():
+                result.warnings.append(
+                    f"互动道具 {identifier} 的 icon 路径必须位于包目录内，已忽略"
+                )
+                return None
+            resolved = (root / candidate).resolve()
+            if not resolved.is_relative_to(root):
+                result.warnings.append(
+                    f"互动道具 {identifier} 的 icon 路径逃逸到包目录之外，已忽略"
+                )
+                return None
+            if resolved.suffix.casefold() != ".png":
+                result.warnings.append(f"互动道具 {identifier} 的 icon 必须是 PNG 文件，已忽略")
+                return None
+            if not resolved.is_file():
+                result.warnings.append(f"互动道具 {identifier} 的 icon 文件不存在，已忽略")
+                return None
+        except (OSError, ValueError) as error:
+            result.warnings.append(
+                f"互动道具 {identifier} 的 icon 路径无法解析：{error}"
+            )
+            return None
+
+        try:
+            with Image.open(resolved) as image:
+                if image.format != "PNG":
+                    result.warnings.append(
+                        f"互动道具 {identifier} 的 icon 内容必须是 PNG，已忽略"
+                    )
+                    return None
+                if any(dimension > _MAX_INTERACTION_ICON_SIZE for dimension in image.size):
+                    result.warnings.append(
+                        f"互动道具 {identifier} 的 icon 宽高不能超过 {_MAX_INTERACTION_ICON_SIZE}，已忽略"
+                    )
+                    return None
+                image.load()
+                if "A" not in image.getbands():
+                    result.warnings.append(
+                        f"互动道具 {identifier} 的 icon 缺少透明通道，已忽略"
+                    )
+                    return None
+        except (
+            OSError,
+            ValueError,
+            UnidentifiedImageError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ) as error:
+            result.warnings.append(f"互动道具 {identifier} 的 icon 无法读取：{error}")
+            return None
+        return resolved
 
     @staticmethod
     def _validate_bindings(
