@@ -106,6 +106,8 @@ python tools/import_spritesheet.py path/to/spritesheet.webp --pet-id my_codex_pe
 pets/my_pet/
 ├─ pet.json
 ├─ preview.png
+├─ items/
+│  └─ feather.png
 └─ animations/
    ├─ idle/001.png
    └─ wave/001.png
@@ -121,9 +123,76 @@ pets/my_pet/
 | `display` | 默认/最小/最大缩放和 alpha 命中阈值。 |
 | `animations` | 动作名到 `path`、`fps`、`loop`、`next`、`priority`、`interruptible` 的映射；可选 `frame_durations_ms`（每帧毫秒数）和 `speed_multiplier`。 |
 | `bindings` | 事件到动作的映射，例如 `mouse.click` → `click`。 |
+| `interaction_items` | 可选的无语义互动道具列表；每项提供包内唯一的 `id`、显示用 `label` 和包内 RGBA PNG `icon`。 |
 | `fallbacks` | 动作缺失时按顺序尝试的替代动作，不能形成循环。 |
 
-新增动作只需把 PNG 帧放在新目录，并在 `animations` 中增加定义；如要由事件触发，再在 `bindings` 中增加映射。替换图片后使用托盘中的“重新加载当前宠物”，或重启应用。将验证通过的包放入 `pets/` 后即可在托盘“切换宠物”菜单选择。
+新增动作只需把 PNG 帧放在新目录，并在 `animations` 中增加定义；如要由事件触发，再在 `bindings` 中增加映射。下面的完整示例把普通宠物动作 `wave` 同时绑定到鼠标点击和互动道具 `feather`：
+
+```json
+{
+  "schema_version": 1,
+  "id": "my_pet",
+  "name": "My Pet",
+  "version": "1.0.0",
+  "canvas": {
+    "width": 256,
+    "height": 256
+  },
+  "display": {
+    "default_scale": 1.0,
+    "min_scale": 0.5,
+    "max_scale": 2.0,
+    "alpha_hit_test_threshold": 8
+  },
+  "animations": {
+    "idle": {
+      "path": "animations/idle",
+      "scope": "pet",
+      "fps": 8,
+      "loop": true,
+      "priority": 10,
+      "interruptible": true
+    },
+    "wave": {
+      "path": "animations/wave",
+      "scope": "pet",
+      "fps": 8,
+      "loop": false,
+      "next": "idle",
+      "priority": 50,
+      "interruptible": true
+    }
+  },
+  "interaction_items": [
+    {
+      "id": "feather",
+      "label": "羽毛棒",
+      "icon": "items/feather.png"
+    }
+  ],
+  "bindings": {
+    "mouse.click": "wave",
+    "interaction.item.feather": "wave"
+  },
+  "fallbacks": {
+    "wave": ["idle"]
+  }
+}
+```
+
+道具 ID 只是宠物包内的稳定标识，不代表食物、水、厕所或任何其他固定类别。同一个 ID 应触发什么效果完全由宠物作者决定，可以通过 `interaction.item.<id>` 绑定到 `animations` 中任意普通 `scope=pet` 动作。运行时只显示图标资源通过校验、且绑定能够解析到 `scope=pet` 动作的道具；如果当前宠物没有任何有效道具，悬停 launcher 和右键入口都不会显示。
+
+互动时，将鼠标悬停在宠物上会出现显式的道具盒入口；点击入口展开道具盒，然后按住某个道具，把它拖到宠物帧的非透明区域即可触发。这不是长按宠物，也不是拖着宠物来选择道具。跟随模式开启或“鼠标交互”关闭时，道具互动不可用。
+
+`interaction_items` 的约束如下：
+
+- 最多读取 8 项；超出部分会被忽略并产生 warning。
+- `id` 在包内必须唯一，长度为 1–64，只允许小写字母、数字、`_`、`-`，且首字符必须是小写字母或数字。
+- `label` 去除首尾空白后的长度必须为 1–40 个字符。
+- `icon` 必须是包内相对路径，文件扩展名和实际内容都必须是 PNG，必须带 alpha 通道，且宽、高均不能超过 512 像素。
+- 单项资源无效时只产生 warning 并隔离该项，不会使整个宠物包校验失败。
+
+替换图片后使用托盘中的“重新加载当前宠物”，或重启应用。将验证通过的包放入 `pets/` 后即可在托盘“切换宠物”菜单选择。
 
 可从示例开始：
 

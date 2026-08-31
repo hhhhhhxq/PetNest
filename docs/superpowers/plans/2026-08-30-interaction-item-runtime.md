@@ -16,15 +16,15 @@
 - 创建 `src/petnest/ui/interaction_item_toolbox.py`：独立的悬停入口、道具盘、拖放 MIME 数据和屏幕边界定位。
 - 创建 `tests/test_interaction_items.py`：覆盖事件命名、fallback、全屏动作排除和未来覆盖源接口。
 - 创建 `tests/test_interaction_item_toolbox.py`：覆盖道具按钮、MIME 数据、排序、展开收起和屏幕边界。
-- 创建 `tests/test_pingan_interaction_items.py`：使用真实平安宠物包验证四个默认道具、动画和绑定。
+- 本地验收平安宠物包的四个道具、动画和绑定；不创建依赖私人宠物资源的仓库测试。
 - 修改 `src/petnest/models/pet_package.py`：增加不可变道具定义和 `PetPackage.interaction_items`。
 - 修改 `src/petnest/core/package_validator.py`：把可选道具字段作为可隔离资源校验，记录合法图标路径。
 - 修改 `src/petnest/core/package_loader.py`：加载已经通过校验的道具定义。
 - 修改 `src/petnest/ui/pet_window.py`：接入 resolver、道具盒、Qt 拖放、透明像素命中、状态机和清理逻辑。
 - 修改 `src/petnest/app.py`：在宠物右键菜单加入按能力显示的“打开道具盒”。
 - 修改 `tests/test_package_validator.py`、`tests/test_package_loader.py`、`tests/test_pet_window.py`、`tests/test_app_and_platforms.py`：覆盖各层回归行为。
-- 修改 `pets/pingan/pet.json`：登记四个动作、四个无语义 ID 道具和动态事件绑定。
-- 创建 `pets/pingan/items/item_1.png` 至 `item_4.png`：四张透明统一风格道具图标。
+- 仅在 Git 排除的本地 `pets/pingan/` 中登记四个动作、四个无语义 ID 道具和动态事件绑定。
+- 仅在本地 `pets/pingan/items/` 中保留四张透明统一风格道具图标，不纳入提交或发布包。
 - 修改 `README.md`：说明可选 `interaction_items` 格式和 `interaction.item.<id>` 事件。
 
 ## 任务 1：建立通用道具模型与解析器
@@ -1085,11 +1085,11 @@ git commit -m "feat: expose pet item toolbox from context menu"
 - 创建：`pets/pingan/items/item_2.png`
 - 创建：`pets/pingan/items/item_3.png`
 - 创建：`pets/pingan/items/item_4.png`
-- 创建：`tests/test_pingan_interaction_items.py`
+- 本地验收：`pets/pingan/`（保持 Git 排除，不创建平安专用仓库测试）
 
 - [ ] **步骤 1：先写真实宠物包集成测试**
 
-创建 `tests/test_pingan_interaction_items.py`：
+以下代码只记录最初的本地验收思路，不创建对应仓库测试文件：
 
 ```python
 from pathlib import Path
@@ -1140,7 +1140,7 @@ def test_pingan_exposes_four_generic_items_bound_to_existing_actions() -> None:
 
 将输出分别保存为 `pets/pingan/items/item_1.png`、`item_2.png`、`item_3.png`、`item_4.png`。逐张使用本地图片查看工具确认透明背景、无文字、主体未裁切和风格一致；不通过的单张重新生成，不改动已经通过的图标。
 
-- [ ] **步骤 4：以无语义 ID 更新平安配置**
+- [ ] **步骤 4：仅在本地以无语义 ID 更新平安配置**
 
 用 `apply_patch` 在 `pets/pingan/pet.json` 增加四个普通动作，统一使用：
 
@@ -1182,17 +1182,13 @@ def test_pingan_exposes_four_generic_items_bound_to_existing_actions() -> None:
 
 ```bash
 .venv/Scripts/python.exe tools/validate_pet.py pets/pingan
-.venv/Scripts/python.exe -m pytest tests/test_pingan_interaction_items.py -q
 ```
 
 预期：校验器报告宠物包有效，集成测试 `1 passed`。
 
-- [ ] **步骤 6：提交平安默认内容**
+- [ ] **步骤 6：确认平安内容保持本地排除**
 
-```bash
-git add pets/pingan/pet.json pets/pingan/items tests/test_pingan_interaction_items.py
-git commit -m "feat: add default interaction items for pingan"
-```
+不得强制添加 `pets/pingan/`、平安专用测试、覆盖资源或安装脚本。使用 `git status --ignored` 确认本地包仍处于排除状态，并仅提交通用运行时、通用 UI、通用测试和文档。
 
 ## 任务 7：文档、兼容性与完整验证
 
@@ -1216,7 +1212,7 @@ git commit -m "feat: add default interaction items for pingan"
 ```bash
 git diff --check
 set QT_QPA_PLATFORM=offscreen
-.venv/Scripts/python.exe -m pytest tests/test_interaction_items.py tests/test_interaction_item_toolbox.py tests/test_package_validator.py tests/test_package_loader.py tests/test_pet_window.py tests/test_app_and_platforms.py tests/test_pingan_interaction_items.py -q
+.venv/Scripts/python.exe -m pytest tests/test_interaction_items.py tests/test_interaction_item_toolbox.py tests/test_package_validator.py tests/test_package_loader.py tests/test_pet_window.py tests/test_app_and_platforms.py -q
 ```
 
 预期：`git diff --check` 无输出且退出码为 0，所有定向测试通过。
