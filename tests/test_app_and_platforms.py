@@ -39,6 +39,7 @@ from petnest.core.settings_manager import SettingsManager
 from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.event import EventName, PetEvent
 from petnest.models.lan_interaction import ChatMessageKind, DangerAlert, InteractionKind, LanPeer
+from petnest.models.pet_package import InteractionItemDefinition
 from petnest.models.settings import Settings
 from petnest.platforms.base import StartupRegistrationResult
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
@@ -3537,6 +3538,171 @@ def test_pet_context_menu_updates_scale_pause_and_always_on_top(
     assert settings_manager.load().scale == 1.1
     assert settings_manager.load().animation_paused is True
     assert settings_manager.load().always_on_top is False
+
+
+def test_pet_context_menu_exposes_toolbox_only_for_resolved_items(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    try:
+        application._sync_pet_context_menu()
+
+        assert application.interaction_items_action.text() == "打开道具盒"
+        assert not application.interaction_items_action.isVisible()
+
+        package = replace(
+            application.package,
+            interaction_items=(
+                InteractionItemDefinition(
+                    "toy_ball",
+                    "玩具球",
+                    application.package.animations["idle"].frames[0],
+                ),
+            ),
+            bindings={
+                **application.package.bindings,
+                "interaction.item.toy_ball": "idle",
+            },
+        )
+        application.window.load_package(package)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            application.window,
+            "open_interaction_toolbox",
+            lambda: calls.append("opened"),
+        )
+
+        application._sync_pet_context_menu()
+        application.interaction_items_action.trigger()
+
+        assert application.interaction_items_action.isVisible()
+        assert calls == ["opened"]
+    finally:
+        application.shutdown()
+
+
+def test_pet_context_menu_hides_toolbox_when_item_binding_does_not_resolve(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    try:
+        package = replace(
+            application.package,
+            interaction_items=(
+                InteractionItemDefinition(
+                    "toy_ball",
+                    "玩具球",
+                    application.package.animations["idle"].frames[0],
+                ),
+            ),
+            bindings={
+                **application.package.bindings,
+                "interaction.item.toy_ball": "missing_action",
+            },
+        )
+        application.window.load_package(package)
+
+        application._sync_pet_context_menu()
+
+        assert not application.interaction_items_action.isVisible()
+    finally:
+        application.shutdown()
+
+
+def test_switch_pet_syncs_interaction_items_action(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    try:
+        application._sync_pet_context_menu()
+        item_package = replace(
+            application.package,
+            identifier="item_pet",
+            name="Item Pet",
+            interaction_items=(
+                InteractionItemDefinition(
+                    "toy_ball",
+                    "玩具球",
+                    application.package.animations["idle"].frames[0],
+                ),
+            ),
+            bindings={
+                **application.package.bindings,
+                "interaction.item.toy_ball": "idle",
+            },
+        )
+        application.packages.append(item_package)
+
+        assert application.switch_pet("item_pet")
+
+        assert application.interaction_items_action.isVisible()
+    finally:
+        application.shutdown()
+
+
+def test_reload_current_pet_syncs_interaction_items_action(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    del app
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+
+    try:
+        application._sync_pet_context_menu()
+        item_package = replace(
+            application.package,
+            interaction_items=(
+                InteractionItemDefinition(
+                    "toy_ball",
+                    "玩具球",
+                    application.package.animations["idle"].frames[0],
+                ),
+            ),
+            bindings={
+                **application.package.bindings,
+                "interaction.item.toy_ball": "idle",
+            },
+        )
+        monkeypatch.setattr(application.loader, "load", lambda _root: item_package)
+
+        assert application.reload_current_pet(synchronize=False)
+
+        assert application.interaction_items_action.isVisible()
+    finally:
+        application.shutdown()
 
 
 def test_mouse_follow_moves_pet_without_replacing_its_saved_resting_position(
