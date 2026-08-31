@@ -8,16 +8,34 @@ from pathlib import Path
 import sys
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QFont, QFontMetrics, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QEnterEvent,
+    QFont,
+    QFontMetrics,
+    QGuiApplication,
+    QMouseEvent,
+    QPaintEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QLabel, QWidget
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.codex_link import CodexLinkSnapshot
+from petnest.core.interaction_items import InteractionItemResolver, ResolvedInteractionItem
 from petnest.core.state_machine import PetStateMachine, StateTransition
 from petnest.models.event import PetEvent
 from petnest.models.pet_package import PetPackage
 from petnest.ui.codex_status_bubble import CodexStatusBubble
+from petnest.ui.interaction_item_toolbox import INTERACTION_ITEM_MIME, InteractionItemToolbox
 from petnest.ui.lan_firewall_notice import LanFirewallNoticeBubble
 
 PositionSaved = Callable[[QPoint], object]
@@ -84,11 +102,44 @@ class PetWindow(QWidget):
             self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
 
         self.package = package
         self._scale = package.display.default_scale
         self.player = player or AnimationPlayer()
         self.state_machine = state_machine or self._make_state_machine(package)
+        self._interaction_item_resolver = InteractionItemResolver()
+        self._interaction_items: tuple[ResolvedInteractionItem, ...] = (
+            self._interaction_item_resolver.resolve(package)
+        )
+        self._drop_highlight = False
+        self._pet_hovered = False
+        self._toolbox_hovered = False
+        self._interaction_hide_timer = QTimer(self)
+        self._interaction_hide_timer.setSingleShot(True)
+        self._interaction_hide_timer.setInterval(180)
+        self._interaction_hide_timer.timeout.connect(self._hide_interaction_toolbox_if_unhovered)
+        self.interaction_toolbox = InteractionItemToolbox(None)
+        self.interaction_toolbox.set_items(self._interaction_items)
+        self.interaction_toolbox.hover_changed.connect(self._on_interaction_toolbox_hover_changed)
+        toolbox = self.interaction_toolbox
+        toolbox_disposed = False
+
+        def mark_toolbox_disposed(_destroyed: object | None = None) -> None:
+            nonlocal toolbox_disposed
+            toolbox_disposed = True
+
+        def dispose_toolbox(_destroyed: object | None = None) -> None:
+            nonlocal toolbox_disposed
+            if toolbox_disposed:
+                return
+            toolbox_disposed = True
+            toolbox.close()
+            toolbox.deleteLater()
+
+        toolbox.destroyed.connect(mark_toolbox_disposed)
+        self._dispose_interaction_toolbox: Callable[[], None] = dispose_toolbox
+        self.destroyed.connect(dispose_toolbox)
         self._position_saved = position_saved
         self._current_pixmap = QPixmap()
         self._playing_action = "idle"
@@ -198,6 +249,11 @@ class PetWindow(QWidget):
         return self._interaction_bubble_text
 
     @property
+    def interaction_items_available(self) -> bool:
+        """当前宠物包是否有已经解析到可播放动作的互动道具。"""
+        return bool(self._interaction_items)
+
+    @property
     def codex_status_text(self) -> str | None:
         if not self.codex_status_bubble.isVisible():
             return None
@@ -255,6 +311,8 @@ class PetWindow(QWidget):
 
     def set_follow_mode(self, enabled: bool, *, scale_multiplier: float) -> None:
         """切换鼠标跟随显示层，并保留普通模式的缩放与倒计时内容。"""
+        if enabled:
+            self._clear_interaction_item_ui()
         multiplier = max(0.25, min(float(scale_multiplier), 1.0))
         if enabled:
             if not self._follow_mode_enabled:
@@ -354,6 +412,44 @@ class PetWindow(QWidget):
     def set_mouse_interaction_enabled(self, enabled: bool) -> None:
         """关闭后忽略宠物鼠标事件，保留窗口显示和动画。"""
         self._mouse_interaction_enabled = enabled
+        if not enabled:
+            self._clear_interaction_item_ui()
+
+    def open_interaction_toolbox(self) -> bool:
+        """在宠物旁显示并展开当前可用的互动道具。"""
+        if not self._interaction_can_show():
+            return False
+        self._interaction_hide_timer.stop()
+        self.interaction_toolbox.show_for(self._global_window_rect())
+        self.interaction_toolbox.open_panel()
+        return True
+
+    def trigger_interaction_item(self, item_id: str, position: QPoint) -> bool:
+        """在不透明宠物像素上通过状态机触发一个已解析道具。"""
+        if not self._interaction_can_show():
+            return False
+        item = next(
+            (candidate for candidate in self._interaction_items if candidate.definition.identifier == item_id),
+            None,
+        )
+        if item is None or not self.is_opaque_at(position.x(), position.y()):
+            return False
+        current = self.package.animations[self.state_machine.current_action]
+        target = self.package.animations[item.action_name]
+        if not current.interruptible and target.priority <= current.priority:
+            return False
+        transition = self.state_machine.handle(
+            PetEvent(
+                item.event_name,
+                source="interaction-item",
+                payload={"item_id": item_id},
+            )
+        )
+        if not transition.changed:
+            return False
+        self._play_current_action()
+        self._clear_interaction_item_ui()
+        return True
 
     def set_countdown_text(self, text: str | None) -> None:
         """在宠物下方显示倒计时；空值会移除预留区域。"""
@@ -473,6 +569,7 @@ class PetWindow(QWidget):
 
     def load_package(self, package: PetPackage) -> None:
         """切换宠物包，并释放旧动画缓存以避免积累图像内存。"""
+        self._clear_interaction_item_ui()
         self.animation_timer.stop()
         self.clear_effect()
         self.clear_interaction_bubble()
@@ -483,6 +580,8 @@ class PetWindow(QWidget):
         self.package = package
         self._scale = package.display.default_scale
         self.state_machine = self._make_state_machine(package)
+        self._interaction_items = self._interaction_item_resolver.resolve(package)
+        self.interaction_toolbox.set_items(self._interaction_items)
         self._play_current_action()
         self.move(self.clamp_position(self.pos()))
 
@@ -503,13 +602,57 @@ class PetWindow(QWidget):
         self.set_paused(paused)
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._pet_hovered = True
+        self._interaction_hide_timer.stop()
+        if self._interaction_can_show():
+            self.interaction_toolbox.show_for(self._global_window_rect())
         if self.is_opaque_at(int(event.position().x()), int(event.position().y())):
             self._handle_event("mouse.enter")
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:  # type: ignore[name-defined] # noqa: N802
+        self._pet_hovered = False
+        self._schedule_interaction_toolbox_hide()
         self._handle_event("mouse.leave")
         super().leaveEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        if self._interaction_can_show() and self._interaction_item_id(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        self._set_drop_highlight(False)
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        position = event.position().toPoint()
+        accepted = (
+            self._interaction_can_show()
+            and self._interaction_item_id(event.mimeData()) is not None
+            and self.is_opaque_at(position.x(), position.y())
+        )
+        self._set_drop_highlight(accepted)
+        if accepted:
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._set_drop_highlight(False)
+        event.accept()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        try:
+            if not self._interaction_can_show():
+                event.ignore()
+                return
+            item_id = self._interaction_item_id(event.mimeData())
+            if item_id is not None and self.trigger_interaction_item(item_id, event.position().toPoint()):
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+                return
+            event.ignore()
+        finally:
+            self._set_drop_highlight(False)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self._is_countdown_at(event.position().toPoint()):
@@ -617,10 +760,18 @@ class PetWindow(QWidget):
             self.interaction_bubble.move(self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3))))
         self.codex_status_bubble.reposition(self._global_window_rect())
         self.lan_firewall_notice.reposition(self._global_window_rect())
+        if self.interaction_toolbox.isVisible():
+            self.interaction_toolbox.reposition(self._global_window_rect())
         super().moveEvent(event)  # type: ignore[arg-type]
         self.position_changed.emit()
 
+    def hideEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._clear_interaction_item_ui()
+        super().hideEvent(event)  # type: ignore[arg-type]
+
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._clear_interaction_item_ui()
+        self._dispose_interaction_toolbox()
         self.clear_interaction_bubble()
         self.clear_codex_status()
         self.clear_lan_firewall_notice()
@@ -656,6 +807,10 @@ class PetWindow(QWidget):
             painter.drawPixmap(pet_rect, self._current_pixmap)
         if self._active_effect_layer == "over":
             self._draw_active_effect(painter, pet_rect)
+        if self._drop_highlight:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor("#D98663"), 2))
+            painter.drawRoundedRect(pet_rect.adjusted(1, 1, -1, -1), 8, 8)
         if self.countdown_is_visible:
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             bubble = self._countdown_rect()
@@ -692,6 +847,56 @@ class PetWindow(QWidget):
         if transition.changed:
             self._play_current_action()
         return transition
+
+    def _interaction_can_show(self) -> bool:
+        return (
+            self.interaction_items_available
+            and self._mouse_interaction_enabled
+            and not self._follow_mode_enabled
+            and self.isVisible()
+        )
+
+    def _on_interaction_toolbox_hover_changed(self, hovered: bool) -> None:
+        self._toolbox_hovered = hovered
+        if hovered:
+            self._interaction_hide_timer.stop()
+        else:
+            self._schedule_interaction_toolbox_hide()
+
+    def _schedule_interaction_toolbox_hide(self) -> None:
+        if self._pet_hovered or self._toolbox_hovered or not self.interaction_toolbox.isVisible():
+            self._interaction_hide_timer.stop()
+            return
+        self._interaction_hide_timer.start()
+
+    def _hide_interaction_toolbox_if_unhovered(self) -> None:
+        if self._pet_hovered or self._toolbox_hovered:
+            return
+        self.interaction_toolbox.hide_all()
+
+    def _clear_interaction_item_ui(self) -> None:
+        self._interaction_hide_timer.stop()
+        self._pet_hovered = False
+        self._toolbox_hovered = False
+        self._set_drop_highlight(False)
+        self.interaction_toolbox.hide_all()
+
+    def _set_drop_highlight(self, highlighted: bool) -> None:
+        if self._drop_highlight == highlighted:
+            return
+        self._drop_highlight = highlighted
+        self.update()
+
+    def _interaction_item_id(self, mime_data: QMimeData) -> str | None:
+        if not mime_data.hasFormat(INTERACTION_ITEM_MIME):
+            return None
+        try:
+            item_id = bytes(mime_data.data(INTERACTION_ITEM_MIME)).decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if any(item.definition.identifier == item_id for item in self._interaction_items):
+            return item_id
+        return None
 
     def _play_current_action(self) -> None:
         action = self._follow_action() if self._follow_motion else self.state_machine.current_action

@@ -11,10 +11,23 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QContextMenuEvent, QEnterEvent, QImage, QMouseEvent, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtGui import (
+    QColor,
+    QContextMenuEvent,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QEnterEvent,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+from shiboken6 import isValid
 
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.codex_link import CodexLinkSnapshot
@@ -24,8 +37,10 @@ from petnest.models.pet_package import (
     AnimationDefinition,
     Canvas,
     DisplaySettings,
+    InteractionItemDefinition,
     PetPackage,
 )
+from petnest.ui.interaction_item_toolbox import INTERACTION_ITEM_MIME
 from petnest.ui.pet_window import PetWindow, _prepare_translucent_frame
 from petnest.ui.tray_icon import PetTrayIcon, application_icon
 
@@ -81,6 +96,65 @@ def _window(tmp_path: Path, **kwargs: object) -> PetWindow:
         state_machine=PetStateMachine(package.animations, package.bindings, package.fallbacks),
         **kwargs,
     )
+
+
+def _interaction_package(tmp_path: Path, *, identifier: str = "cat") -> PetPackage:
+    package = _package(tmp_path, identifier=identifier)
+    icon = tmp_path / f"{identifier}-toy-ball.png"
+    Image.new("RGBA", (8, 8), (217, 134, 99, 255)).save(icon)
+    item = InteractionItemDefinition("toy_ball", "玩具球", icon)
+    wave = replace(package.animations["hover"], name="wave", priority=25)
+    transparent_then_opaque = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+    transparent_then_opaque.paste((255, 0, 0, 255), (5, 0, 10, 8))
+    transparent_then_opaque.save(package.animations["idle"].frames[0])
+    return replace(
+        package,
+        animations={**package.animations, "wave": wave},
+        bindings={**package.bindings, "interaction.item.toy_ball": "wave"},
+        interaction_items=(item,),
+    )
+
+
+def _item_mime(identifier: str | bytes, *, format_name: str = INTERACTION_ITEM_MIME) -> QMimeData:
+    mime = QMimeData()
+    mime.setData(format_name, identifier.encode("utf-8") if isinstance(identifier, str) else identifier)
+    return mime
+
+
+def _drag_enter(mime: QMimeData, position: QPoint = QPoint(12, 2)) -> QDragEnterEvent:
+    event = QDragEnterEvent(
+        position,
+        Qt.DropAction.MoveAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    event._test_mime = mime
+    return event
+
+
+def _drag_move_event(mime: QMimeData, position: QPoint) -> QDragMoveEvent:
+    event = QDragMoveEvent(
+        position,
+        Qt.DropAction.MoveAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    event._test_mime = mime
+    return event
+
+
+def _drop_event(mime: QMimeData, position: QPoint) -> QDropEvent:
+    event = QDropEvent(
+        QPointF(position),
+        Qt.DropAction.MoveAction,
+        mime,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    event._test_mime = mime
+    return event
 
 
 def _drag_move(window: PetWindow, x: int, y: int) -> None:
@@ -921,6 +995,350 @@ def test_reloading_package_clears_old_animation_cache_and_starts_new_idle(qtbot:
     assert window.current_action == "idle"
     assert player.current_frame is not old_frame
     assert player.current_frame.getpixel((0, 0)) == (0, 255, 0, 255)
+
+
+def test_interaction_item_triggers_only_on_known_item_and_opaque_pet_pixel(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _interaction_package(tmp_path)
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.show()
+    handled: list[PetEvent] = []
+    original_handle = window.state_machine.handle
+
+    def record(event: PetEvent):
+        handled.append(event)
+        return original_handle(event)
+
+    monkeypatch.setattr(window.state_machine, "handle", record)
+
+    assert not window.trigger_interaction_item("toy_ball", QPoint(2, 2))
+    assert not window.trigger_interaction_item("toy_ball", QPoint(100, 100))
+    assert not window.trigger_interaction_item("missing", QPoint(12, 2))
+    assert window.trigger_interaction_item("toy_ball", QPoint(12, 2))
+
+    assert window.current_action == "wave"
+    assert window.playing_action == "wave"
+    assert len(handled) == 1
+    assert handled[0].event_name == "interaction.item.toy_ball"
+    assert handled[0].source == "interaction-item"
+    assert handled[0].payload == {"item_id": "toy_ball"}
+
+
+def test_interaction_item_respects_higher_priority_non_interruptible_action(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _interaction_package(tmp_path)
+    protected = replace(package.animations["click"], name="protected", priority=100)
+    package = replace(
+        package,
+        animations={**package.animations, "protected": protected},
+        bindings={**package.bindings, "agent.protected": "protected"},
+    )
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.show()
+    window.handle_pet_event(PetEvent("agent.protected", source="test"))
+
+    assert window.current_action == "protected"
+    assert not window.trigger_interaction_item("toy_ball", QPoint(12, 2))
+    assert window.current_action == "protected"
+    assert window.playing_action == "protected"
+
+
+def test_interaction_item_rejects_equal_priority_reentry_until_current_animation_finishes(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _interaction_package(tmp_path)
+    second_icon = tmp_path / "feather.png"
+    Image.new("RGBA", (8, 8), (217, 134, 99, 255)).save(second_icon)
+    second_item = InteractionItemDefinition("feather", "羽毛", second_icon)
+    action_a = replace(
+        package.animations["click"],
+        name="item_action_a",
+        priority=70,
+        interruptible=False,
+    )
+    action_b = replace(
+        package.animations["click"],
+        name="item_action_b",
+        priority=70,
+        interruptible=False,
+    )
+    package = replace(
+        package,
+        animations={
+            **package.animations,
+            action_a.name: action_a,
+            action_b.name: action_b,
+        },
+        bindings={
+            **package.bindings,
+            "interaction.item.toy_ball": action_a.name,
+            "interaction.item.feather": action_b.name,
+        },
+        interaction_items=(*package.interaction_items, second_item),
+    )
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.show()
+
+    assert window.trigger_interaction_item("toy_ball", QPoint(12, 2))
+    assert window.current_action == action_a.name
+    assert not window.trigger_interaction_item("feather", QPoint(12, 2))
+    assert window.current_action == action_a.name
+
+    window.animation_timer.timeout.emit()
+    window.animation_timer.timeout.emit()
+
+    assert window.current_action == "idle"
+    assert window.trigger_interaction_item("feather", QPoint(12, 2))
+    assert window.current_action == action_b.name
+
+
+def test_interaction_toolbox_availability_and_opening_follow_window_modes_and_reload(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    empty_root = tmp_path / "empty"
+    empty_root.mkdir()
+    empty = PetWindow(_package(empty_root))
+    qtbot.addWidget(empty)
+    empty.show()
+
+    assert not empty.interaction_items_available
+    assert not empty.open_interaction_toolbox()
+    enter = QEnterEvent(QPointF(2, 2), QPointF(2, 2), QPointF(empty.mapToGlobal(QPoint(2, 2))))
+    QApplication.sendEvent(empty, enter)
+    assert empty.current_action == "hover"
+    assert not empty.interaction_toolbox.isVisible()
+
+    item_root = tmp_path / "items"
+    item_root.mkdir()
+    window = PetWindow(_interaction_package(item_root))
+    qtbot.addWidget(window)
+    assert window.acceptDrops()
+    assert window.interaction_items_available
+    assert not window.open_interaction_toolbox()
+    window.show()
+    assert window.open_interaction_toolbox()
+    assert window.interaction_toolbox.isVisible()
+    assert window.interaction_toolbox.is_expanded
+
+    window.set_mouse_interaction_enabled(False)
+    assert not window.interaction_toolbox.isVisible()
+    window.set_mouse_interaction_enabled(True)
+    assert not window.interaction_toolbox.isVisible()
+    assert window.open_interaction_toolbox()
+
+    window.set_follow_mode(True, scale_multiplier=0.45)
+    assert not window.interaction_toolbox.isVisible()
+    assert not window.open_interaction_toolbox()
+    window.set_follow_mode(False, scale_multiplier=0.45)
+    assert not window.interaction_toolbox.isVisible()
+    assert window.open_interaction_toolbox()
+    window._drop_highlight = True
+    window._pet_hovered = True
+    window._toolbox_hovered = True
+    window._interaction_hide_timer.start()
+
+    reloaded_root = tmp_path / "reloaded-empty"
+    reloaded_root.mkdir()
+    window.load_package(_package(reloaded_root, identifier="dog"))
+    assert not window.interaction_items_available
+    assert not window.interaction_toolbox.isVisible()
+    assert not window._interaction_hide_timer.isActive()
+    assert not window._drop_highlight
+    assert not window._pet_hovered
+    assert not window._toolbox_hovered
+
+
+def test_interaction_item_qt_drag_events_validate_mime_hit_test_and_clear_highlight(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_interaction_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+
+    wrong_format = _drag_enter(_item_mime("toy_ball", format_name="text/plain"))
+    window.dragEnterEvent(wrong_format)
+    assert not wrong_format.isAccepted()
+    malformed = _drag_enter(_item_mime(b"\xff"))
+    window.dragEnterEvent(malformed)
+    assert not malformed.isAccepted()
+    unknown = _drag_enter(_item_mime("missing"))
+    window.dragEnterEvent(unknown)
+    assert not unknown.isAccepted()
+
+    valid = _drag_enter(_item_mime("toy_ball"))
+    window.dragEnterEvent(valid)
+    assert valid.isAccepted()
+
+    transparent = _drag_move_event(_item_mime("toy_ball"), QPoint(2, 2))
+    window.dragMoveEvent(transparent)
+    assert not transparent.isAccepted()
+    assert not window._drop_highlight
+
+    opaque = _drag_move_event(_item_mime("toy_ball"), QPoint(12, 2))
+    window.dragMoveEvent(opaque)
+    assert opaque.isAccepted()
+    assert window._drop_highlight
+
+    leave = QDragLeaveEvent()
+    window.dragLeaveEvent(leave)
+    assert leave.isAccepted()
+    assert not window._drop_highlight
+
+    window.dragMoveEvent(_drag_move_event(_item_mime("toy_ball"), QPoint(12, 2)))
+    successful = _drop_event(_item_mime("toy_ball"), QPoint(12, 2))
+    window.dropEvent(successful)
+    assert successful.isAccepted()
+    assert successful.dropAction() == Qt.DropAction.MoveAction
+    assert window.current_action == "wave"
+    assert not window._drop_highlight
+
+    window._drop_highlight = True
+    failed = _drop_event(_item_mime("missing"), QPoint(12, 2))
+    window.dropEvent(failed)
+    assert not failed.isAccepted()
+    assert not window._drop_highlight
+
+
+@pytest.mark.parametrize("mode", ["mouse-disabled", "follow"])
+def test_interaction_item_qt_drag_events_reject_disallowed_window_modes(
+    qtbot: pytest.QtBot, tmp_path: Path, mode: str
+) -> None:
+    window = PetWindow(_interaction_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    if mode == "mouse-disabled":
+        window.set_mouse_interaction_enabled(False)
+    else:
+        window.set_follow_mode(True, scale_multiplier=0.45)
+
+    window._drop_highlight = True
+    enter = _drag_enter(_item_mime("toy_ball"))
+    window.dragEnterEvent(enter)
+    assert not enter.isAccepted()
+    assert not window._drop_highlight
+
+    window._drop_highlight = True
+    move = _drag_move_event(_item_mime("toy_ball"), QPoint(12, 2))
+    window.dragMoveEvent(move)
+    assert not move.isAccepted()
+    assert not window._drop_highlight
+
+    window._drop_highlight = True
+    drop = _drop_event(_item_mime("toy_ball"), QPoint(12, 2))
+    window.dropEvent(drop)
+    assert not drop.isAccepted()
+    assert not window._drop_highlight
+
+
+def test_interaction_drop_highlight_is_painted_around_pet(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_interaction_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    window._drop_highlight = True
+    window.repaint()
+
+    rendered = window.grab().toImage()
+    border = rendered.pixelColor(1, window._pet_height() // 2)
+
+    assert border.alpha() > 0
+    assert border.red() > border.blue()
+
+
+def test_interaction_toolbox_hover_bridges_pet_leave_with_delayed_hide(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_interaction_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    point = QPoint(12, 2)
+    enter = QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point)))
+
+    QApplication.sendEvent(window, enter)
+
+    assert window._pet_hovered
+    assert window.interaction_toolbox.isVisible()
+    assert not window.interaction_toolbox.is_expanded
+    QApplication.sendEvent(window, QEvent(QEvent.Type.Leave))
+    assert not window._pet_hovered
+    assert window._interaction_hide_timer.isActive()
+    assert window._interaction_hide_timer.interval() == 180
+    assert window.interaction_toolbox.isVisible()
+
+    window.interaction_toolbox.hover_changed.emit(True)
+    assert window._toolbox_hovered
+    assert not window._interaction_hide_timer.isActive()
+    assert window.interaction_toolbox.isVisible()
+
+    window.interaction_toolbox.hover_changed.emit(False)
+    assert window._interaction_hide_timer.isActive()
+    window._interaction_hide_timer.timeout.emit()
+    assert not window.interaction_toolbox.isVisible()
+
+
+def test_interaction_ui_cleans_up_on_modes_reload_hide_and_close(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_interaction_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    assert window.open_interaction_toolbox()
+    window._drop_highlight = True
+    window._pet_hovered = True
+    window._toolbox_hovered = True
+    window._interaction_hide_timer.start()
+
+    window.set_mouse_interaction_enabled(False)
+
+    assert not window._interaction_hide_timer.isActive()
+    assert not window._drop_highlight
+    assert not window._pet_hovered
+    assert not window._toolbox_hovered
+    assert not window.interaction_toolbox.isVisible()
+
+    window.set_mouse_interaction_enabled(True)
+    assert not window.interaction_toolbox.isVisible()
+    assert window.open_interaction_toolbox()
+    previous_rect = QRect(window.interaction_toolbox._pet_rect)
+    window.move(window.pos() + QPoint(20, 10))
+    QApplication.processEvents()
+    assert window.interaction_toolbox._pet_rect == window._global_window_rect()
+    assert window.interaction_toolbox._pet_rect != previous_rect
+
+    window.hide()
+    QApplication.processEvents()
+    assert not window.interaction_toolbox.isVisible()
+    assert not window._interaction_hide_timer.isActive()
+
+    window.show()
+    assert window.open_interaction_toolbox()
+    toolbox = window.interaction_toolbox
+    window.close()
+    QApplication.processEvents()
+    assert not isValid(toolbox)
+
+
+def test_interaction_toolbox_is_destroyed_when_host_is_deleted_without_close_event(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    del qtbot
+    window = PetWindow(_interaction_package(tmp_path))
+    window.show()
+    assert window.open_interaction_toolbox()
+    toolbox = window.interaction_toolbox
+
+    window.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
+
+    assert not isValid(window)
+    assert not isValid(toolbox)
 
 
 def test_tray_does_not_expose_legacy_import_or_animation_actions(qtbot: pytest.QtBot, tmp_path: Path) -> None:

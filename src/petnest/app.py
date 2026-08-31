@@ -501,6 +501,10 @@ class PetNest:
         self.pet_context_menu.addSeparator()
         self.danger_alert_action = self.pet_context_menu.addAction("⚠  发送危险预警")
         self.danger_alert_action.triggered.connect(self._confirm_danger_alert)
+        self.interaction_items_action = self.pet_context_menu.addAction("打开道具盒")
+        self.interaction_items_action.triggered.connect(
+            lambda: self.window.open_interaction_toolbox()
+        )
         self.pet_context_menu.addSeparator()
         self.zoom_out_action = self.pet_context_menu.addAction("－  缩小")
         self.zoom_in_action = self.pet_context_menu.addAction("＋  放大")
@@ -759,6 +763,7 @@ class PetNest:
         if self.tray is not None:
             self.tray.set_current_pet_name(self.package.name)
         self._refresh_visible_work_finish_reminder()
+        self._sync_pet_context_menu()
         return True
 
     def reload_current_pet(self, *, synchronize: bool = True) -> bool:
@@ -815,6 +820,7 @@ class PetNest:
             summary = "、".join(f"{timeline.name}（{timeline.frame_count} 帧）" for timeline in sync_result.reconciled)
             self.tray.showMessage("PetNest", f"已同步逐帧时长：{summary}")
         self._refresh_visible_work_finish_reminder()
+        self._sync_pet_context_menu()
         return True
 
     def _save_animation_timelines(
@@ -994,6 +1000,7 @@ class PetNest:
         self.zoom_in_action.setEnabled(scale < display.max_scale)
         self.zoom_out_action.setEnabled(scale > display.min_scale)
         self.reset_scale_action.setEnabled(scale != display.default_scale)
+        self.interaction_items_action.setVisible(self.window.interaction_items_available)
         self.pause_context_action.setText("▶  继续动画" if self.window.player.is_paused else "Ⅱ  暂停动画")
         self.always_on_top_context_action.setChecked(self.settings.always_on_top)
         self.mouse_follow_context_action.setChecked(self.settings.mouse_follow_enabled)
