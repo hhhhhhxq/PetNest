@@ -12,7 +12,7 @@ import re
 import stat as stat_module
 from time import monotonic
 
-from petnest.core.codex_thread_index import CodexThreadIndex
+from petnest.core.codex_thread_index import CodexThreadIndex, ThreadIdClassification
 from petnest.models.event import PetEvent
 
 
@@ -553,12 +553,18 @@ class CodexSessionLogWatcher:
                     payload={"hook_event_name": "ThreadRead", "session_id": session_id},
                 )
             )
+        stable_ids: set[str] = set()
         for session_id in tuple(self._pending_unread_since):
             if session_id not in current:
                 self._pending_unread_since.pop(session_id, None)
                 continue
             if now - self._pending_unread_since[session_id] < self._unread_stable_seconds:
                 continue
+            stable_ids.add(session_id)
+        classification = self._classify_unread_ids(stable_ids)
+        for session_id in classification.child_ids:
+            self._pending_unread_since.pop(session_id, None)
+        for session_id in classification.top_level_ids:
             self._pending_unread_since.pop(session_id, None)
             self._confirmed_unread_ids.add(session_id)
             events.append(
@@ -571,6 +577,22 @@ class CodexSessionLogWatcher:
         self._unread_ids = current
         events.sort(key=lambda event: str(event.payload.get("session_id", "")))
         return tuple(events)
+
+    def _classify_unread_ids(self, candidate_ids: set[str]) -> ThreadIdClassification:
+        unknown = ThreadIdClassification(frozenset(), frozenset(), frozenset(candidate_ids))
+        if not candidate_ids or self._thread_index is None:
+            return unknown
+        try:
+            classification = self._thread_index.classify_thread_ids(candidate_ids)
+            top_level_ids = set(classification.top_level_ids) & candidate_ids
+            child_ids = (set(classification.child_ids) & candidate_ids) - top_level_ids
+        except Exception:
+            return unknown
+        return ThreadIdClassification(
+            top_level_ids=frozenset(top_level_ids),
+            child_ids=frozenset(child_ids),
+            unknown_ids=frozenset(candidate_ids - top_level_ids - child_ids),
+        )
 
     def _read_unread_ids(self) -> set[str] | None:
         path = self.global_state_path

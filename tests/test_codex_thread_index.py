@@ -25,6 +25,7 @@ def _create_database(
     *,
     updated_column: str = "updated_at_ms",
     rows: list[tuple[str, str, object]] | None = None,
+    spawn_edges: list[tuple[str, str, str]] | None = None,
 ) -> Path:
     database = home / f"state_{version}.sqlite"
     with sqlite3.connect(database) as connection:
@@ -35,6 +36,16 @@ def _create_database(
             f"INSERT INTO threads (id, rollout_path, {updated_column}) VALUES (?, ?, ?)",
             rows or [],
         )
+        if spawn_edges is not None:
+            connection.execute(
+                "CREATE TABLE thread_spawn_edges ("
+                "parent_thread_id TEXT, child_thread_id TEXT, status TEXT)"
+            )
+            connection.executemany(
+                "INSERT INTO thread_spawn_edges "
+                "(parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
+                spawn_edges,
+            )
     return database
 
 
@@ -107,6 +118,49 @@ def test_resolve_thread_id_does_not_guess_from_partial_or_unknown_values(tmp_pat
 
     assert index.resolve_thread_id("01a04792") is None
     assert index.resolve_thread_id("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa") is None
+
+
+def test_classifies_top_level_direct_and_nested_child_thread_ids(tmp_path: Path) -> None:
+    root_id = "01a0526f-0000-7000-8000-000000000001"
+    child_id = "01a052e4-0000-7000-8000-000000000002"
+    nested_child_id = "01a052e9-0000-7000-8000-000000000003"
+    unknown_id = "01a052ff-0000-7000-8000-000000000004"
+    rollout = _session_file(tmp_path)
+    _create_database(
+        tmp_path,
+        1,
+        rows=[
+            (root_id, str(rollout), 30),
+            (child_id, str(rollout), 20),
+            (nested_child_id, str(rollout), 10),
+        ],
+        spawn_edges=[
+            (root_id, child_id, "open"),
+            (child_id, nested_child_id, "open"),
+        ],
+    )
+
+    classification = CodexThreadIndex(tmp_path).classify_thread_ids(
+        {root_id, child_id, nested_child_id, unknown_id}
+    )
+
+    assert classification.top_level_ids == frozenset({root_id})
+    assert classification.child_ids == frozenset({child_id, nested_child_id})
+    assert classification.unknown_ids == frozenset({unknown_id})
+
+
+def test_thread_classification_is_unknown_for_incompatible_schema(tmp_path: Path) -> None:
+    root_id = "01a0526f-0000-7000-8000-000000000001"
+    rollout = _session_file(tmp_path)
+    _create_database(tmp_path, 1, rows=[(root_id, str(rollout), 10)])
+    index = CodexThreadIndex(tmp_path)
+
+    classification = index.classify_thread_ids({root_id})
+
+    assert classification.top_level_ids == frozenset()
+    assert classification.child_ids == frozenset()
+    assert classification.unknown_ids == frozenset({root_id})
+    assert index.last_status == "incompatible"
 
 
 def test_skips_newer_database_with_incompatible_schema(tmp_path: Path) -> None:

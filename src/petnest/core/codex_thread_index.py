@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 import posixpath
@@ -18,7 +19,17 @@ _UUID_IDENTIFIER = re.compile(
 )
 _MAX_LIMIT = 4096
 _SQLITE_TIMEOUT_SECONDS = 0.05
+_SQLITE_ID_BATCH_SIZE = 500
 _IndexStatus = Literal["ready", "unavailable", "incompatible"]
+
+
+@dataclass(frozen=True)
+class ThreadIdClassification:
+    """Disjoint task kinds resolved from Codex Desktop's local thread index."""
+
+    top_level_ids: frozenset[str]
+    child_ids: frozenset[str]
+    unknown_ids: frozenset[str]
 
 
 class CodexThreadIndex:
@@ -83,6 +94,31 @@ class CodexThreadIndex:
             saw_incompatible = True
         self._last_status = "incompatible" if saw_incompatible else "unavailable"
         return None
+
+    def classify_thread_ids(self, candidate_ids: object) -> ThreadIdClassification:
+        """Classify bounded thread IDs without opening conversation contents."""
+        values = _bounded_thread_ids(candidate_ids)
+        unknown = ThreadIdClassification(frozenset(), frozenset(), frozenset(values))
+        if not values:
+            return unknown
+        if not _path_chain_is_safe(self._home.parent, self._home):
+            self._last_status = "unavailable"
+            return unknown
+        if not _path_chain_is_safe(self._home, self._sessions) or not self._sessions.is_dir():
+            self._last_status = "unavailable"
+            return unknown
+        saw_incompatible = False
+        for database in self._candidate_databases():
+            status, classification = self._classify_database_thread_ids(database, values)
+            if status == "unavailable":
+                self._last_status = "unavailable"
+                return unknown
+            if status == "ready":
+                self._last_status = "ready"
+                return classification
+            saw_incompatible = True
+        self._last_status = "incompatible" if saw_incompatible else "unavailable"
+        return unknown
 
     def _candidate_databases(self) -> tuple[Path, ...]:
         try:
@@ -206,6 +242,51 @@ class CodexThreadIndex:
         except (OSError, sqlite3.Error, ValueError):
             return "unavailable", None
 
+    def _classify_database_thread_ids(
+        self,
+        database: Path,
+        candidate_ids: tuple[str, ...],
+    ) -> tuple[Literal["incompatible", "ready", "unavailable"], ThreadIdClassification]:
+        unknown = ThreadIdClassification(frozenset(), frozenset(), frozenset(candidate_ids))
+        if not _sqlite_read_only_preflight(self._home, database):
+            return "unavailable", unknown
+        try:
+            connection = sqlite3.connect(
+                f"{database.as_uri()}?mode=ro",
+                uri=True,
+                timeout=_SQLITE_TIMEOUT_SECONDS,
+            )
+            try:
+                connection.execute("PRAGMA query_only=ON")
+                thread_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(threads)")
+                }
+                edge_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(thread_spawn_edges)")
+                }
+                if "id" not in thread_columns or "child_thread_id" not in edge_columns:
+                    return "incompatible", unknown
+                present_ids = _select_matching_ids(connection, "threads", "id", candidate_ids)
+                child_ids = _select_matching_ids(
+                    connection,
+                    "thread_spawn_edges",
+                    "child_thread_id",
+                    candidate_ids,
+                )
+                child_ids &= set(candidate_ids)
+                top_level_ids = present_ids - child_ids
+                unknown_ids = set(candidate_ids) - present_ids - child_ids
+                return "ready", ThreadIdClassification(
+                    top_level_ids=frozenset(top_level_ids),
+                    child_ids=frozenset(child_ids),
+                    unknown_ids=frozenset(unknown_ids),
+                )
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error, ValueError):
+            return "unavailable", unknown
+
     def _safe_rollout_path(self, value: object) -> Path | None:
         if not isinstance(value, str) or not value:
             return None
@@ -260,6 +341,41 @@ def _clamp_limit(value: int) -> int:
         return max(1, min(_MAX_LIMIT, int(value)))
     except (TypeError, ValueError, OverflowError):
         return 1
+
+
+def _bounded_thread_ids(candidate_ids: object) -> tuple[str, ...]:
+    if isinstance(candidate_ids, (str, bytes)):
+        return ()
+    try:
+        values = iter(candidate_ids)  # type: ignore[arg-type]
+    except TypeError:
+        return ()
+    accepted = {
+        value
+        for value in values
+        if isinstance(value, str) and 0 < len(value) <= 200
+    }
+    return tuple(sorted(accepted))[:_MAX_LIMIT]
+
+
+def _select_matching_ids(
+    connection: sqlite3.Connection,
+    table: Literal["threads", "thread_spawn_edges"],
+    column: Literal["id", "child_thread_id"],
+    candidate_ids: tuple[str, ...],
+) -> set[str]:
+    matched: set[str] = set()
+    for offset in range(0, len(candidate_ids), _SQLITE_ID_BATCH_SIZE):
+        batch = candidate_ids[offset : offset + _SQLITE_ID_BATCH_SIZE]
+        placeholders = ",".join("?" for _ in batch)
+        rows = connection.execute(
+            f'SELECT "{column}" FROM "{table}" WHERE "{column}" IN ({placeholders})',
+            batch,
+        )
+        matched.update(
+            value for (value,) in rows if isinstance(value, str) and value
+        )
+    return matched
 
 
 def _query_limit(limit: int) -> int:
@@ -323,4 +439,4 @@ def _sqlite_read_only_preflight(root: Path, database: Path) -> bool:
     return True
 
 
-__all__ = ["CodexThreadIndex"]
+__all__ = ["CodexThreadIndex", "ThreadIdClassification"]
