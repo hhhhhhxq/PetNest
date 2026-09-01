@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from PySide6.QtCore import (
     QEvent,
@@ -33,6 +35,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QFrame,
     QGraphicsDropShadowEffect,
     QGridLayout,
@@ -55,20 +58,83 @@ _ITEM_ICON_SIZE = QSize(44, 44)
 _ITEM_HOVER_ICON_SIZE = QSize(48, 48)
 _ITEM_DRAG_PIXMAP_SIZE = QSize(50, 50)
 _ITEM_INTRO_PEAK_SIZE = QSize(50, 50)
+_LAUNCHER_SIZE = QSize(44, 44)
+_LAUNCHER_CANVAS_SIZE = QSize(87, 79)
+_LAUNCHER_ARC_DELTA = QPoint(43, 35)
+_PANEL_GAP = 6
 
 
-def clamp_toolbox_position(pet_rect: QRect, available: QRect, size: QSize) -> QPoint:
-    """把工具盒放在宠物右侧，必要时翻到左侧并限制在可用屏幕内。"""
-    width = max(0, size.width())
-    height = max(0, size.height())
-    x = pet_rect.right() + 1 + _TOOLBOX_GAP
-    if x + width > available.right() + 1:
-        x = pet_rect.left() - _TOOLBOX_GAP - width
-    max_x = max(available.left(), available.right() - width + 1)
-    max_y = max(available.top(), available.bottom() - height + 1)
-    x = min(max(x, available.left()), max_x)
-    y = min(max(pet_rect.top(), available.top()), max_y)
-    return QPoint(x, y)
+@dataclass(frozen=True)
+class LauncherArcPlacement:
+    """宠物旁 C 形入口组的一次几何规划。"""
+
+    side: Literal["right", "left"]
+    window_position: QPoint
+    canvas_offset: QPoint
+    toolbox_position: QPoint
+    notebook_position: QPoint
+
+
+def _overflow_score(rect: QRect, available: QRect) -> int:
+    return (
+        max(0, available.left() - rect.left())
+        + max(0, rect.right() - available.right())
+        + max(0, available.top() - rect.top())
+        + max(0, rect.bottom() - available.bottom())
+    )
+
+
+def _clamp_rect_origin(rect: QRect, available: QRect) -> QPoint:
+    max_x = max(available.left(), available.right() - rect.width() + 1)
+    max_y = max(available.top(), available.bottom() - rect.height() + 1)
+    return QPoint(
+        min(max(rect.x(), available.left()), max_x),
+        min(max(rect.y(), available.top()), max_y),
+    )
+
+
+def plan_launcher_arc(
+    pet_rect: QRect,
+    available: QRect,
+    panel_size: QSize,
+    *,
+    expanded: bool,
+) -> LauncherArcPlacement:
+    """规划入口组及可选展开面板在宠物外侧的位置。"""
+    panel_width = max(0, panel_size.width()) if expanded else 0
+    panel_height = max(0, panel_size.height()) if expanded else 0
+    extra_width = panel_width + (_PANEL_GAP if panel_width else 0)
+    window_size = QSize(
+        _LAUNCHER_CANVAS_SIZE.width() + extra_width,
+        max(_LAUNCHER_CANVAS_SIZE.height(), panel_height),
+    )
+    group_y = pet_rect.top() - 22
+    right_group_x = pet_rect.right() + 1 + _TOOLBOX_GAP
+    left_group_x = (
+        pet_rect.left()
+        - _TOOLBOX_GAP
+        - _LAUNCHER_SIZE.width()
+        - _LAUNCHER_ARC_DELTA.x()
+    )
+    right_rect = QRect(QPoint(right_group_x, group_y), window_size)
+    left_rect = QRect(QPoint(left_group_x - extra_width, group_y), window_size)
+    side: Literal["right", "left"] = (
+        "right"
+        if _overflow_score(right_rect, available) <= _overflow_score(left_rect, available)
+        else "left"
+    )
+    candidate = right_rect if side == "right" else left_rect
+    window_position = _clamp_rect_origin(candidate, available)
+    canvas_offset = QPoint(0 if side == "right" else extra_width, 0)
+    toolbox_position = QPoint(0, 0) if side == "right" else QPoint(43, 0)
+    notebook_position = QPoint(43, 35) if side == "right" else QPoint(0, 35)
+    return LauncherArcPlacement(
+        side,
+        window_position,
+        canvas_offset,
+        toolbox_position,
+        notebook_position,
+    )
 
 
 class InteractionItemPanel(QFrame):
@@ -261,6 +327,7 @@ class InteractionItemToolbox(QFrame):
 
     hover_changed = Signal(bool)
     intro_hint_started = Signal()
+    notebook_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         flags = (
@@ -277,11 +344,15 @@ class InteractionItemToolbox(QFrame):
         self.setStyleSheet(
             "QFrame#interactionItemToolbox { background: transparent; }"
             "QFrame#interactionItemPanel { background: transparent; border: none; }"
-            "QToolButton#interactionItemLauncher { background: transparent; border: none; "
+            "QToolButton#interactionItemLauncher, QToolButton#quickNotebookLauncher { "
+            "background: transparent; border: none; "
             "border-radius: 22px; }"
             "QToolButton#interactionItemLauncher:hover, "
             "QToolButton#interactionItemLauncher:pressed, "
-            "QToolButton#interactionItemLauncher:checked { background: rgba(255, 242, 236, 190); }"
+            "QToolButton#interactionItemLauncher:checked, "
+            "QToolButton#quickNotebookLauncher:hover, "
+            "QToolButton#quickNotebookLauncher:pressed, "
+            "QToolButton#quickNotebookLauncher:checked { background: rgba(255, 242, 236, 190); }"
             "QLabel#interactionItemHint { background: transparent; border: none; color: #785F52; "
             "font-size: 11px; font-weight: 600; padding: 0 2px 2px 2px; }"
             "QLabel#interactionItemHint[intro=\"true\"] { color: #C86845; "
@@ -298,10 +369,14 @@ class InteractionItemToolbox(QFrame):
         )
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_PANEL_GAP)
 
-        self.launcher = QToolButton(self)
+        self.launcher_canvas = QWidget(self)
+        self.launcher_canvas.setObjectName("interactionLauncherCanvas")
+        self.launcher_canvas.setFixedSize(_LAUNCHER_CANVAS_SIZE)
+
+        self.launcher = QToolButton(self.launcher_canvas)
         self.launcher.setObjectName("interactionItemLauncher")
         self.launcher.setIcon(
             lucide_icon(
@@ -324,7 +399,34 @@ class InteractionItemToolbox(QFrame):
         launcher_shadow.setColor(QColor(0, 0, 0, 80))
         self.launcher.setGraphicsEffect(launcher_shadow)
         self.launcher.clicked.connect(self._toggle_panel)
-        layout.addWidget(self.launcher, 0, Qt.AlignmentFlag.AlignTop)
+        self.launcher.move(0, 0)
+
+        self.notebook_launcher = QToolButton(self.launcher_canvas)
+        self.notebook_launcher.setObjectName("quickNotebookLauncher")
+        self.notebook_launcher.setIcon(
+            lucide_icon(
+                "notebook",
+                color="#A84F30",
+                fill="#F1B292",
+                size=25,
+            )
+        )
+        self.notebook_launcher.setIconSize(QSize(25, 25))
+        self.notebook_launcher.setFixedSize(44, 44)
+        self.notebook_launcher.setCheckable(True)
+        self.notebook_launcher.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.notebook_launcher.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.notebook_launcher.setToolTip("便签本")
+        self.notebook_launcher.setAccessibleName("便签本")
+        self.notebook_launcher.clicked.connect(lambda _checked=False: self.notebook_requested.emit())
+        notebook_shadow = QGraphicsDropShadowEffect(self.notebook_launcher)
+        notebook_shadow.setBlurRadius(6)
+        notebook_shadow.setOffset(0, 1)
+        notebook_shadow.setColor(QColor(0, 0, 0, 80))
+        self.notebook_launcher.setGraphicsEffect(notebook_shadow)
+        self.notebook_launcher.move(_LAUNCHER_ARC_DELTA)
+        self.notebook_launcher.hide()
+        layout.addWidget(self.launcher_canvas, 0, Qt.AlignmentFlag.AlignTop)
 
         self.panel = InteractionItemPanel(self)
         self.panel.setObjectName("interactionItemPanel")
@@ -346,7 +448,9 @@ class InteractionItemToolbox(QFrame):
         layout.addWidget(self.panel, 0, Qt.AlignmentFlag.AlignTop)
 
         self._item_buttons: tuple[InteractionItemButton, ...] = ()
+        self._notebook_enabled = False
         self._is_expanded = False
+        self._arc_side: Literal["right", "left"] = "right"
         self._pet_rect = QRect()
         self._intro_has_played = False
         self._intro_animation: QSequentialAnimationGroup | None = None
@@ -364,6 +468,10 @@ class InteractionItemToolbox(QFrame):
     def intro_has_played(self) -> bool:
         return self._intro_has_played
 
+    @property
+    def notebook_enabled(self) -> bool:
+        return self._notebook_enabled
+
     def set_items(self, items: Sequence[ResolvedInteractionItem]) -> None:
         was_expanded = self._is_expanded
         self._stop_intro_animation()
@@ -379,13 +487,30 @@ class InteractionItemToolbox(QFrame):
             buttons.append(button)
         self._item_buttons = tuple(buttons)
 
-        if not buttons:
+        self.launcher.setVisible(bool(buttons))
+        if not buttons and not self._notebook_enabled:
             self.hide_all()
             return
         if was_expanded:
             self.open_panel()
         else:
             self.collapse()
+
+    def set_notebook_enabled(self, enabled: bool) -> None:
+        self._notebook_enabled = bool(enabled)
+        self.notebook_launcher.setVisible(self._notebook_enabled)
+        self.launcher.setVisible(bool(self._item_buttons))
+        if not self._notebook_enabled:
+            self.notebook_launcher.setChecked(False)
+        if not self._item_buttons and not self._notebook_enabled:
+            self.hide_all()
+            return
+        self._fit_contents()
+        if self.isVisible():
+            self.reposition(self._pet_rect)
+
+    def set_notebook_open(self, opened: bool) -> None:
+        self.notebook_launcher.setChecked(self._notebook_enabled and opened)
 
     def open_panel(self) -> None:
         if not self._item_buttons:
@@ -412,12 +537,13 @@ class InteractionItemToolbox(QFrame):
         self.hide()
 
     def show_for(self, pet_rect: QRect) -> None:
-        if not self._item_buttons:
+        if not self._item_buttons and not self._notebook_enabled:
             self.hide_all()
             return
         self._pet_rect = QRect(pet_rect)
         self.collapse()
-        self.launcher.show()
+        self.launcher.setVisible(bool(self._item_buttons))
+        self.notebook_launcher.setVisible(self._notebook_enabled)
         self._fit_contents()
         self.show()
         self.reposition(self._pet_rect)
@@ -430,7 +556,15 @@ class InteractionItemToolbox(QFrame):
         screen = QGuiApplication.screenAt(self._pet_rect.center()) or QGuiApplication.primaryScreen()
         if screen is None:
             return
-        self.move(clamp_toolbox_position(self._pet_rect, screen.availableGeometry(), self.size()))
+        placement = plan_launcher_arc(
+            self._pet_rect,
+            screen.availableGeometry(),
+            self._planned_panel_size(),
+            expanded=self._is_expanded,
+        )
+        self._apply_arc_side(placement.side)
+        self._fit_contents()
+        self.move(placement.window_position)
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt override
         self.hover_changed.emit(True)
@@ -439,6 +573,26 @@ class InteractionItemToolbox(QFrame):
     def leaveEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt override
         self.hover_changed.emit(False)
         super().leaveEvent(event)
+
+    def _apply_arc_side(self, side: Literal["right", "left"]) -> None:
+        self._arc_side = side
+        root_layout = self.layout()
+        if not isinstance(root_layout, QBoxLayout):
+            return
+        if side == "right":
+            self.launcher.move(0, 0)
+            self.notebook_launcher.move(_LAUNCHER_ARC_DELTA)
+            root_layout.setDirection(QBoxLayout.Direction.LeftToRight)
+        else:
+            self.launcher.move(_LAUNCHER_ARC_DELTA.x(), 0)
+            self.notebook_launcher.move(0, _LAUNCHER_ARC_DELTA.y())
+            root_layout.setDirection(QBoxLayout.Direction.RightToLeft)
+        root_layout.activate()
+
+    def _planned_panel_size(self) -> QSize:
+        if not self._is_expanded or not self.panel.isVisible():
+            return QSize(0, 0)
+        return self.panel.sizeHint().expandedTo(self.panel.minimumSizeHint())
 
     def _toggle_panel(self, checked: bool) -> None:
         if checked:
@@ -515,5 +669,6 @@ __all__ = [
     "InteractionItemButton",
     "InteractionItemPanel",
     "InteractionItemToolbox",
-    "clamp_toolbox_position",
+    "LauncherArcPlacement",
+    "plan_launcher_arc",
 ]

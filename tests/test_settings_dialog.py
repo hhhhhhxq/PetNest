@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QPointF, QRect, QSize, QTime, Qt
 from PySide6.QtGui import QFont, QWheelEvent
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QBoxLayout, QLabel
 
 from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_discovery import (
@@ -436,6 +436,7 @@ def test_settings_center_keeps_preferred_layout_on_roomy_screen(qtbot) -> None:
     assert dialog.sidebar.width() == 246
     assert not dialog.status_title.isHidden()
     assert not dialog.status_card.isHidden()
+    assert dialog.display_overview_layout.direction() == QBoxLayout.Direction.LeftToRight
 
 
 def test_settings_center_keeps_status_card_when_only_width_is_constrained(qtbot) -> None:
@@ -468,6 +469,8 @@ def test_settings_center_prioritizes_accessible_navigation_on_short_screen(qtbot
     dialog.section_list.scrollToItem(last_item)
     qtbot.wait(10)
     assert dialog.section_list.visualItemRect(last_item).bottom() < dialog.section_list.viewport().height()
+    assert dialog.display_overview_layout.direction() == QBoxLayout.Direction.TopToBottom
+    assert dialog.settings_scroll.horizontalScrollBar().maximum() == 0
 
 
 def test_settings_center_navigation_reflows_for_larger_system_font(qtbot) -> None:
@@ -698,6 +701,20 @@ def test_display_scale_is_a_percent_slider_with_live_preview(qtbot) -> None:
     assert dialog.scale_value_label.text() == "100%"
     assert dialog.always_on_top_input.objectName() == "toggleSwitch"
     assert dialog.mouse_interaction_input.objectName() == "toggleSwitch"
+
+
+def test_display_page_edits_quick_notebook_setting(qtbot) -> None:
+    dialog = SettingsDialog(
+        Settings(quick_notebook_enabled=False),
+        initial_section="display",
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.quick_notebook_input.text() == "宠物旁便签本"
+    assert dialog.quick_notebook_input.isChecked() is False
+    dialog.quick_notebook_input.setChecked(True)
+
+    assert dialog.updated_settings().quick_notebook_enabled is True
 
 
 def test_display_page_renders_the_current_pet_preview(qtbot, tmp_path: Path) -> None:

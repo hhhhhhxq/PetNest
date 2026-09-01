@@ -11,6 +11,7 @@ from PySide6.QtCore import QEventLoop, QMargins, QPoint, QSignalBlocker, QTime, 
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QAbstractSpinBox,
     QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QStackedWidget,
@@ -484,6 +486,11 @@ class SettingsCenterDialog(QDialog):
 
         self.page_stack = QStackedWidget(content_pane)
         self.page_stack.setObjectName("settingsPageStack")
+        self.page_stack.setMinimumWidth(0)
+        self.page_stack.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Expanding,
+        )
         self.page_stack.addWidget(self._build_display_page())
         self.page_stack.addWidget(self._build_mouse_behavior_page())
         self.page_stack.addWidget(self._build_idle_page())
@@ -494,6 +501,7 @@ class SettingsCenterDialog(QDialog):
         scroll.setObjectName("settingsScroll")
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(self.page_stack)
         self.settings_scroll = scroll
         content_layout.addWidget(scroll, 1)
@@ -574,6 +582,14 @@ class SettingsCenterDialog(QDialog):
             min(self._PREFERRED_SIZE.height(), usable_height),
         )
         self._sync_navigation_sidebar_width(usable_width)
+        compact_overview = usable_width < 1200 or short_screen
+        self.display_overview_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom
+            if compact_overview
+            else QBoxLayout.Direction.LeftToRight
+        )
+        self.display_overview_layout.setStretch(0, 0 if compact_overview else 3)
+        self.display_overview_layout.setStretch(1, 0 if compact_overview else 2)
 
     def _section_index(self, section: str) -> int:
         aliases = {
@@ -754,13 +770,23 @@ class SettingsCenterDialog(QDialog):
         preview_caption.setObjectName("mutedLabel")
         preview_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
         preview_layout.addWidget(preview_caption)
-        row = QHBoxLayout()
+        row = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.display_overview_layout = row
         row.addWidget(card, 3)
         row.addWidget(preview, 2)
         layout.addLayout(row)
         secondary, secondary_layout = self._card("鼠标交互", "允许拖动、点击和右键操作桌宠。", page)
         secondary_layout.addWidget(self.mouse_interaction_input)
         layout.addWidget(secondary)
+        notebook_card, notebook_layout = self._card(
+            "轻量便签本",
+            "鼠标悬浮宠物时显示便签入口，内容只保存在本机。",
+            page,
+        )
+        self.quick_notebook_input = ToggleSwitch("宠物旁便签本", notebook_card)
+        self.quick_notebook_input.setChecked(self._settings.quick_notebook_enabled)
+        notebook_layout.addWidget(self.quick_notebook_input)
+        layout.addWidget(notebook_card)
         layout.addStretch(1)
         self.scale_input.valueChanged.connect(self._update_pet_preview)
         self.scale_input.valueChanged.connect(self._update_scale_value_label)
@@ -1856,6 +1882,7 @@ class SettingsCenterDialog(QDialog):
             self._settings,
             scale=self.scale_input.value() / 100.0,
             always_on_top=self.always_on_top_input.isChecked(),
+            quick_notebook_enabled=self.quick_notebook_input.isChecked(),
             run_at_startup=(
                 self.auto_start_input.isChecked()
                 if hasattr(self, "auto_start_input")
