@@ -226,6 +226,10 @@ class SettingsManager:
             version = 27
         if version == 27:
             migrated.setdefault("lan_firewall_dismissed_public_networks", [])
+            migrated["schema_version"] = 28
+            version = 28
+        if version == 28:
+            migrated.setdefault("quick_notebook_enabled", False)
             migrated["schema_version"] = Settings.SCHEMA_VERSION
         return migrated
 

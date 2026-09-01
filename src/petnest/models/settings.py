@@ -32,7 +32,7 @@ class AnimationOverride:
 class Settings:
     """可 JSON 序列化的用户设置，字段为第一阶段所需最小集合。"""
 
-    SCHEMA_VERSION = 28
+    SCHEMA_VERSION = 29
     CURSOR_SCALE_OPTIONS = (80, 100, 125, 150)
     WORK_SCHEDULE_MODES = ("fixed", "elastic")
 
@@ -43,6 +43,7 @@ class Settings:
     screen_id: str | None = None
     scale: float = 1.0
     always_on_top: bool = True
+    quick_notebook_enabled: bool = False
     animation_paused: bool = False
     mouse_interaction_enabled: bool = True
     keyboard_working_enabled: bool = False
@@ -118,6 +119,7 @@ class Settings:
             values.get("lan_firewall_dismissed_public_networks")
         )
         for name, default in (
+            ("quick_notebook_enabled", False),
             ("keyboard_working_enabled", False),
             ("codex_link_enabled", True),
             ("codex_link_show_attention_bubbles", True),

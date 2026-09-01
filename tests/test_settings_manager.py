@@ -338,7 +338,7 @@ def test_schema_27_adds_empty_lan_firewall_dismissals(tmp_path) -> None:
 
     loaded = SettingsManager(path).load()
 
-    assert loaded.schema_version == 28
+    assert loaded.schema_version == Settings.SCHEMA_VERSION
     assert loaded.lan_firewall_dismissed_public_networks == ()
 
 
@@ -484,3 +484,21 @@ def test_invalid_daily_work_schedule_falls_back_to_safe_weekday_values() -> None
         "5": None,
         "6": None,
     }
+
+
+def test_quick_notebook_defaults_to_disabled() -> None:
+    assert Settings().quick_notebook_enabled is False
+
+
+def test_migration_adds_quick_notebook_without_changing_other_values(tmp_path) -> None:
+    path = tmp_path / "settings.json"
+    raw = Settings(always_on_top=False).to_dict()
+    raw.pop("quick_notebook_enabled", None)
+    raw["schema_version"] = 28
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    settings = SettingsManager(path).load()
+
+    assert settings.quick_notebook_enabled is False
+    assert settings.always_on_top is False
+    assert settings.schema_version == 29
