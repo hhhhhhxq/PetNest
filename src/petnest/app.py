@@ -85,6 +85,8 @@ from petnest.core.remote_resource_update import (
     RemoteResourceUpdateCoordinator,
 )
 from petnest.core.remote_interaction_service import FirebaseRemoteInteractionService
+from petnest.core.quick_notebook_reminders import is_due, next_occurrence, snooze_until
+from petnest.core.quick_notebook_store import NotebookPage, QuickNotebookStore, ReminderItem
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.system_idle_monitor import SystemIdleMonitor
 from petnest.core.work_finish_state import WorkFinishState, state_from_dict, state_to_dict
@@ -112,6 +114,8 @@ from petnest.platforms import (
 from petnest.platforms.cursor import CursorController, create_cursor_controller
 from petnest.platforms.keyboard import KeyboardActivityMonitor, create_keyboard_activity_monitor
 from petnest.ui.pet_window import PetWindow
+from petnest.ui.quick_notebook_reminder import QuickNotebookReminderCard
+from petnest.ui.quick_notebook_window import QuickNotebookWindow
 from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 from petnest.ui.animation_editor_page import AnimationSaveResult
 from petnest.ui.settings_dialog import SettingsDialog
@@ -407,6 +411,25 @@ class PetNest:
             position_saved=self._save_window_position,
             countdown_root=countdown_root,
         )
+        self.quick_notebook_store = QuickNotebookStore(
+            self.settings_manager.path.parent / "quick-notebook.json"
+        )
+        self.quick_notebook_store.load()
+        self.quick_notebook_store.purge_expired_trash()
+        self.quick_notebook_window = QuickNotebookWindow(store=self.quick_notebook_store)
+        self.quick_notebook_reminder = QuickNotebookReminderCard()
+        self.quick_notebook_timer = QTimer(self.window)
+        self.quick_notebook_timer.setInterval(30_000)
+        self.quick_notebook_timer.timeout.connect(self._poll_quick_notebook_reminders)
+        self._quick_notebook_session_triggered_ids: set[str] = set()
+        self.window.quick_notebook_requested.connect(self._toggle_quick_notebook)
+        self.window.position_changed.connect(self._reposition_quick_notebook)
+        self.quick_notebook_window.closed_by_user.connect(
+            lambda: self.window.set_quick_notebook_open(False)
+        )
+        self.quick_notebook_reminder.completed.connect(self._complete_quick_notebook_reminder)
+        self.quick_notebook_reminder.snoozed.connect(self._snooze_quick_notebook_reminder)
+        self.quick_notebook_reminder.open_requested.connect(self._open_quick_notebook_reminder)
         self._external_event_relay = _ExternalEventRelay(self.window)
         self._external_event_relay.event_received.connect(self._publish_external_event)
         self.work_activity = WorkActivityCoordinator(self.event_bus.publish)
@@ -645,6 +668,7 @@ class PetNest:
         )
         self.lan_firewall_advisor.start(enabled=firewall_enabled)
         self._configure_work_countdown()
+        self._configure_quick_notebook()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=self.settings.cursor_restore_pending)
         self.settings_manager.save(self.settings)
@@ -949,6 +973,7 @@ class PetNest:
                 self.window.clear_lan_firewall_notice()
         self._configure_remote_interaction_service()
         self._configure_work_countdown()
+        self._configure_quick_notebook()
         self._configure_mouse_follow()
         self._configure_cursor_style(previous_pending=previous_cursor_pending)
         if codex_log_configuration_changed:
@@ -1030,6 +1055,10 @@ class PetNest:
         """应用真实窗口状态；临时提醒隐藏时保持倒计时引擎继续运行。"""
         try:
             self.window.setVisible(visible)
+            if not visible:
+                self.quick_notebook_window.hide()
+                self.quick_notebook_reminder.hide()
+                self.window.set_quick_notebook_open(False)
             if sync_countdown:
                 self.work_countdown.set_pet_visible(visible)
         finally:
@@ -2009,6 +2038,11 @@ class PetNest:
         self._run_shutdown_step("隐藏防火墙提醒", self.window.clear_lan_firewall_notice)
         self._run_shutdown_step("隐藏互动提示", self.window.clear_interaction_bubble)
         self._run_shutdown_step("停止互动动效", self.window.clear_effect)
+        self._run_shutdown_step("停止便签提醒计时器", self.quick_notebook_timer.stop)
+        self._run_shutdown_step("保存便签当前页", self.quick_notebook_window.flush_current_page)
+        self._run_shutdown_step("保存便签本", self.quick_notebook_store.save)
+        self._run_shutdown_step("关闭便签提醒", self.quick_notebook_reminder.close)
+        self._run_shutdown_step("关闭便签本", self.quick_notebook_window.close)
         self._work_finish_visibility_lease.cancel()
         self._run_shutdown_step("隐藏打卡卡片", lambda: self._apply_pet_visibility(False))
         self._run_shutdown_step("关闭下班全屏提醒", self.work_finish_reminder.shutdown)
@@ -2725,6 +2759,7 @@ class PetNest:
         self.window.set_paused(self.settings.animation_paused)
         self.window.set_always_on_top(self.settings.always_on_top)
         self.window.set_mouse_interaction_enabled(self.settings.mouse_interaction_enabled)
+        self.window.set_quick_notebook_enabled(self.settings.quick_notebook_enabled)
 
     def _configure_work_countdown(self) -> None:
         self.work_countdown.configure(
@@ -2748,6 +2783,162 @@ class PetNest:
             on_work_finish_state=self._record_work_finish_state,
             on_work_finish_prompt=self._show_work_finish_prompt,
         )
+
+    def _configure_quick_notebook(self) -> None:
+        enabled = self.settings.quick_notebook_enabled
+        self.window.set_quick_notebook_enabled(enabled)
+        if enabled:
+            self.quick_notebook_timer.start()
+            self._poll_quick_notebook_reminders()
+        else:
+            self.quick_notebook_timer.stop()
+            self.quick_notebook_window.hide()
+            self.quick_notebook_reminder.hide()
+            self.window.set_quick_notebook_open(False)
+
+    def _toggle_quick_notebook(self) -> None:
+        if not self.settings.quick_notebook_enabled:
+            return
+        if self.quick_notebook_window.isVisible():
+            self.quick_notebook_window.flush_current_page()
+            self.quick_notebook_window.hide()
+            self.window.set_quick_notebook_open(False)
+            return
+        avoid = (
+            self.window.interaction_toolbox.frameGeometry(),
+        ) if self.window.interaction_toolbox.isVisible() else ()
+        self.quick_notebook_window.show_for(
+            self.window.quick_notebook_anchor_rect(),
+            avoid_rects=avoid,
+        )
+        self.window.set_quick_notebook_open(True)
+
+    def _reposition_quick_notebook(self) -> None:
+        if self.quick_notebook_window.isVisible():
+            self.quick_notebook_window.reposition(self.window.quick_notebook_anchor_rect())
+
+    def _poll_quick_notebook_reminders(self) -> None:
+        if not self.settings.quick_notebook_enabled:
+            return
+        if self.quick_notebook_reminder.isVisible():
+            return
+        now = datetime.now().astimezone()
+        for page in self.quick_notebook_store.pages("reminder"):
+            for index, reminder in enumerate(page.reminders):
+                if not reminder.enabled or reminder.completed:
+                    continue
+                target_text = reminder.snoozed_until or reminder.due_at
+                if not target_text:
+                    continue
+                try:
+                    target = datetime.fromisoformat(target_text)
+                    triggered = (
+                        datetime.fromisoformat(reminder.last_triggered_at)
+                        if reminder.last_triggered_at
+                        else None
+                    )
+                    due_now = is_due(target, last_triggered_at=triggered, now=now)
+                    if not due_now:
+                        due_now = (
+                            triggered is not None
+                            and now.astimezone(target.tzinfo) >= target
+                            and triggered >= target
+                            and reminder.id not in self._quick_notebook_session_triggered_ids
+                        )
+                except (TypeError, ValueError):
+                    self._replace_quick_notebook_reminder(
+                        page,
+                        index,
+                        replace(reminder, enabled=False),
+                    )
+                    LOGGER.warning("已禁用时间格式无效的便签提醒：%s", reminder.id)
+                    continue
+                if not due_now:
+                    continue
+                updated = replace(reminder, last_triggered_at=target.isoformat())
+                self._replace_quick_notebook_reminder(page, index, updated)
+                self._quick_notebook_session_triggered_ids.add(reminder.id)
+                if self.window.isVisible():
+                    self.quick_notebook_reminder.show_reminder(
+                        reminder.id,
+                        reminder.text or "提醒时间到了",
+                        self.window.quick_notebook_anchor_rect(),
+                    )
+                elif self.tray is not None:
+                    self.tray.showMessage("PetNest 提醒", reminder.text or "提醒时间到了")
+                return
+
+    def _complete_quick_notebook_reminder(self, reminder_id: str) -> None:
+        located = self._find_quick_notebook_reminder(reminder_id)
+        if located is None:
+            return
+        page, index, reminder = located
+        if reminder.repeat == "once" or not reminder.due_at:
+            updated = replace(reminder, completed=True, enabled=False, snoozed_until=None)
+        else:
+            try:
+                due = datetime.fromisoformat(reminder.due_at)
+                next_due = next_occurrence(
+                    due,
+                    reminder.repeat,
+                    reminder.weekdays,
+                    datetime.now().astimezone(),
+                )
+            except ValueError:
+                next_due = None
+            updated = replace(
+                reminder,
+                due_at=next_due.isoformat() if next_due is not None else reminder.due_at,
+                enabled=next_due is not None,
+                completed=next_due is None,
+                snoozed_until=None,
+                last_triggered_at=None,
+            )
+        self._replace_quick_notebook_reminder(page, index, updated)
+
+    def _snooze_quick_notebook_reminder(self, reminder_id: str) -> None:
+        located = self._find_quick_notebook_reminder(reminder_id)
+        if located is None:
+            return
+        page, index, reminder = located
+        updated = replace(
+            reminder,
+            snoozed_until=snooze_until(datetime.now().astimezone()).isoformat(),
+            last_triggered_at=None,
+        )
+        self._replace_quick_notebook_reminder(page, index, updated)
+
+    def _open_quick_notebook_reminder(self, reminder_id: str) -> None:
+        located = self._find_quick_notebook_reminder(reminder_id)
+        if located is None:
+            return
+        page, _index, _reminder = located
+        if not self.quick_notebook_window.isVisible():
+            self._toggle_quick_notebook()
+        self.quick_notebook_window.show_page(page.id)
+        self.quick_notebook_window.raise_()
+        self.quick_notebook_window.activateWindow()
+
+    def _find_quick_notebook_reminder(
+        self,
+        reminder_id: str,
+    ) -> tuple[NotebookPage, int, ReminderItem] | None:
+        for page in self.quick_notebook_store.pages("reminder"):
+            for index, reminder in enumerate(page.reminders):
+                if reminder.id == reminder_id:
+                    return page, index, reminder
+        return None
+
+    def _replace_quick_notebook_reminder(
+        self,
+        page: NotebookPage,
+        index: int,
+        reminder: ReminderItem,
+    ) -> None:
+        reminders = list(page.reminders)
+        reminders[index] = reminder
+        self.quick_notebook_store.update_page(replace(page, reminders=reminders))
+        self.quick_notebook_store.save()
 
     def _record_work_finish_state(self, state: WorkFinishState | None) -> None:
         """原子保存当天的提醒/加班/已下班状态。"""

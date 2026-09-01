@@ -75,6 +75,7 @@ class PetWindow(QWidget):
     lan_firewall_notice_activated = Signal()
     lan_firewall_notice_dismissed = Signal()
     position_changed = Signal()
+    quick_notebook_requested = Signal()
 
     def __init__(
         self,
@@ -122,6 +123,7 @@ class PetWindow(QWidget):
         self.interaction_toolbox = InteractionItemToolbox(None)
         self.interaction_toolbox.set_items(self._interaction_items)
         self.interaction_toolbox.hover_changed.connect(self._on_interaction_toolbox_hover_changed)
+        self.interaction_toolbox.notebook_requested.connect(self.quick_notebook_requested)
         toolbox = self.interaction_toolbox
         toolbox_disposed = False
 
@@ -415,6 +417,17 @@ class PetWindow(QWidget):
         if not enabled:
             self._clear_interaction_item_ui()
 
+    def set_quick_notebook_enabled(self, enabled: bool) -> None:
+        self.interaction_toolbox.set_notebook_enabled(enabled)
+        if not enabled and not self.interaction_items_available:
+            self._clear_interaction_item_ui()
+
+    def set_quick_notebook_open(self, opened: bool) -> None:
+        self.interaction_toolbox.set_notebook_open(opened)
+
+    def quick_notebook_anchor_rect(self) -> QRect:
+        return self._global_window_rect()
+
     def open_interaction_toolbox(self) -> bool:
         """在宠物旁显示并展开当前可用的互动道具。"""
         if not self._interaction_can_show():
@@ -604,7 +617,7 @@ class PetWindow(QWidget):
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
         self._pet_hovered = True
         self._interaction_hide_timer.stop()
-        if self._interaction_can_show():
+        if self._hover_tools_can_show():
             self.interaction_toolbox.show_for(self._global_window_rect())
         if self.is_opaque_at(int(event.position().x()), int(event.position().y())):
             self._handle_event("mouse.enter")
@@ -851,6 +864,14 @@ class PetWindow(QWidget):
     def _interaction_can_show(self) -> bool:
         return (
             self.interaction_items_available
+            and self._mouse_interaction_enabled
+            and not self._follow_mode_enabled
+            and self.isVisible()
+        )
+
+    def _hover_tools_can_show(self) -> bool:
+        return (
+            (self.interaction_items_available or self.interaction_toolbox.notebook_enabled)
             and self._mouse_interaction_enabled
             and not self._follow_mode_enabled
             and self.isVisible()

@@ -1286,6 +1286,27 @@ def test_interaction_toolbox_hover_bridges_pet_leave_with_delayed_hide(
     assert not window.interaction_toolbox.isVisible()
 
 
+def test_pet_hover_shows_notebook_launcher_without_interaction_items(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    requests: list[bool] = []
+    window.quick_notebook_requested.connect(lambda: requests.append(True))
+    window.set_quick_notebook_enabled(True)
+    window.show()
+    point = QPoint(2, 2)
+    enter = QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point)))
+
+    QApplication.sendEvent(window, enter)
+
+    assert window.interaction_toolbox.isVisible()
+    assert window.interaction_toolbox.notebook_launcher.isVisible()
+    assert not window.interaction_toolbox.launcher.isVisible()
+    window.interaction_toolbox.notebook_launcher.click()
+    assert requests == [True]
+
+
 def test_interaction_ui_cleans_up_on_modes_reload_hide_and_close(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

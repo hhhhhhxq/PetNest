@@ -8,7 +8,7 @@ import os
 import socket
 import sys
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread, current_thread
 from time import monotonic
@@ -35,6 +35,7 @@ from petnest.core.codex_session_log import CodexLogSourceStatus, CodexSessionLog
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_manifest import ResourceManifest
 from petnest.core.remote_resource_update import RemoteResourceApplyResult, RemoteResourceCheckResult
+from petnest.core.quick_notebook_store import ReminderItem
 from petnest.core.settings_manager import SettingsManager
 from petnest.core.windows_lan_firewall import LanFirewallStatus
 from petnest.models.event import EventName, PetEvent
@@ -287,6 +288,181 @@ def test_app_wires_peer_registry_alert_action_and_overlay(qtbot: pytest.QtBot, t
     assert application.lan_pool_sync.roster is application.lan_pool_roster
     assert application.danger_alert_action.text() == "⚠  发送危险预警"
     assert application.danger_alert_overlay is not None
+    application.shutdown()
+
+
+def test_application_toggles_notebook_and_saves_on_shutdown(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    manager = SettingsManager(tmp_path / "settings.json")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=manager,
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.window.show()
+    application.apply_settings(
+        replace(application.settings, quick_notebook_enabled=True)
+    )
+
+    application._toggle_quick_notebook()
+    assert application.quick_notebook_window.isVisible()
+    assert application.window.interaction_toolbox.notebook_launcher.isChecked()
+    application.quick_notebook_window.note_editor.setPlainText("退出前保存")
+    application._toggle_quick_notebook()
+    assert not application.quick_notebook_window.isVisible()
+    assert not application.window.interaction_toolbox.notebook_launcher.isChecked()
+
+    application.shutdown()
+
+    assert (tmp_path / "quick-notebook.json").exists()
+
+
+def test_due_notebook_reminder_shows_once_and_records_trigger(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    page = application.quick_notebook_store.create_page("reminder")
+    reminder = ReminderItem(
+        "r1",
+        "把方案发给小林",
+        due_at=(datetime.now().astimezone() - timedelta(minutes=1)).isoformat(),
+    )
+    application.quick_notebook_store.update_page(replace(page, reminders=[reminder]))
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        application.quick_notebook_reminder,
+        "show_reminder",
+        lambda reminder_id, text, _anchor: shown.append((reminder_id, text)),
+    )
+    application.window.show()
+
+    application._poll_quick_notebook_reminders()
+    application._poll_quick_notebook_reminders()
+
+    assert shown == [("r1", "把方案发给小林")]
+    located = application._find_quick_notebook_reminder("r1")
+    assert located is not None
+    assert located[2].last_triggered_at is not None
+    application.shutdown()
+
+
+def test_unresolved_due_notebook_reminder_is_replayed_once_in_a_new_session(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    page = application.quick_notebook_store.create_page("reminder")
+    due_at = (datetime.now().astimezone() - timedelta(minutes=1)).isoformat()
+    reminder = ReminderItem(
+        "unresolved",
+        "仍未处理的提醒",
+        due_at=due_at,
+        last_triggered_at=due_at,
+    )
+    application.quick_notebook_store.update_page(replace(page, reminders=[reminder]))
+    shown: list[str] = []
+    monkeypatch.setattr(
+        application.quick_notebook_reminder,
+        "show_reminder",
+        lambda reminder_id, _text, _anchor: shown.append(reminder_id),
+    )
+    application.window.show()
+
+    application._poll_quick_notebook_reminders()
+    application._poll_quick_notebook_reminders()
+
+    assert shown == ["unresolved"]
+    application.shutdown()
+
+
+def test_visible_notebook_reminder_is_not_overwritten_by_next_due_item(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.window.show()
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    page = application.quick_notebook_store.create_page("reminder")
+    due_at = (datetime.now().astimezone() - timedelta(minutes=1)).isoformat()
+    reminders = [
+        ReminderItem("first", "第一条提醒", due_at=due_at),
+        ReminderItem("second", "第二条提醒", due_at=due_at),
+    ]
+    application.quick_notebook_store.update_page(replace(page, reminders=reminders))
+
+    application._poll_quick_notebook_reminders()
+    assert application.quick_notebook_reminder.message_label.text() == "第一条提醒"
+    application._poll_quick_notebook_reminders()
+    assert application.quick_notebook_reminder.message_label.text() == "第一条提醒"
+
+    application.quick_notebook_reminder.complete_button.click()
+    application._poll_quick_notebook_reminders()
+    assert application.quick_notebook_reminder.message_label.text() == "第二条提醒"
+    application.shutdown()
+
+
+@pytest.mark.parametrize("due_at", ["not-a-date", "2026-09-01T10:00:00"])
+def test_invalid_notebook_reminder_is_disabled_instead_of_retried_forever(
+    qtbot: pytest.QtBot, tmp_path: Path, due_at: str
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    page = application.quick_notebook_store.create_page("reminder")
+    reminder = ReminderItem("broken", "错误时间", due_at=due_at)
+    application.quick_notebook_store.update_page(replace(page, reminders=[reminder]))
+
+    application._poll_quick_notebook_reminders()
+
+    located = application._find_quick_notebook_reminder("broken")
+    assert located is not None
+    assert located[2].enabled is False
+    application.shutdown()
+
+
+def test_escape_closing_notebook_clears_hover_launcher_state(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.window.show()
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    application._toggle_quick_notebook()
+
+    qtbot.keyClick(application.quick_notebook_window, Qt.Key.Key_Escape)
+
+    assert not application.window.interaction_toolbox.notebook_launcher.isChecked()
     application.shutdown()
 
 
