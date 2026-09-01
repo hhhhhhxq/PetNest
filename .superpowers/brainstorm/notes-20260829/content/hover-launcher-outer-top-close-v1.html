@@ -1,0 +1,18 @@
+<style>
+  .stage{min-height:500px;display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#fffdf9,#f4ece4);border:1px solid #e8ded5;border-radius:20px}.scene{position:relative;width:360px;height:330px}.pet{position:absolute;left:92px;top:95px;width:150px;height:165px;border-radius:48% 48% 42% 42%;background:radial-gradient(circle at 55% 30%,#f6d0a5,#d9955d 65%,#a66743);box-shadow:0 15px 25px rgba(78,52,34,.18);display:grid;place-items:center;font-size:82px}.tool{position:absolute;width:44px;height:44px;border-radius:22px;background:rgba(255,242,236,.97);border:1px solid #f0d5c7;box-shadow:0 4px 10px rgba(91,58,41,.18);display:grid;place-items:center;color:#a84f30}.tool svg{width:25px;height:25px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.toolbox{left:223px;top:60px}.notebook{left:266px;top:95px}.measure{position:absolute;left:262px;top:78px;width:28px;border-top:1px dashed rgba(168,79,48,.65);transform:rotate(39deg);transform-origin:left}.gap{position:absolute;left:266px;top:71px;color:#9a7767;font-size:10px;white-space:nowrap}.caption{position:absolute;left:205px;top:155px;width:145px;color:#7d6b62;font-size:11px;line-height:1.5}.spec{max-width:680px;margin:18px auto 0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.spec div{padding:11px 13px;border:1px solid #e8ded5;border-radius:12px;background:#fffdf9}.spec b{display:block;color:#7d5a4b;margin-bottom:3px}.spec span{font-size:12px;color:#80756e}@media(max-width:650px){.scene{transform:scale(.82)}.spec{grid-template-columns:1fr}}
+</style>
+
+<h2>C · 收紧后的外侧顶部半圆</h2>
+<p class="subtitle">不画任何轨道线；两个入口沿同一条隐形半圆靠近排列。</p>
+
+<div class="stage">
+  <div class="scene">
+    <div class="pet">🐈</div>
+    <div class="tool toolbox"><svg viewBox="0 0 24 24"><path d="M4 7.5 12 3l8 4.5-8 4.5Z"/><path d="M12 12v9"/></svg></div>
+    <div class="tool notebook"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M12 8h5M12 12h5M12 16h3"/></svg></div>
+    <div class="measure"></div><span class="gap">约 11px 净间距</span>
+    <div class="caption">道具箱靠近宠物头顶<br>便签本沿圆弧向外下方</div>
+  </div>
+</div>
+
+<div class="spec"><div><b>按钮尺寸</b><span>44 × 44px，不缩小命中区</span></div><div><b>净间距</b><span>约 11px，视觉成组且不误触</span></div><div><b>边缘处理</b><span>靠右镜像到左上，保持相同角度</span></div></div>
