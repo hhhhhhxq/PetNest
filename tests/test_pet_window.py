@@ -739,14 +739,16 @@ def test_drag_starts_only_after_threshold_moves_window_and_saves_position(qtbot:
     ("available", "expected"),
     [
         (("drag_left", "walk_left", "drag", "walk"), "drag_left"),
-        (("codex_running_left", "drag", "walk"), "codex_running_left"),
-        (("walk_left", "drag", "walk"), "walk_left"),
+        (("codex_running_left", "drag", "walk"), "drag"),
+        (("walk_left", "drag", "walk"), "drag"),
+        (("walk_left", "codex_running_left", "walk"), "walk_left"),
+        (("codex_running_left", "walk"), "codex_running_left"),
         (("drag", "walk"), "drag"),
         (("walk",), "walk"),
         ((), "idle"),
     ],
 )
-def test_drag_action_uses_directional_then_generic_fallback_order(
+def test_drag_action_prefers_drag_semantics_before_walk_fallbacks(
     qtbot: pytest.QtBot,
     tmp_path: Path,
     available: tuple[str, ...],
@@ -760,6 +762,26 @@ def test_drag_action_uses_directional_then_generic_fallback_order(
     qtbot.addWidget(window)
 
     assert window._drag_action("left") == expected
+
+
+def test_drag_action_prefers_generic_drag_before_directional_walk_on_right(
+    qtbot: pytest.QtBot,
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path)
+    source = package.animations["drag"]
+    animations = {
+        "idle": package.animations["idle"],
+        "drag": source,
+        "walk_right": replace(source, name="walk_right"),
+        "walk": replace(source, name="walk"),
+    }
+    window = PetWindow(
+        replace(package, animations=animations, bindings={}, fallbacks={})
+    )
+    qtbot.addWidget(window)
+
+    assert window._drag_action("right") == "drag"
 
 
 def test_drag_motion_switches_between_directional_actions(

@@ -1035,10 +1035,13 @@ class PetWindow(QWidget):
         """按当前水平拖动方向选择专用动作，并逐级回退到通用动作。"""
         candidates: list[str] = []
         if direction in {"left", "right"}:
-            candidates.extend((f"drag_{direction}", f"walk_{direction}"))
+            candidates.append(f"drag_{direction}")
+        candidates.append("drag")
+        if direction in {"left", "right"}:
+            candidates.append(f"walk_{direction}")
             if direction == "left":
                 candidates.append("codex_running_left")
-        candidates.extend(("drag", "walk", "idle"))
+        candidates.extend(("walk", "idle"))
         return next(name for name in candidates if name in self.package.animations)
 
     def _follow_action(self) -> str:
