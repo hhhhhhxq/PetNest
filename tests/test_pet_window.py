@@ -41,7 +41,7 @@ from petnest.models.pet_package import (
     PetPackage,
 )
 from petnest.ui.interaction_item_toolbox import INTERACTION_ITEM_MIME
-from petnest.ui.pet_window import PetWindow, _prepare_translucent_frame
+from petnest.ui.pet_window import PetWindow, _prepare_translucent_frame, _visible_frame_union
 from petnest.ui.tray_icon import PetTrayIcon, application_icon
 
 
@@ -113,6 +113,17 @@ def _interaction_package(tmp_path: Path, *, identifier: str = "cat") -> PetPacka
         bindings={**package.bindings, "interaction.item.toy_ball": "wave"},
         interaction_items=(item,),
     )
+
+
+def _visible_anchor_package(tmp_path: Path) -> PetPackage:
+    package = _interaction_package(tmp_path)
+    first = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+    first.paste((255, 0, 0, 255), (4, 1, 8, 6))
+    second = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+    second.paste((255, 0, 0, 255), (2, 2, 9, 7))
+    first.save(package.animations["hover"].frames[0])
+    second.save(package.animations["hover"].frames[1])
+    return package
 
 
 def _item_mime(identifier: str | bytes, *, format_name: str = INTERACTION_ITEM_MIME) -> QMimeData:
@@ -350,6 +361,21 @@ def test_transparent_over_effect_keeps_pet_pixels_beneath_it(qtbot: pytest.QtBot
     assert covered_pet.blue() > covered_pet.red()
     assert uncovered_pet.alpha() == 255
     assert uncovered_pet.red() > uncovered_pet.blue()
+
+
+def test_visible_frame_union_ignores_padding_and_covers_every_frame() -> None:
+    first = Image.new("RGBA", (100, 80), (0, 0, 0, 0))
+    first.paste((255, 0, 0, 255), (30, 10, 70, 60))
+    second = Image.new("RGBA", (100, 80), (0, 0, 0, 0))
+    second.paste((255, 0, 0, 255), (20, 20, 80, 70))
+
+    assert _visible_frame_union((first, second), QSize(100, 80)) == QRect(20, 10, 60, 60)
+
+
+def test_visible_frame_union_falls_back_to_canvas_for_transparent_frames() -> None:
+    transparent = Image.new("RGBA", (100, 80), (0, 0, 0, 0))
+
+    assert _visible_frame_union((transparent,), QSize(100, 80)) == QRect(0, 0, 100, 80)
 
 
 def test_under_effect_stays_behind_opaque_pet_pixels(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -1286,6 +1312,87 @@ def test_interaction_toolbox_hover_bridges_pet_leave_with_delayed_hide(
     assert not window.interaction_toolbox.isVisible()
 
 
+def test_hover_tool_anchor_uses_hover_action_union_and_ignores_countdown_padding(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_visible_anchor_package(tmp_path))
+    qtbot.addWidget(window)
+    window.set_countdown_text("距离下班 01:23:45")
+    window.show()
+    point = QPoint(window._pet_left() + 12, 2)
+    enter = QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point)))
+
+    QApplication.sendEvent(window, enter)
+
+    assert window.playing_action == "hover"
+    assert window._frozen_hover_anchor_pet_rect == QRect(3, 1, 11, 10)
+    expected = QRect(
+        window.mapToGlobal(QPoint(window._pet_left() + 3, 1)),
+        QSize(11, 10),
+    )
+    assert window.interaction_toolbox._pet_rect == expected
+
+
+def test_hover_tool_anchor_stays_frozen_across_frames_and_tracks_window_move(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_visible_anchor_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    point = QPoint(12, 2)
+    enter = QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point)))
+    QApplication.sendEvent(window, enter)
+    frozen = QRect(window._frozen_hover_anchor_pet_rect)
+    before = QRect(window.interaction_toolbox._pet_rect)
+
+    window.animation_timer.timeout.emit()
+    assert window._frozen_hover_anchor_pet_rect == frozen
+
+    window.move(window.pos() + QPoint(20, 10))
+    QApplication.processEvents()
+    assert window.interaction_toolbox._pet_rect.topLeft() == before.topLeft() + QPoint(20, 10)
+    assert window.interaction_toolbox._pet_rect.size() == before.size()
+
+
+def test_hover_tool_anchor_recomputes_for_new_scale(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = PetWindow(_visible_anchor_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    point = QPoint(12, 2)
+    QApplication.sendEvent(
+        window,
+        QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point))),
+    )
+
+    window.set_scale(2.0)
+
+    assert window._frozen_hover_anchor_pet_rect == QRect(4, 2, 14, 12)
+    assert window.interaction_toolbox._pet_rect.size() == QSize(14, 12)
+
+
+def test_hover_tool_anchor_tracks_pet_recentering_when_countdown_appears(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    window = PetWindow(_visible_anchor_package(tmp_path))
+    qtbot.addWidget(window)
+    window.show()
+    point = QPoint(12, 2)
+    QApplication.sendEvent(
+        window,
+        QEnterEvent(QPointF(point), QPointF(point), QPointF(window.mapToGlobal(point))),
+    )
+    frozen = QRect(window._frozen_hover_anchor_pet_rect)
+
+    window.set_countdown_text("距离下班 01:23:45")
+    QApplication.processEvents()
+
+    expected_top_left = window.mapToGlobal(
+        QPoint(window._pet_left() + frozen.left(), frozen.top())
+    )
+    assert window._frozen_hover_anchor_pet_rect == frozen
+    assert window.interaction_toolbox._pet_rect.topLeft() == expected_top_left
+
+
 def test_pet_hover_shows_notebook_launcher_without_interaction_items(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
@@ -1333,7 +1440,7 @@ def test_interaction_ui_cleans_up_on_modes_reload_hide_and_close(
     previous_rect = QRect(window.interaction_toolbox._pet_rect)
     window.move(window.pos() + QPoint(20, 10))
     QApplication.processEvents()
-    assert window.interaction_toolbox._pet_rect == window._global_window_rect()
+    assert window.interaction_toolbox._pet_rect == window._hover_tool_anchor_global_rect()
     assert window.interaction_toolbox._pet_rect != previous_rect
 
     window.hide()

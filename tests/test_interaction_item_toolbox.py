@@ -370,3 +370,16 @@ def test_notebook_launcher_survives_empty_items(qtbot) -> None:
     assert toolbox.notebook_launcher.isVisible()
     toolbox.notebook_launcher.click()
     assert requests == [True]
+
+
+def test_notebook_only_launcher_uses_the_inner_arc_slot_on_both_sides(qtbot) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items(())
+    toolbox.set_notebook_enabled(True)
+
+    toolbox._apply_arc_side("right")
+    assert toolbox.notebook_launcher.pos() == QPoint(0, 0)
+
+    toolbox._apply_arc_side("left")
+    assert toolbox.notebook_launcher.pos() == QPoint(43, 0)

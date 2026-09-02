@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from math import hypot
+from math import ceil, floor, hypot
 from pathlib import Path
 import sys
 
@@ -39,6 +39,19 @@ from petnest.ui.interaction_item_toolbox import INTERACTION_ITEM_MIME, Interacti
 from petnest.ui.lan_firewall_notice import LanFirewallNoticeBubble
 
 PositionSaved = Callable[[QPoint], object]
+
+
+def _visible_frame_union(frames: tuple[Image.Image, ...], fallback_size: QSize) -> QRect:
+    """返回一组动画帧的 Alpha 可见边界并集。"""
+    bounds = [frame.getchannel("A").getbbox() for frame in frames]
+    visible = [value for value in bounds if value is not None]
+    if not visible:
+        return QRect(0, 0, max(1, fallback_size.width()), max(1, fallback_size.height()))
+    left = min(value[0] for value in visible)
+    top = min(value[1] for value in visible)
+    right = max(value[2] for value in visible)
+    bottom = max(value[3] for value in visible)
+    return QRect(left, top, max(1, right - left), max(1, bottom - top))
 
 
 def _prepare_translucent_frame(painter: QPainter, rect: QRect) -> None:
@@ -152,6 +165,8 @@ class PetWindow(QWidget):
         # 倒计时卡片只需要当前动作的可见底边；透明边界不会随循环帧改变，
         # 因此将 alpha 扫描结果按动作缓存，避免每个渲染 tick 重复 getbbox。
         self._countdown_bottom_cache: dict[str, int] = {}
+        self._hover_action_bounds_cache: dict[str, QRect] = {}
+        self._frozen_hover_anchor_pet_rect: QRect | None = None
         self._alpha_cache: dict[int, tuple[int, int, bytes]] = {}
         self._press_global: QPoint | None = None
         self._window_origin: QPoint | None = None
@@ -306,10 +321,16 @@ class PetWindow(QWidget):
         if self._follow_mode_enabled:
             self._normal_scale = scale
             scale = self._follow_scale(scale)
+        reposition_hover_tools = self.interaction_toolbox.isVisible()
+        if reposition_hover_tools:
+            self._frozen_hover_anchor_pet_rect = None
         self._scale = scale
         self._set_current_frame()
         self._start_animation_timer()
         self.move(self.clamp_position(self.pos()))
+        if reposition_hover_tools:
+            self._freeze_hover_tool_anchor()
+            self.interaction_toolbox.reposition(self._hover_tool_anchor_global_rect())
 
     def set_follow_mode(self, enabled: bool, *, scale_multiplier: float) -> None:
         """切换鼠标跟随显示层，并保留普通模式的缩放与倒计时内容。"""
@@ -433,7 +454,8 @@ class PetWindow(QWidget):
         if not self._interaction_can_show():
             return False
         self._interaction_hide_timer.stop()
-        self.interaction_toolbox.show_for(self._global_window_rect())
+        self._freeze_hover_tool_anchor()
+        self.interaction_toolbox.show_for(self._hover_tool_anchor_global_rect())
         self.interaction_toolbox.open_panel()
         return True
 
@@ -589,6 +611,7 @@ class PetWindow(QWidget):
         self.player.clear()
         self._pixmap_cache.clear()
         self._countdown_bottom_cache.clear()
+        self._hover_action_bounds_cache.clear()
         self._alpha_cache.clear()
         self.package = package
         self._scale = package.display.default_scale
@@ -617,10 +640,12 @@ class PetWindow(QWidget):
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
         self._pet_hovered = True
         self._interaction_hide_timer.stop()
-        if self._hover_tools_can_show():
-            self.interaction_toolbox.show_for(self._global_window_rect())
-        if self.is_opaque_at(int(event.position().x()), int(event.position().y())):
+        opaque = self.is_opaque_at(int(event.position().x()), int(event.position().y()))
+        if opaque:
             self._handle_event("mouse.enter")
+        if self._hover_tools_can_show():
+            self._freeze_hover_tool_anchor()
+            self.interaction_toolbox.show_for(self._hover_tool_anchor_global_rect())
         super().enterEvent(event)
 
     def leaveEvent(self, event: QEvent) -> None:  # type: ignore[name-defined] # noqa: N802
@@ -774,7 +799,7 @@ class PetWindow(QWidget):
         self.codex_status_bubble.reposition(self._global_window_rect())
         self.lan_firewall_notice.reposition(self._global_window_rect())
         if self.interaction_toolbox.isVisible():
-            self.interaction_toolbox.reposition(self._global_window_rect())
+            self.interaction_toolbox.reposition(self._hover_tool_anchor_global_rect())
         super().moveEvent(event)  # type: ignore[arg-type]
         self.position_changed.emit()
 
@@ -877,6 +902,30 @@ class PetWindow(QWidget):
             and self.isVisible()
         )
 
+    def _action_visible_pet_rect(self) -> QRect:
+        bounds = self._hover_action_bounds_cache.get(self._playing_action)
+        if bounds is None:
+            bounds = _visible_frame_union(
+                self.player.current_frames,
+                QSize(self.package.canvas.width, self.package.canvas.height),
+            )
+            self._hover_action_bounds_cache[self._playing_action] = QRect(bounds)
+        left = floor(bounds.left() * self.scale)
+        top = floor(bounds.top() * self.scale)
+        right = ceil((bounds.right() + 1) * self.scale)
+        bottom = ceil((bounds.bottom() + 1) * self.scale)
+        return QRect(left, top, max(1, right - left), max(1, bottom - top))
+
+    def _freeze_hover_tool_anchor(self) -> None:
+        self._frozen_hover_anchor_pet_rect = self._action_visible_pet_rect()
+
+    def _hover_tool_anchor_global_rect(self) -> QRect:
+        anchor = self._frozen_hover_anchor_pet_rect
+        if anchor is None:
+            anchor = QRect(0, 0, self._pet_width(), self._pet_height())
+        local_top_left = QPoint(self._pet_left() + anchor.left(), anchor.top())
+        return QRect(self.mapToGlobal(local_top_left), anchor.size())
+
     def _on_interaction_toolbox_hover_changed(self, hovered: bool) -> None:
         self._toolbox_hovered = hovered
         if hovered:
@@ -894,6 +943,7 @@ class PetWindow(QWidget):
         if self._pet_hovered or self._toolbox_hovered:
             return
         self.interaction_toolbox.hide_all()
+        self._frozen_hover_anchor_pet_rect = None
 
     def _clear_interaction_item_ui(self) -> None:
         self._interaction_hide_timer.stop()
@@ -901,6 +951,7 @@ class PetWindow(QWidget):
         self._toolbox_hovered = False
         self._set_drop_highlight(False)
         self.interaction_toolbox.hide_all()
+        self._frozen_hover_anchor_pet_rect = None
 
     def _set_drop_highlight(self, highlighted: bool) -> None:
         if self._drop_highlight == highlighted:

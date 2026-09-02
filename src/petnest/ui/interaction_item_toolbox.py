@@ -579,13 +579,21 @@ class InteractionItemToolbox(QFrame):
         root_layout = self.layout()
         if not isinstance(root_layout, QBoxLayout):
             return
+        both_launchers = bool(self._item_buttons) and self._notebook_enabled
+        notebook_position = (
+            _LAUNCHER_ARC_DELTA if both_launchers else QPoint(0, 0)
+        )
         if side == "right":
             self.launcher.move(0, 0)
-            self.notebook_launcher.move(_LAUNCHER_ARC_DELTA)
+            self.notebook_launcher.move(notebook_position)
             root_layout.setDirection(QBoxLayout.Direction.LeftToRight)
         else:
             self.launcher.move(_LAUNCHER_ARC_DELTA.x(), 0)
-            self.notebook_launcher.move(0, _LAUNCHER_ARC_DELTA.y())
+            self.notebook_launcher.move(
+                QPoint(0, _LAUNCHER_ARC_DELTA.y())
+                if both_launchers
+                else QPoint(_LAUNCHER_ARC_DELTA.x(), 0)
+            )
             root_layout.setDirection(QBoxLayout.Direction.RightToLeft)
         root_layout.activate()
 
