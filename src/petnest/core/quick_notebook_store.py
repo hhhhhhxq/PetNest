@@ -7,6 +7,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Callable, Iterable, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -187,6 +188,17 @@ class QuickNotebookStore:
             if temporary.exists():
                 temporary.unlink()
 
+    def persist(self, change: Callable[[], object]) -> object:
+        """写盘成功才保留内存变更；失败可安全重试增删、恢复等操作。"""
+        snapshot = deepcopy((self._pages, self._order, self._trash, self.last_type, self.last_page_id_by_type))
+        try:
+            result = change()
+            self.save()
+            return result
+        except Exception:
+            self._pages, self._order, self._trash, self.last_type, self.last_page_id_by_type = snapshot
+            raise
+
     def create_page(self, page_type: PageType) -> NotebookPage:
         if page_type not in PAGE_TYPES:
             raise ValueError(f"不支持的便签页型：{page_type}")
@@ -237,8 +249,6 @@ class QuickNotebookStore:
             raise KeyError(page.id)
         updated = replace(page, updated_at=_iso(self._now()))
         self._pages[page.id] = updated
-        self._order.remove(page.id)
-        self._order.insert(0, page.id)
         self.last_type = updated.type
         self.last_page_id_by_type[updated.type] = updated.id
         return updated

@@ -66,7 +66,7 @@ def test_delete_clear_restore_and_expiry_are_recoverable(tmp_path) -> None:
     assert store.trash_count == 0
 
 
-def test_update_page_moves_it_to_front_without_crossing_types(tmp_path) -> None:
+def test_update_page_preserves_navigation_order_without_crossing_types(tmp_path) -> None:
     current = [NOW]
     store = QuickNotebookStore(tmp_path / "quick-notebook.json", now=lambda: current[0])
     first = store.create_page("note")
@@ -76,7 +76,7 @@ def test_update_page_moves_it_to_front_without_crossing_types(tmp_path) -> None:
 
     store.update_note(first.id, custom_title=None, body="新的第一行", tags=("项目",))
 
-    assert store.page_ids("note") == (first.id, second.id)
+    assert store.page_ids("note") == (second.id, first.id)
     assert store.page_ids("todo") == (todo.id,)
     assert store.page(first.id).display_title == "新的第一行"
     assert store.page(first.id).tags == ("项目",)

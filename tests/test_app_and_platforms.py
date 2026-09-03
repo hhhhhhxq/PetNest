@@ -466,6 +466,74 @@ def test_escape_closing_notebook_clears_hover_launcher_state(
     application.shutdown()
 
 
+def test_notebook_blank_reminder_never_notifies(qtbot, tmp_path, monkeypatch) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.window.show()
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    page = application.quick_notebook_store.create_page("reminder")
+    item = ReminderItem("blank", "  ", enabled=True, due_at=(datetime.now().astimezone() - timedelta(minutes=1)).isoformat())
+    application.quick_notebook_store.update_page(replace(page, reminders=[item]))
+    shown = []
+    monkeypatch.setattr(application.quick_notebook_reminder, "show_reminder", lambda *args: shown.append(args))
+    application._poll_quick_notebook_reminders()
+    assert shown == []
+    assert application._find_quick_notebook_reminder("blank")[2].last_triggered_at is None
+    application.shutdown()
+
+
+def test_notebook_completion_updates_open_editor_without_losing_pending_text(qtbot, tmp_path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    page = application.quick_notebook_store.create_page("reminder")
+    item = ReminderItem("pending", "原始内容", due_at=(datetime.now().astimezone() - timedelta(minutes=1)).isoformat())
+    application.quick_notebook_store.update_page(replace(page, reminders=[item]))
+    editor = application.quick_notebook_window
+    editor.show_page(page.id)
+    row = editor.reminder_editor._rows[0]
+    row.text.setText("尚未自动保存的编辑")
+    application._complete_quick_notebook_reminder("pending")
+    assert row.completed
+    assert not row.enabled.isChecked()
+    assert row.text.text() == "尚未自动保存的编辑"
+    editor.flush_current_page()
+    saved = application._find_quick_notebook_reminder("pending")[2]
+    assert saved.completed and not saved.enabled
+    assert saved.text == "尚未自动保存的编辑"
+    application.shutdown()
+
+
+def test_notebook_launcher_does_not_hide_failed_save(qtbot, tmp_path, monkeypatch) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    application.apply_settings(replace(application.settings, quick_notebook_enabled=True))
+    application._toggle_quick_notebook()
+    application.quick_notebook_window.note_editor.setPlainText("写盘失败时保留")
+    with monkeypatch.context() as patch:
+        def fail_save():
+            raise OSError("simulated disk full")
+        patch.setattr(application.quick_notebook_store, "save", fail_save)
+        application._toggle_quick_notebook()
+        assert application.quick_notebook_window.isVisible()
+        assert application.quick_notebook_window.save_hint.text() == "保存失败"
+    application.shutdown()
+
+
 def test_start_syncs_tray_visibility_label_after_showing_pet(
     qtbot: pytest.QtBot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

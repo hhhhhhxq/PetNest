@@ -2800,7 +2800,8 @@ class PetNest:
         if not self.settings.quick_notebook_enabled:
             return
         if self.quick_notebook_window.isVisible():
-            self.quick_notebook_window.flush_current_page()
+            if not self.quick_notebook_window.flush_current_page():
+                return
             self.quick_notebook_window.hide()
             self.window.set_quick_notebook_open(False)
             return
@@ -2820,12 +2821,14 @@ class PetNest:
     def _poll_quick_notebook_reminders(self) -> None:
         if not self.settings.quick_notebook_enabled:
             return
+        if not self.quick_notebook_window.flush_pending_reminder_changes():
+            return
         if self.quick_notebook_reminder.isVisible():
             return
         now = datetime.now().astimezone()
         for page in self.quick_notebook_store.pages("reminder"):
             for index, reminder in enumerate(page.reminders):
-                if not reminder.enabled or reminder.completed:
+                if not reminder.enabled or reminder.completed or not reminder.text.strip():
                     continue
                 target_text = reminder.snoozed_until or reminder.due_at
                 if not target_text:
@@ -2856,7 +2859,8 @@ class PetNest:
                 if not due_now:
                     continue
                 updated = replace(reminder, last_triggered_at=target.isoformat())
-                self._replace_quick_notebook_reminder(page, index, updated)
+                if not self._replace_quick_notebook_reminder(page, index, updated):
+                    return
                 self._quick_notebook_session_triggered_ids.add(reminder.id)
                 if self.window.isVisible():
                     self.quick_notebook_reminder.show_reminder(
@@ -2934,11 +2938,8 @@ class PetNest:
         page: NotebookPage,
         index: int,
         reminder: ReminderItem,
-    ) -> None:
-        reminders = list(page.reminders)
-        reminders[index] = reminder
-        self.quick_notebook_store.update_page(replace(page, reminders=reminders))
-        self.quick_notebook_store.save()
+    ) -> bool:
+        return self.quick_notebook_window.persist_reminder_change(page.id, reminder)
 
     def _record_work_finish_state(self, state: WorkFinishState | None) -> None:
         """原子保存当天的提醒/加班/已下班状态。"""

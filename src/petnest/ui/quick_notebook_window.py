@@ -9,26 +9,30 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from PySide6.QtCore import QDateTime, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QPaintEvent, QPainter, QPainterPath, QPen, QRegion, QTextFormat
+from PySide6.QtGui import QColor, QFocusEvent, QGuiApplication, QInputMethodEvent, QPaintEvent, QPainter, QPainterPath, QPalette, QPen, QRegion, QTextFormat
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QLayout,
     QListWidget,
     QListWidgetItem,
+    QListView,
     QPlainTextEdit,
     QProgressBar,
+    QProxyStyle,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QStyle,
+    QStyledItemDelegate,
     QTextEdit,
     QToolButton,
     QVBoxLayout,
@@ -53,6 +57,104 @@ PLACEMENT_GAP = 9
 TAB_HEIGHT = 43
 TAB_GAP = 8
 TAB_TOP = 28
+
+
+class _InputMethodPlaceholderMixin:
+    """组词还没写入 text/document 时，也隐藏占位文字，避免与预编辑文字重叠。"""
+
+    def setPlaceholderText(self, text: str) -> None:  # noqa: N802 - Qt override
+        self._placeholder_text = text
+        self._sync_placeholder()
+
+    def _sync_placeholder(self) -> None:
+        composing = getattr(self, "_ime_composing", False)
+        super().setPlaceholderText("" if composing else getattr(self, "_placeholder_text", ""))
+
+    def inputMethodEvent(self, event: QInputMethodEvent) -> None:  # noqa: N802 - Qt override
+        self._ime_composing = bool(event.preeditString())
+        self._sync_placeholder()
+        super().inputMethodEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802 - Qt override
+        super().focusOutEvent(event)
+        self._ime_composing = False
+        self._sync_placeholder()
+
+
+class _NotebookLineEdit(_InputMethodPlaceholderMixin, QLineEdit):
+    pass
+
+
+class _NotebookTextEdit(_InputMethodPlaceholderMixin, QPlainTextEdit):
+    pass
+
+
+class _NotebookPopupStyle(QProxyStyle):
+    def __init__(self) -> None:
+        super().__init__("Fusion")
+
+    def styleHint(self, hint, option=None, widget=None, return_data=None):  # noqa: N802 - Qt override
+        if hint == QStyle.StyleHint.SH_ComboBox_Popup:
+            return 0
+        return super().styleHint(hint, option, widget, return_data)
+
+
+class _NotebookComboBox(QComboBox):
+    """独立浅色弹出列表，不混用 macOS 深色原生菜单和纸面文字颜色。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._popup_style = _NotebookPopupStyle()
+        self._popup_style.setParent(self)
+        self.setStyle(self._popup_style)
+        view = QListView(self)
+        view.setObjectName("quickNotebookComboPopup")
+        view.setStyle(self._popup_style)
+        view.setItemDelegate(QStyledItemDelegate(view))
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setView(view)
+        palette = QPalette(self.palette())
+        for group in (QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive, QPalette.ColorGroup.Disabled):
+            for role, color in (
+                (QPalette.ColorRole.Window, "#FFFDFA"),
+                (QPalette.ColorRole.Base, "#FFFDFA"),
+                (QPalette.ColorRole.Button, "#FFFDFA"),
+                (QPalette.ColorRole.Text, "#4B4641"),
+                (QPalette.ColorRole.WindowText, "#4B4641"),
+                (QPalette.ColorRole.ButtonText, "#4B4641"),
+                (QPalette.ColorRole.Highlight, "#F2D8C8"),
+                (QPalette.ColorRole.HighlightedText, "#4B3226"),
+            ):
+                palette.setColor(group, role, QColor(color))
+        self.setPalette(palette)
+        view.setPalette(palette)
+        view.viewport().setPalette(palette)
+        view.setStyleSheet("""
+            QListView#quickNotebookComboPopup {
+                background: #FFFDFA; color: #4B4641;
+                selection-background-color: #F2D8C8;
+                selection-color: #4B3226;
+                border: 1px solid #CDB9A8; padding: 4px;
+                font-size: 13px; outline: none;
+            }
+            QListView#quickNotebookComboPopup::item {
+                min-height: 28px; padding: 2px 8px;
+                background: #FFFDFA; color: #4B4641;
+            }
+            QListView#quickNotebookComboPopup::item:hover,
+            QListView#quickNotebookComboPopup::item:selected {
+                background: #F2D8C8; color: #4B3226;
+            }
+            QListView#quickNotebookComboPopup::item:disabled { color: #81736A; }
+        """)
+        self.setMaxVisibleItems(8)
+
+    def showPopup(self) -> None:  # noqa: N802 - Qt override
+        popup = self.view().window()
+        popup.setObjectName("quickNotebookComboPopupFrame")
+        popup.setPalette(self.view().palette())
+        popup.setStyleSheet("QFrame#quickNotebookComboPopupFrame { background: #FFFDFA; border: 1px solid #CDB9A8; }")
+        super().showPopup()
 
 
 def place_notebook(
@@ -122,14 +224,17 @@ class NotebookTypeTab(QToolButton):
         self._label = label
         self._color = QColor(color)
         self._active = False
-        self.setFixedSize(43, TAB_HEIGHT)
+        self.setFixedSize(88, TAB_HEIGHT)
+        self.setText(label)
+        self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setAccessibleName({"note": "普通便签", "todo": "待办清单", "reminder": "提醒事项"}[page_type])
+        self.setToolTip({"note": "便签：随手记录文字", "todo": "待办：逐项勾选完成", "reminder": "提醒：到时间通知你"}[page_type])
 
     def set_active(self, active: bool) -> None:
         self._active = bool(active)
-        self.setFixedWidth(88 if self._active else 43)
+        self.setChecked(self._active)
         self.update()
 
     def paintEvent(self, _event: QPaintEvent) -> None:  # noqa: N802 - Qt override
@@ -143,15 +248,61 @@ class NotebookTypeTab(QToolButton):
         path.lineTo(0, self.height() * 0.74)
         path.lineTo(0, self.height() * 0.26)
         path.closeSubpath()
-        painter.fillPath(path, self._color)
+        painter.fillPath(path, self._color if self._active else self._color.darker(115))
         painter.drawPixmap(9, 11, self._icon.pixmap(QSize(20, 20)))
         font = painter.font()
         font.setBold(True)
         font.setPixelSize(12)
         painter.setFont(font)
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawText(self.rect().adjusted(35, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, self._label)
         if self._active:
-            painter.setPen(QColor("#FFFFFF"))
-            painter.drawText(self.rect().adjusted(35, 0, -5, 0), Qt.AlignmentFlag.AlignVCenter, self._label)
+            painter.fillRect(self.width() - 4, 9, 3, self.height() - 18, QColor("#FFFFFF"))
+
+
+def _remove_item_button(parent: QWidget, label: str) -> QToolButton:
+    button = QToolButton(parent)
+    button.setObjectName("quickNotebookRemoveItem")
+    button.setIcon(lucide_icon("trash-2", color="#94867D", size=14))
+    button.setFixedSize(26, 28)
+    button.setToolTip(label)
+    button.setAccessibleName(label)
+    return button
+
+
+class _RemovalHistory(QWidget):
+    """当前页内可连续撤销的单条删除，不与整页回收站混用。"""
+
+    restore_requested = Signal(int, object)
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._entries: list[tuple[int, TodoItem | ReminderItem]] = []
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.label = QLabel("已删除一条", self)
+        self.label.setObjectName("quickNotebookHelper")
+        self.undo_button = QPushButton("撤销", self)
+        self.undo_button.setObjectName("quickNotebookUndo")
+        self.undo_button.setToolTip("撤销本页刚才的删除；切换页面后不可撤销")
+        layout.addWidget(self.label, 1)
+        layout.addWidget(self.undo_button)
+        self.undo_button.clicked.connect(self._undo)
+        self.hide()
+
+    def record(self, index: int, item: TodoItem | ReminderItem) -> None:
+        self._entries.append((index, item))
+        self.show()
+
+    def reset(self) -> None:
+        self._entries.clear()
+        self.hide()
+
+    def _undo(self) -> None:
+        if self._entries:
+            index, item = self._entries.pop()
+            self.restore_requested.emit(index, item)
+        self.setVisible(bool(self._entries))
 
 
 class TodoCheckBox(QCheckBox):
@@ -184,6 +335,7 @@ class TodoCheckBox(QCheckBox):
 
 class _TodoRow(QFrame):
     changed = Signal()
+    remove_requested = Signal()
 
     def __init__(self, item: TodoItem, parent: QWidget) -> None:
         super().__init__(parent)
@@ -198,10 +350,17 @@ class _TodoRow(QFrame):
         layout.setSpacing(8)
         self.check = TodoCheckBox(self)
         self.check.setChecked(item.completed)
-        self.text = QLineEdit(item.text, self)
-        self.text.setPlaceholderText("待办事项")
+        self.text = _NotebookLineEdit(item.text, self)
+        self.text.setMinimumWidth(0)
+        self.text.setPlaceholderText("点击输入待办事项")
+        self.text.setAccessibleName("待办内容")
+        self.check.setToolTip("标记完成 / 未完成")
+        self.check.setAccessibleName("标记待办完成")
         layout.addWidget(self.check)
         layout.addWidget(self.text, 1)
+        self.remove_button = _remove_item_button(self, "删除这条待办（可撤销）")
+        self.remove_button.clicked.connect(self.remove_requested)
+        layout.addWidget(self.remove_button)
         self.check.toggled.connect(self._completion_changed)
         self.text.textChanged.connect(self.changed)
         self._sync_completion_style()
@@ -273,6 +432,13 @@ class TodoListEditor(QWidget):
         self.rows_scroll.setWidget(self.rows_widget)
         self.rows_scroll.viewport().setObjectName("quickNotebookTodoViewport")
         layout.addWidget(self.rows_scroll, 1)
+        self.empty_hint = QLabel("还没有待办\n点击下方按钮，写下第一件要做的事", self)
+        self.empty_hint.setObjectName("quickNotebookHelper")
+        self.empty_hint.setWordWrap(True)
+        layout.insertWidget(1, self.empty_hint)
+        self.removal_history = _RemovalHistory(self)
+        self.removal_history.restore_requested.connect(self._restore_item)
+        layout.addWidget(self.removal_history)
         self.add_button = QPushButton("＋ 添加待办事项", self)
         self.add_button.setObjectName("quickNotebookInlineAdd")
         self.add_button.clicked.connect(lambda: self.add_item(""))
@@ -280,27 +446,57 @@ class TodoListEditor(QWidget):
 
     def set_items(self, items: Sequence[TodoItem]) -> None:
         self._clear_rows()
+        self.removal_history.reset()
         for item in items:
             self._append_row(item)
         self._update_rows_extent()
         self._update_progress()
 
     def add_item(self, text: str) -> None:
+        if not text.strip():
+            blank = next((row for row in self._rows if not row.text.text().strip()), None)
+            if blank is not None:
+                self._focus_row(blank)
+                return
         self._append_row(
             TodoItem(uuid.uuid4().hex, text, created_at=datetime.now(UTC).isoformat())
         )
         self._update_rows_extent()
         self._update_progress()
+        self._focus_row(self._rows[-1])
         self.changed.emit()
 
     def items(self) -> tuple[TodoItem, ...]:
         return tuple(row.value() for row in self._rows)
 
-    def _append_row(self, item: TodoItem) -> None:
+    def _append_row(self, item: TodoItem, index: int | None = None) -> None:
         row = _TodoRow(item, self.rows_widget)
         row.changed.connect(self._row_changed)
-        self.rows_layout.insertWidget(max(0, self.rows_layout.count() - 1), row)
-        self._rows.append(row)
+        row.remove_requested.connect(lambda: self._remove_row(row))
+        row.text.returnPressed.connect(lambda: self.add_item(""))
+        position = len(self._rows) if index is None else min(index, len(self._rows))
+        self.rows_layout.insertWidget(position, row)
+        self._rows.insert(position, row)
+        row.show()
+
+    def _focus_row(self, row: _TodoRow) -> None:
+        row.text.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.rows_layout.activate()
+        self.rows_scroll.ensureWidgetVisible(row)
+
+    def _remove_row(self, row: _TodoRow) -> None:
+        self.removal_history.record(self._rows.index(row), row.value())
+        self._rows.remove(row)
+        self.rows_layout.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        self._update_rows_extent()
+        self._row_changed()
+
+    def _restore_item(self, index: int, item: TodoItem) -> None:
+        self._append_row(item, index)
+        self._update_rows_extent()
+        self._row_changed()
 
     def _update_rows_extent(self) -> None:
         self.rows_widget.setMinimumHeight(max(1, len(self._rows) * 55))
@@ -310,9 +506,11 @@ class TodoListEditor(QWidget):
         self.changed.emit()
 
     def _update_progress(self) -> None:
-        completed = sum(row.check.isChecked() for row in self._rows)
-        self.progress_label.setText(f"{completed} / {len(self._rows)} 完成")
-        percentage = round(completed * 100 / len(self._rows)) if self._rows else 0
+        filled_rows = [row for row in self._rows if row.text.text().strip()]
+        completed = sum(row.check.isChecked() for row in filled_rows)
+        self.progress_label.setText(f"已完成 {completed} / {len(filled_rows)} 项")
+        self.empty_hint.setVisible(not self._rows)
+        percentage = round(completed * 100 / len(filled_rows)) if filled_rows else 0
         self.progress_bar.setValue(percentage)
         self.progress_percent_label.setText(f"{percentage}%")
 
@@ -346,6 +544,8 @@ class ReminderSwitch(QCheckBox):
 
 class _ReminderRow(QFrame):
     changed = Signal()
+    remove_requested = Signal()
+    layout_changed = Signal()
 
     def __init__(self, item: ReminderItem, parent: QWidget) -> None:
         super().__init__(parent)
@@ -355,6 +555,7 @@ class _ReminderRow(QFrame):
         self.completed = item.completed
         self.snoozed_until = item.snoozed_until
         self.last_triggered_at = item.last_triggered_at
+        self._applying_item = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 9, 10, 9)
         layout.setSpacing(7)
@@ -368,32 +569,54 @@ class _ReminderRow(QFrame):
         summary.addWidget(self.date_box)
         text_column = QVBoxLayout()
         text_column.setSpacing(2)
-        self.text = QLineEdit(item.text, self)
+        self.text = _NotebookLineEdit(item.text, self)
         self.text.setObjectName("quickNotebookReminderText")
-        self.text.setPlaceholderText("提醒事项")
+        self.text.setMinimumWidth(0)
+        self.text.setPlaceholderText("点击输入提醒内容")
+        self.text.setAccessibleName("提醒内容")
         self.sub_label = QLabel(self)
         self.sub_label.setObjectName("quickNotebookReminderSub")
+        self.sub_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         text_column.addWidget(self.text)
         text_column.addWidget(self.sub_label)
+        self.edit_time_button = QToolButton(self)
+        self.edit_time_button.setObjectName("quickNotebookEditTime")
+        self.edit_time_button.setText("设置时间 ▾")
+        self.edit_time_button.setAccessibleName("设置提醒时间和重复规则")
+        text_column.addWidget(self.edit_time_button, 0, Qt.AlignmentFlag.AlignLeft)
         summary.addLayout(text_column, 1)
         self.enabled = ReminderSwitch(self)
         self.enabled.setChecked(item.enabled)
-        summary.addWidget(self.enabled, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.enabled.setToolTip("开启 / 暂停提醒")
+        self.enabled.setAccessibleName("开启提醒")
+        row_actions = QVBoxLayout()
+        row_actions.setSpacing(5)
+        row_actions.addWidget(self.enabled, 0, Qt.AlignmentFlag.AlignRight)
+        self.remove_button = _remove_item_button(self, "删除这条提醒（可撤销）")
+        self.remove_button.clicked.connect(self.remove_requested)
+        row_actions.addWidget(self.remove_button, 0, Qt.AlignmentFlag.AlignRight)
+        summary.addLayout(row_actions)
         layout.addLayout(summary)
 
         self.edit_panel = QWidget(self)
         edit_layout = QVBoxLayout(self.edit_panel)
-        edit_layout.setContentsMargins(62, 0, 0, 0)
+        edit_layout.setContentsMargins(0, 0, 0, 0)
         edit_layout.setSpacing(5)
-        controls = QHBoxLayout()
+        controls = QVBoxLayout()
         self.due = QDateTimeEdit(self.edit_panel)
         self.due.setObjectName("quickNotebookReminderDateTime")
-        self.due.setCalendarPopup(False)
+        self.due.setMinimumWidth(0)
+        self.due.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.due.setCalendarPopup(True)
+        self.due.setAccessibleName("提醒日期和时间")
         self.due.setDisplayFormat("yyyy-MM-dd HH:mm")
         parsed = QDateTime.fromString(item.due_at or "", Qt.DateFormat.ISODate)
         self.due.setDateTime(parsed if parsed.isValid() else QDateTime.currentDateTime().addSecs(3600))
-        self.repeat = QComboBox(self.edit_panel)
+        self.repeat = _NotebookComboBox(self.edit_panel)
         self.repeat.setObjectName("quickNotebookReminderRepeat")
+        self.repeat.setMinimumWidth(0)
+        self.repeat.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.repeat.setAccessibleName("重复规则")
         self.repeat.addItem("仅一次", "once")
         self.repeat.addItem("每天", "daily")
         self.repeat.addItem("每周", "weekly")
@@ -402,28 +625,49 @@ class _ReminderRow(QFrame):
         controls.addWidget(self.repeat)
         edit_layout.addLayout(controls)
         self.weekday_widget = QWidget(self.edit_panel)
-        weekday_layout = QHBoxLayout(self.weekday_widget)
+        weekday_layout = QGridLayout(self.weekday_widget)
         weekday_layout.setContentsMargins(0, 0, 0, 0)
         weekday_layout.setSpacing(4)
         self.weekday_checks: list[QCheckBox] = []
         for day, label in enumerate("一二三四五六日"):
             checkbox = QCheckBox(label, self.weekday_widget)
             checkbox.setChecked(day in item.weekdays)
-            checkbox.toggled.connect(self.changed)
-            weekday_layout.addWidget(checkbox)
+            checkbox.toggled.connect(self._schedule_changed)
+            weekday_layout.addWidget(checkbox, day // 4, day % 4)
             self.weekday_checks.append(checkbox)
-        weekday_layout.addStretch(1)
         edit_layout.addWidget(self.weekday_widget)
         self.weekday_widget.setVisible(item.repeat == "weekly")
         self.edit_panel.hide()
         layout.addWidget(self.edit_panel)
+        self.validation_label = QLabel(self)
+        self.validation_label.setObjectName("quickNotebookValidation")
+        self.validation_label.setWordWrap(True)
+        self.validation_label.hide()
+        layout.addWidget(self.validation_label)
+        self.confirm_time_button = QPushButton("开启", self)
+        self.confirm_time_button.setObjectName("quickNotebookUndo")
+        self.confirm_time_button.setFixedSize(40, 26)
+        self.confirm_time_button.setAccessibleName("确认并开启提醒")
+        self.confirm_time_button.setToolTip("确认提醒内容和时间后，点击开启")
+        self.confirm_time_button.clicked.connect(lambda: self.enabled.setChecked(True))
+        row_actions.insertWidget(0, self.confirm_time_button, 0, Qt.AlignmentFlag.AlignRight)
 
-        self.date_box.clicked.connect(lambda: self.edit_panel.setVisible(self.edit_panel.isHidden()))
-        self.enabled.toggled.connect(self.changed)
+        self.date_box.setToolTip("设置提醒时间和重复规则")
+        self.date_box.clicked.connect(self.toggle_time_editor)
+        self.edit_time_button.clicked.connect(self.toggle_time_editor)
+        self.enabled.toggled.connect(self._enabled_changed)
         self.text.textChanged.connect(self._content_changed)
-        self.due.dateTimeChanged.connect(self._content_changed)
+        self.due.dateTimeChanged.connect(self._schedule_changed)
         self.repeat.currentIndexChanged.connect(self._repeat_changed)
         self._refresh_summary()
+
+    def toggle_time_editor(self) -> None:
+        self.set_time_editor_visible(self.edit_panel.isHidden())
+
+    def set_time_editor_visible(self, visible: bool) -> None:
+        self.edit_panel.setVisible(visible)
+        self.edit_time_button.setText("收起设置 ▴" if visible else "设置时间 ▾")
+        self.layout_changed.emit()
 
     def value(self) -> ReminderItem:
         due_value = self.due.dateTime().toPython()
@@ -444,12 +688,74 @@ class _ReminderRow(QFrame):
         )
 
     def _content_changed(self) -> None:
+        if self._applying_item:
+            return
+        if not self.text.text().strip() and self.enabled.isChecked():
+            self.enabled.setChecked(False)
         self._refresh_summary()
         self.changed.emit()
 
+    def _enabled_changed(self, enabled: bool) -> None:
+        if self._applying_item:
+            return
+        error = ""
+        if enabled:
+            if not self.text.text().strip():
+                error = "请先填写提醒内容"
+            elif self.due.dateTime() <= QDateTime.currentDateTime():
+                error = "请选择未来的提醒时间"
+            elif self.repeat.currentData() == "weekly" and not any(box.isChecked() for box in self.weekday_checks):
+                error = "每周提醒至少选择一天"
+            if error:
+                self.enabled.blockSignals(True)
+                self.enabled.setChecked(False)
+                self.enabled.blockSignals(False)
+                self.set_time_editor_visible(True)
+            else:
+                self.completed = False
+                self.snoozed_until = None
+                self.last_triggered_at = None
+        self.validation_label.setText(error)
+        self.validation_label.setVisible(bool(error))
+        self._content_changed()
+        self.layout_changed.emit()
+
+    def _schedule_changed(self) -> None:
+        if self._applying_item:
+            return
+        self.enabled.setChecked(False)
+        self.snoozed_until = None
+        self.last_triggered_at = None
+        self.validation_label.setText("时间已修改，请确认并开启")
+        self.validation_label.show()
+        self._content_changed()
+        self.layout_changed.emit()
+
     def _repeat_changed(self) -> None:
         self.weekday_widget.setVisible(self.repeat.currentData() == "weekly")
-        self._content_changed()
+        if self.repeat.currentData() == "weekly" and not any(box.isChecked() for box in self.weekday_checks):
+            self.weekday_checks[self.due.dateTime().toPython().weekday()].setChecked(True)
+        self.layout_changed.emit()
+        self._schedule_changed()
+
+    def apply_item(self, item: ReminderItem) -> None:
+        """同步状态，不重建输入框或丢失正在编辑的文字/光标。"""
+        self._applying_item = True
+        try:
+            self.completed = item.completed
+            self.snoozed_until = item.snoozed_until
+            self.last_triggered_at = item.last_triggered_at
+            self.enabled.setChecked(item.enabled)
+            due = QDateTime.fromString(item.due_at or "", Qt.DateFormat.ISODate)
+            if due.isValid() and due != self.due.dateTime():
+                self.due.setDateTime(due)
+            self.repeat.setCurrentIndex(max(0, self.repeat.findData(item.repeat)))
+            for index, checkbox in enumerate(self.weekday_checks):
+                checkbox.setChecked(index in item.weekdays)
+        finally:
+            self._applying_item = False
+        self._refresh_summary()
+        self.layout_changed.emit()
 
     def _refresh_summary(self) -> None:
         due = self.due.dateTime().toPython()
@@ -459,7 +765,15 @@ class _ReminderRow(QFrame):
             str(self.repeat.currentData()),
             "仅一次",
         )
-        self.sub_label.setText(f"{due.strftime('%m-%d %H:%M')} · {repeat_label}")
+        if self.repeat.currentData() == "weekly":
+            days = "、".join(day_names[i] for i, box in enumerate(self.weekday_checks) if box.isChecked())
+            repeat_label = f"每周{days}" if days else "请选择星期"
+        state = " · 已完成" if self.completed else (" · 未开启" if not self.enabled.isChecked() else " · 已开启")
+        summary = f"{due.strftime('%m-%d %H:%M')}\n{repeat_label}{state}"
+        self.sub_label.setText(summary)
+        self.sub_label.setWordWrap(True)
+        self.confirm_time_button.setVisible(not self.enabled.isChecked())
+        self.enabled.setVisible(self.enabled.isChecked())
 
 
 class ReminderListEditor(QWidget):
@@ -487,6 +801,13 @@ class ReminderListEditor(QWidget):
         self.rows_scroll.setWidget(self.rows_widget)
         self.rows_scroll.viewport().setObjectName("quickNotebookReminderViewport")
         layout.addWidget(self.rows_scroll, 1)
+        self.empty_hint = QLabel("需要到点通知你？\n添加提醒，再设置日期、时间和重复规则", self)
+        self.empty_hint.setObjectName("quickNotebookHelper")
+        self.empty_hint.setWordWrap(True)
+        layout.insertWidget(0, self.empty_hint)
+        self.removal_history = _RemovalHistory(self)
+        self.removal_history.restore_requested.connect(self._restore_item)
+        layout.addWidget(self.removal_history)
         self.add_button = QPushButton("＋ 添加提醒事项", self)
         self.add_button.setObjectName("quickNotebookInlineAdd")
         self.add_button.clicked.connect(lambda: self.add_item(""))
@@ -494,33 +815,64 @@ class ReminderListEditor(QWidget):
 
     def set_items(self, items: Sequence[ReminderItem]) -> None:
         self._clear_rows()
+        self.removal_history.reset()
         for item in items:
             self._append_row(item)
         self._update_rows_extent()
 
     def add_item(self, text: str) -> None:
+        if not text.strip():
+            blank = next((row for row in self._rows if not row.text.text().strip()), None)
+            if blank is not None:
+                self._focus_row(blank)
+                return
         due_at = (datetime.now().astimezone() + timedelta(hours=1)).replace(
             second=0,
             microsecond=0,
         )
         self._append_row(
-            ReminderItem(uuid.uuid4().hex, text, due_at=due_at.isoformat())
+            ReminderItem(uuid.uuid4().hex, text, due_at=due_at.isoformat(), enabled=False)
         )
         self._update_rows_extent()
+        self._focus_row(self._rows[-1])
         self.changed.emit()
 
     def items(self) -> tuple[ReminderItem, ...]:
         return tuple(row.value() for row in self._rows)
 
-    def _append_row(self, item: ReminderItem) -> None:
+    def _append_row(self, item: ReminderItem, index: int | None = None) -> None:
         row = _ReminderRow(item, self.rows_widget)
         row.changed.connect(self.changed)
-        self.rows_layout.insertWidget(max(0, self.rows_layout.count() - 1), row)
-        self._rows.append(row)
+        row.layout_changed.connect(self._update_rows_extent)
+        row.remove_requested.connect(lambda: self._remove_row(row))
+        position = len(self._rows) if index is None else min(index, len(self._rows))
+        self.rows_layout.insertWidget(position, row)
+        self._rows.insert(position, row)
+        row.show()
+
+    def _focus_row(self, row: _ReminderRow) -> None:
+        row.set_time_editor_visible(True)
+        row.text.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.rows_layout.activate()
+        self.rows_scroll.ensureWidgetVisible(row.text)
+
+    def _remove_row(self, row: _ReminderRow) -> None:
+        self.removal_history.record(self._rows.index(row), row.value())
+        self._rows.remove(row)
+        self.rows_layout.removeWidget(row)
+        row.hide()
+        row.deleteLater()
+        self._update_rows_extent()
+        self.changed.emit()
+
+    def _restore_item(self, index: int, item: ReminderItem) -> None:
+        self._append_row(item, index)
+        self._update_rows_extent()
+        self.changed.emit()
 
     def _update_rows_extent(self) -> None:
-        expanded_extra = sum(88 for row in self._rows if row.edit_panel.isVisible())
-        self.rows_widget.setMinimumHeight(max(1, len(self._rows) * 82 + expanded_extra))
+        self.empty_hint.setVisible(not self._rows)
+        self.rows_widget.setMinimumHeight(max(1, sum(row.sizeHint().height() + 7 for row in self._rows)))
 
     def _clear_rows(self) -> None:
         for row in self._rows:
@@ -559,6 +911,7 @@ class DirectoryRowWidget(QWidget):
         *,
         on_activate: Callable[[], None] | None = None,
         on_restore: Callable[[], None] | None = None,
+        categories: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
         self.setObjectName("quickNotebookDirectoryRow")
@@ -570,7 +923,14 @@ class DirectoryRowWidget(QWidget):
         layout.setSpacing(8)
         self.title_label = _ElidedLabel(title, self)
         self.title_label.setObjectName("quickNotebookDirectoryItemTitle")
-        layout.addWidget(self.title_label, 1)
+        text_column = QVBoxLayout()
+        text_column.setSpacing(3)
+        text_column.addWidget(self.title_label)
+        self.category_label = _ElidedLabel(" · ".join(categories) or "未分类", self)
+        self.category_label.setObjectName("quickNotebookDirectoryItemMeta")
+        text_column.addWidget(self.category_label)
+        self.category_label.setVisible(bool(categories))
+        layout.addLayout(text_column, 1)
         self.right_label = QLabel(right_text, self)
         self.right_label.setObjectName("quickNotebookDirectoryItemMeta")
         self.restore_button: QPushButton | None = None
@@ -609,6 +969,9 @@ class QuickNotebookWindow(QWidget):
         self._loading = False
         self._dirty = False
         self._title_is_custom = False
+        self._reminder_baseline: dict[str, ReminderItem] = {}
+        self._pending_reminder_changes: dict[tuple[str, str], ReminderItem] = {}
+        self._retry_save: Callable[[], object] | None = None
 
         self.body_frame = QFrame(self)
         self.body_frame.setObjectName("quickNotebookPaper")
@@ -625,14 +988,19 @@ class QuickNotebookWindow(QWidget):
         self.content_frame.setObjectName("quickNotebookContent")
         content_layout = QVBoxLayout(self.content_frame)
         content_layout.setContentsMargins(17, 18, 17, 14)
-        content_layout.setSpacing(12)
+        content_layout.setSpacing(8)
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        self.title_editor = QLineEdit("无标题便签", self.content_frame)
+        self.title_label = QLabel("标题（选填）", self.content_frame)
+        self.title_label.setObjectName("quickNotebookFieldLabel")
+        header.addWidget(self.title_label, 1)
+        self.title_editor = _NotebookLineEdit(self.content_frame)
         self.title_editor.setObjectName("quickNotebookTitle")
-        self.title_editor.setFrame(False)
-        self.title_editor.setAccessibleName("便签标题")
-        header.addWidget(self.title_editor, 1)
+        self.title_editor.setMinimumWidth(0)
+        self.title_editor.setMinimumHeight(36)
+        self.title_editor.setAccessibleName("标题（选填）")
+        self.title_editor.setToolTip("点击修改标题；未填写时，自动使用第一条内容")
+        self.title_label.setBuddy(self.title_editor)
         self.delete_button = QToolButton(self.content_frame)
         self.delete_button.setObjectName("quickNotebookDelete")
         self.delete_button.setAccessibleName("删除当前便签")
@@ -642,25 +1010,66 @@ class QuickNotebookWindow(QWidget):
         self.delete_button.setIconSize(QSize(16, 16))
         self.delete_button.setFixedSize(31, 31)
         header.addWidget(self.delete_button)
+        self.close_button = QToolButton(self.content_frame)
+        self.close_button.setObjectName("quickNotebookClose")
+        self.close_button.setText("×")
+        self.close_button.setFixedSize(28, 31)
+        self.close_button.setAccessibleName("收起便签本")
+        self.close_button.setToolTip("收起便签本（Esc），内容自动保存")
+        header.addWidget(self.close_button)
         content_layout.addLayout(header)
+        content_layout.addWidget(self.title_editor)
+        self.page_hint = QLabel(self.content_frame)
+        self.page_hint.setObjectName("quickNotebookHelper")
+        self.page_hint.setWordWrap(True)
+        content_layout.addWidget(self.page_hint)
 
         self.page_stack = QStackedWidget(self.content_frame)
         self.page_stack.setObjectName("quickNotebookPageStack")
         self.note_page = QWidget(self.page_stack)
         note_layout = QVBoxLayout(self.note_page)
-        note_layout.setContentsMargins(0, 0, 0, 0)
+        note_layout.setContentsMargins(10, 10, 10, 10)
         note_layout.setSpacing(8)
-        self.note_editor = QPlainTextEdit(self.note_page)
+        self.body_label = QLabel("正文", self.note_page)
+        self.body_label.setObjectName("quickNotebookFieldLabel")
+        note_layout.addWidget(self.body_label)
+        self.note_editor = _NotebookTextEdit(self.note_page)
         self.note_editor.setObjectName("quickNotebookNoteEditor")
-        self.note_editor.setProperty("seamlessPaper", True)
-        self.note_editor.setPlaceholderText("写下此刻想到的内容…")
+        self.note_editor.setAccessibleName("便签正文")
+        self.note_editor.setPlaceholderText("点击这里开始记录…")
+        self.note_editor.setMinimumHeight(72)
+        self.body_label.setBuddy(self.note_editor)
         note_layout.addWidget(self.note_editor, 1)
-        self.tag_editor = QLineEdit(self.note_page)
+        self.tag_label = QLabel("分类（选填）", self.note_page)
+        self.tag_label.setObjectName("quickNotebookFieldLabel")
+        category_heading = QHBoxLayout()
+        category_heading.addWidget(self.tag_label, 1)
+        self.category_toggle = QToolButton(self.note_page)
+        self.category_toggle.setObjectName("quickNotebookCategoryToggle")
+        self.category_toggle.setCheckable(True)
+        self.category_toggle.setText("添加分类 ▾")
+        category_heading.addWidget(self.category_toggle)
+        note_layout.addLayout(category_heading)
+        self.category_panel = QWidget(self.note_page)
+        category_layout = QVBoxLayout(self.category_panel)
+        category_layout.setContentsMargins(0, 0, 0, 0)
+        category_layout.setSpacing(5)
+        self.tag_editor = _NotebookLineEdit(self.note_page)
         self.tag_editor.setObjectName("quickNotebookTagEditor")
-        self.tag_editor.setPlaceholderText("分类标签，如：项目、联系人（最多 5 个）")
-        self.tag_editor.setMinimumWidth(90)
-        self.tag_editor.setMaximumWidth(180)
-        note_layout.addWidget(self.tag_editor)
+        self.tag_editor.setPlaceholderText("例如：工作，生活")
+        self.tag_editor.setAccessibleName("分类（选填，最多 5 个）")
+        self.tag_editor.setToolTip("最多 5 个分类，例如：工作、生活")
+        self.tag_editor.setMinimumWidth(0)
+        self.tag_editor.setMinimumHeight(34)
+        self.tag_label.setBuddy(self.tag_editor)
+        category_layout.addWidget(self.tag_editor)
+        self.tag_hint = QLabel("多个分类用逗号分隔，最多 5 个", self.note_page)
+        self.tag_hint.setObjectName("quickNotebookFieldHelp")
+        self.tag_hint.setWordWrap(True)
+        category_layout.addWidget(self.tag_hint)
+        note_layout.addWidget(self.category_panel)
+        self.category_toggle.toggled.connect(self._toggle_categories)
+        self.category_panel.hide()
         self.page_stack.addWidget(self.note_page)
         self.todo_editor = TodoListEditor(self.page_stack)
         self.todo_editor.setObjectName("quickNotebookTodoEditor")
@@ -678,25 +1087,27 @@ class QuickNotebookWindow(QWidget):
         self.title_editor.textEdited.connect(self._on_title_edited)
         self.note_editor.textChanged.connect(self._on_page_content_changed)
         self.note_editor.cursorPositionChanged.connect(self._update_current_line_highlight)
-        self.tag_editor.textChanged.connect(self._on_page_content_changed)
+        self.tag_editor.textChanged.connect(self._categories_changed)
+        self.tag_editor.editingFinished.connect(self._normalize_categories)
         self.todo_editor.changed.connect(self._on_page_content_changed)
         self.reminder_editor.changed.connect(self._on_page_content_changed)
 
         self.footer = QFrame(self.body_frame)
         self.footer.setObjectName("quickNotebookFooter")
-        footer_layout = QHBoxLayout(self.footer)
+        footer_layout = QVBoxLayout(self.footer)
         footer_layout.setContentsMargins(13, 10, 13, 12)
         footer_layout.setSpacing(6)
-        self.directory_button = QPushButton("目录 ·", self.footer)
+        footer_navigation = QHBoxLayout()
+        footer_navigation.setSpacing(6)
+        self.directory_button = QPushButton("全部便签", self.footer)
         self.directory_button.setObjectName("quickNotebookDirectory")
         self.directory_button.setProperty("iconName", "menu")
         self.directory_button.setIcon(lucide_icon("menu", color="#81736A", size=14))
         self.directory_button.setIconSize(QSize(14, 14))
         self.page_count_label = QLabel("1 / 1", self.footer)
         self.page_count_label.setObjectName("quickNotebookPageCount")
-        footer_layout.addWidget(self.directory_button)
-        footer_layout.addWidget(self.page_count_label)
-        footer_layout.addStretch(1)
+        footer_navigation.addWidget(self.directory_button)
+        footer_navigation.addStretch(1)
         self.previous_button = QToolButton(self.footer)
         self.previous_button.setText("‹")
         self.previous_button.setAccessibleName("上一页")
@@ -709,9 +1120,24 @@ class QuickNotebookWindow(QWidget):
         self.new_button.setObjectName("quickNotebookNew")
         self.new_button.setMinimumWidth(66)
         self.new_button.setFixedHeight(31)
-        footer_layout.addWidget(self.previous_button)
-        footer_layout.addWidget(self.next_button)
-        footer_layout.addWidget(self.new_button)
+        self.previous_button.setToolTip("上一页")
+        self.next_button.setToolTip("下一页")
+        footer_navigation.addWidget(self.previous_button)
+        footer_navigation.addWidget(self.page_count_label)
+        footer_navigation.addWidget(self.next_button)
+        footer_layout.addLayout(footer_navigation)
+        footer_actions = QHBoxLayout()
+        self.save_hint = QLabel("已保存到本机", self.footer)
+        self.save_hint.setObjectName("quickNotebookHelper")
+        footer_actions.addWidget(self.save_hint)
+        self.retry_button = QPushButton("重试", self.footer)
+        self.retry_button.setObjectName("quickNotebookUndo")
+        self.retry_button.clicked.connect(lambda: self._retry_save() if self._retry_save else self.flush_current_page())
+        self.retry_button.hide()
+        footer_actions.addWidget(self.retry_button)
+        footer_actions.addStretch(1)
+        footer_actions.addWidget(self.new_button)
+        footer_layout.addLayout(footer_actions)
         body_layout.addWidget(self.footer)
 
         self.directory_overlay = QFrame(self.body_frame)
@@ -730,7 +1156,17 @@ class QuickNotebookWindow(QWidget):
         directory_layout.addLayout(directory_header)
         self.directory_scope = QLabel(self.directory_overlay)
         self.directory_scope.setObjectName("quickNotebookDirectoryScope")
+        self.directory_scope.setWordWrap(True)
         directory_layout.addWidget(self.directory_scope)
+        self.category_filter = _NotebookComboBox(self.directory_overlay)
+        self.category_filter.setObjectName("quickNotebookCategoryFilter")
+        self.category_filter.setAccessibleName("按分类筛选便签")
+        self.category_filter.currentIndexChanged.connect(self._populate_directory)
+        directory_layout.addWidget(self.category_filter)
+        self.directory_empty = QLabel("这个分类下还没有便签", self.directory_overlay)
+        self.directory_empty.setObjectName("quickNotebookHelper")
+        directory_layout.addWidget(self.directory_empty)
+        self.directory_empty.hide()
         self.directory_list = QListWidget(self.directory_overlay)
         self.directory_list.setObjectName("quickNotebookDirectoryList")
         self.directory_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -743,6 +1179,7 @@ class QuickNotebookWindow(QWidget):
         self.trash_button = QPushButton("回收站", self.directory_overlay)
         self.trash_button.setObjectName("quickNotebookTrashButton")
         self.trash_button.setMinimumHeight(28)
+        self._showing_trash = False
         self.clear_all_button = QPushButton("清空全部便签…", self.directory_overlay)
         self.clear_all_button.setObjectName("quickNotebookClearAll")
         self.clear_all_button.setMinimumHeight(28)
@@ -782,7 +1219,7 @@ class QuickNotebookWindow(QWidget):
         self._confirm_page_id: str | None = None
 
         self.type_tabs = (
-            NotebookTypeTab("note", "pencil", "普通", "#9E8ACB", self),
+            NotebookTypeTab("note", "pencil", "便签", "#9E8ACB", self),
             NotebookTypeTab("todo", "check", "待办", "#75A876", self),
             NotebookTypeTab("reminder", "clock-3", "提醒", "#D39C54", self),
         )
@@ -797,8 +1234,9 @@ class QuickNotebookWindow(QWidget):
         self.next_button.clicked.connect(self.next_page)
         self.new_button.clicked.connect(self.new_page)
         self.delete_button.clicked.connect(self._prompt_delete_current)
+        self.close_button.clicked.connect(self.close_notebook)
         self.clear_all_button.clicked.connect(self._prompt_clear_all)
-        self.trash_button.clicked.connect(self.open_trash)
+        self.trash_button.clicked.connect(lambda: self.open_directory() if self._showing_trash else self.open_trash())
         self.confirm_cancel_button.clicked.connect(self.confirm_overlay.hide)
         self.confirm_action_button.clicked.connect(self._run_confirmed_action)
 
@@ -821,12 +1259,17 @@ class QuickNotebookWindow(QWidget):
         if page_type not in {"note", "todo", "reminder"}:
             raise ValueError(page_type)
         if page_type != self._active_type or self._current_page_id is not None:
-            self.flush_current_page()
-        self._set_active_type_visual(page_type)
+            if not self.flush_current_page():
+                self._set_active_type_visual(self._active_type)
+                return
         page_ids = self.store.page_ids(page_type)
         selected = self.store.last_page_id_by_type.get(page_type)
         if selected not in page_ids:
-            selected = page_ids[0] if page_ids else self.store.create_page(page_type).id
+            if not page_ids:
+                if not self._try_persist(lambda: self.store.create_page(page_type), lambda: self.select_type(page_type)):
+                    return
+                page_ids = self.store.page_ids(page_type)
+            selected = page_ids[0]
         self.show_page(selected)
 
     @property
@@ -838,7 +1281,14 @@ class QuickNotebookWindow(QWidget):
         if page is None:
             raise KeyError(page_id)
         if self._current_page_id != page_id:
-            self.flush_current_page()
+            if not self.flush_current_page():
+                return
+        elif self._dirty and not self.flush_current_page():
+            return
+        # flush may replace the in-memory page object.
+        page = self.store.page(page_id)
+        if page is None:
+            return
         self._set_active_type_visual(page.type)
         self._current_page_id = page.id
         self.store.last_type = page.type
@@ -846,48 +1296,83 @@ class QuickNotebookWindow(QWidget):
         self._loading = True
         try:
             self._title_is_custom = bool((page.custom_title or "").strip())
-            self.title_editor.setText(page.display_title)
+            self.title_editor.setText(page.custom_title or "")
+            self._set_title_hint(page.display_title)
             self.note_editor.setPlainText(page.body)
             self.tag_editor.setText("、".join(page.tags))
+            self.category_toggle.setChecked(False)
+            self.category_panel.hide()
+            self._update_category_summary()
             self.todo_editor.set_items(page.todo_items)
             self.reminder_editor.set_items(page.reminders)
+            self._reminder_baseline = {item.id: item for item in self.reminder_editor.items()}
         finally:
             self._loading = False
         self._dirty = False
-        self.store.save()
+        self._save_selection()
         self._refresh_navigation()
         self.directory_overlay.hide()
 
     def set_custom_title(self, title: str | None) -> None:
         normalized = (title or "").strip()
         self._title_is_custom = bool(normalized)
-        if normalized:
-            self.title_editor.setText(normalized)
-        else:
-            page = self.store.page(self._current_page_id or "")
-            self.title_editor.setText(page.display_title if page is not None else self._fallback_title())
+        self.title_editor.setText(normalized)
+        self._set_title_hint(self._derived_editor_title())
         self._dirty = True
         self._schedule_save()
 
-    def flush_current_page(self) -> None:
+    def _set_save_status(self, text: str, *, error: bool = False) -> None:
+        self.save_hint.setText(text)
+        self.save_hint.setToolTip(text)
+        self.save_hint.setStyleSheet("color: #A23E32;" if error else "")
+
+    def _save_selection(self) -> bool:
+        if not self.flush_pending_reminder_changes():
+            return False
+        return self._try_persist(lambda: None, self._save_selection)
+
+    def _try_persist(self, change: Callable[[], object], retry: Callable[[], object]) -> bool:
+        self._set_save_status("保存中…")
+        try:
+            self.store.persist(change)
+        except OSError:
+            self._set_save_status("保存失败", error=True)
+            self.save_hint.setToolTip("无法写入本机文件，内容仍保留。请检查磁盘空间和权限后重试。")
+            self._retry_save = retry
+            self.retry_button.show()
+            self.directory_overlay.hide()
+            self.confirm_overlay.hide()
+            return False
+        self._retry_save = None
+        self.retry_button.hide()
+        self._set_save_status("已保存到本机")
+        return True
+
+    def flush_current_page(self) -> bool:
         self.save_timer.stop()
+        if not self._loading and not self.flush_pending_reminder_changes():
+            return False
         if self._loading or not self._dirty or self._current_page_id is None:
-            return
+            return True
         page = self.store.page(self._current_page_id)
         if page is None:
-            return
+            return False
         custom_title = self.title_editor.text().strip() if self._title_is_custom else None
         if page.type == "note":
-            tags = tuple(
+            tags = tuple(dict.fromkeys(
                 part.strip()
                 for part in re.split(r"[,，、]", self.tag_editor.text())
                 if part.strip()
-            )[:5]
+            ))
+            if len(tags) > 5:
+                self.category_toggle.setChecked(True)
+                self._set_save_status("分类超限，未保存", error=True)
+                return False
             updated = replace(
                 page,
                 custom_title=custom_title,
                 body=self.note_editor.toPlainText(),
-                tags=tuple(dict.fromkeys(tags)),
+                tags=tags,
             )
         elif page.type == "todo":
             updated = replace(
@@ -899,30 +1384,131 @@ class QuickNotebookWindow(QWidget):
             updated = replace(
                 page,
                 custom_title=custom_title,
-                reminders=list(self.reminder_editor.items()),
+                reminders=self._merged_reminders(page),
             )
-        saved = self.store.update_page(updated)
-        self.store.save()
-        self._current_page_id = saved.id
+        if not self._try_persist(lambda: self.store.update_page(updated), self.flush_current_page):
+            return False
         self._dirty = False
+        if page.type == "note" and not self.tag_editor.hasFocus():
+            self._normalize_categories()
         if not self._title_is_custom:
-            self._set_title_text(saved.display_title)
+            self._set_title_hint(updated.display_title)
+        if page.type == "reminder":
+            self.sync_reminder_state(page.id)
         self._refresh_navigation()
+        return True
+
+    @staticmethod
+    def _merge_reminder(draft: ReminderItem, baseline: ReminderItem, current: ReminderItem) -> ReminderItem:
+        fields = ("text", "due_at", "repeat", "weekdays", "enabled")
+        changes = {name: getattr(draft, name) for name in fields if getattr(draft, name) != getattr(baseline, name)}
+        rearmed = draft.enabled and not baseline.enabled
+        schedule_changed = any(name in changes for name in ("due_at", "repeat", "weekdays"))
+        if rearmed:
+            changes["completed"] = False
+        if rearmed or schedule_changed:
+            changes.update(snoozed_until=None, last_triggered_at=None)
+        return replace(current, **changes)
+
+    def _merged_reminders(self, page: NotebookPage) -> list[ReminderItem]:
+        current = {item.id: item for item in page.reminders}
+        result = []
+        for draft in self.reminder_editor.items():
+            baseline = self._reminder_baseline.get(draft.id)
+            if baseline is None:
+                result.append(draft)
+            elif draft.id in current:
+                result.append(self._merge_reminder(draft, baseline, current[draft.id]))
+        result.extend(item for item in page.reminders if item.id not in self._reminder_baseline and item.id not in {value.id for value in result})
+        return result
+
+    def sync_reminder_state(self, page_id: str) -> None:
+        if page_id != self._current_page_id:
+            return
+        page = self.store.page(page_id)
+        if page is None or page.type != "reminder":
+            return
+        current = {item.id: item for item in page.reminders}
+        self._loading = True
+        try:
+            for row in self.reminder_editor._rows:
+                item = current.get(row.item_id)
+                if item is None:
+                    continue
+                baseline = self._reminder_baseline.get(item.id, row.value())
+                merged = self._merge_reminder(row.value(), baseline, item) if self._dirty else item
+                row.apply_item(merged)
+                # Keep the remote version as baseline so unsaved local edits remain changes.
+                self._reminder_baseline[item.id] = item
+        finally:
+            self._loading = False
+
+    def persist_reminder_change(self, page_id: str, item: ReminderItem) -> bool:
+        def change() -> None:
+            page = self.store.page(page_id)
+            if page is not None:
+                last_type = self.store.last_type
+                last_ids = dict(self.store.last_page_id_by_type)
+                self.store.update_page(replace(page, reminders=[item if value.id == item.id else value for value in page.reminders]))
+                self.store.last_type = last_type
+                self.store.last_page_id_by_type = last_ids
+        retry = lambda: self.persist_reminder_change(page_id, item)
+        if not self._try_persist(change, retry):
+            self._pending_reminder_changes[(page_id, item.id)] = item
+            return False
+        self._pending_reminder_changes.pop((page_id, item.id), None)
+        self.sync_reminder_state(page_id)
+        if self._dirty:
+            self._set_save_status("有修改待保存")
+        return True
+
+    def flush_pending_reminder_changes(self) -> bool:
+        for (page_id, _item_id), item in tuple(self._pending_reminder_changes.items()):
+            if not self.persist_reminder_change(page_id, item):
+                return False
+        return True
 
     def directory_titles(self) -> tuple[str, ...]:
         return tuple(page.display_title for page in self.store.pages(self._active_type))
 
     def open_directory(self) -> None:
-        self.flush_current_page()
+        if not self.flush_current_page():
+            return
+        self._showing_trash = False
         pages = self.store.pages(self._active_type)
         label = {"note": "普通便签", "todo": "待办清单", "reminder": "提醒事项"}[
             self._active_type
         ]
         self.directory_title.setText(f"{label}目录")
-        self.directory_scope.setText(f"只显示{label} · 共 {len(pages)} 张")
         self.clear_all_button.setText(f"清空全部{label}…")
         self.clear_all_button.show()
         self.trash_button.setText(f"回收站 · {self.store.trash_count}")
+        selected = self.category_filter.currentData()
+        self.category_filter.blockSignals(True)
+        self.category_filter.clear()
+        self.category_filter.addItem("全部分类", None)
+        self.category_filter.addItem("未分类", "")
+        for tag in sorted({tag for page in pages for tag in page.tags}):
+            self.category_filter.addItem(tag, tag)
+        self.category_filter.setCurrentIndex(max(0, self.category_filter.findData(selected)))
+        self.category_filter.blockSignals(False)
+        self.category_filter.setVisible(self._active_type == "note")
+        self._populate_directory()
+        self.directory_overlay.show()
+        self.directory_overlay.raise_()
+
+    def _populate_directory(self) -> None:
+        if self._showing_trash:
+            return
+        all_pages = self.store.pages(self._active_type)
+        selected = self.category_filter.currentData() if self._active_type == "note" else None
+        pages = sorted(
+            (page for page in all_pages if selected is None or (not page.tags if selected == "" else selected in page.tags)),
+            key=lambda page: page.updated_at,
+            reverse=True,
+        )
+        self.directory_scope.setText(f"显示 {len(pages)} / {len(all_pages)} 页 · 最近编辑优先")
+        self.directory_empty.setVisible(not pages)
         self.directory_list.clear()
         for index, page in enumerate(pages, start=1):
             item = QListWidgetItem()
@@ -934,18 +1520,23 @@ class QuickNotebookWindow(QWidget):
                 item,
                 DirectoryRowWidget(
                     page.display_title,
-                    f"{index} / {len(pages)}",
+                    f"{self.store.page_ids(self._active_type).index(page.id) + 1} / {len(all_pages)}",
                     self.directory_list,
                     on_activate=lambda page_id=page.id: self.show_page(page_id),
+                    categories=page.tags or (("未分类",) if page.type == "note" else ()),
                 ),
             )
-        self.directory_overlay.show()
-        self.directory_overlay.raise_()
+            if page.id == self._current_page_id:
+                self.directory_list.setCurrentItem(item)
 
     def open_trash(self) -> None:
+        self._showing_trash = True
+        self.category_filter.hide()
+        self.directory_empty.hide()
         entries = self.store.trash_entries()
         self.directory_title.setText(f"回收站 · {len(entries)}")
         self.directory_scope.setText("删除后保留 7 天")
+        self.trash_button.setText("‹ 返回列表")
         self.clear_all_button.hide()
         self.directory_list.clear()
         for entry in entries:
@@ -964,17 +1555,30 @@ class QuickNotebookWindow(QWidget):
                 ),
             )
 
-    def new_page(self) -> NotebookPage:
-        self.flush_current_page()
-        page = self.store.create_page(self._active_type)
-        self.store.save()
+    def new_page(self) -> NotebookPage | None:
+        if not self.flush_current_page():
+            return None
+        pages = self.store.pages(self._active_type)
+        page = next((value for value in pages if value.is_empty and value.id == self._current_page_id), None)
+        page = page or next((value for value in pages if value.is_empty), None)
+        if page is None:
+            if not self._try_persist(lambda: self.store.create_page(self._active_type), self.new_page):
+                return None
+            page = self.store.pages(self._active_type)[0]
         self.show_page(page.id)
+        if page.type == "note":
+            self.note_editor.setFocus(Qt.FocusReason.OtherFocusReason)
+        elif page.type == "todo":
+            self.todo_editor.add_item("")
+        else:
+            self.reminder_editor.add_item("")
         return page
 
     def previous_page(self) -> NotebookPage | None:
         if self._current_page_id is None:
             return None
-        self.flush_current_page()
+        if not self.flush_current_page():
+            return None
         page = self.store.previous_page(self._active_type, self._current_page_id)
         if page is not None:
             self.show_page(page.id)
@@ -983,7 +1587,8 @@ class QuickNotebookWindow(QWidget):
     def next_page(self) -> NotebookPage | None:
         if self._current_page_id is None:
             return None
-        self.flush_current_page()
+        if not self.flush_current_page():
+            return None
         page = self.store.next_page(self._active_type, self._current_page_id)
         if page is not None:
             self.show_page(page.id)
@@ -991,16 +1596,19 @@ class QuickNotebookWindow(QWidget):
 
     def confirm_delete_page(self, page_id: str) -> None:
         if page_id == self._current_page_id:
-            self.flush_current_page()
+            if not self.flush_current_page():
+                return
         page = self.store.page(page_id)
         current_type = page.type if page is not None else self._active_type
         if page is None:
             return
-        if page.is_empty:
-            self.store.discard_page(page_id)
-        else:
-            self.store.delete_page(page_id)
-        self.store.save()
+        def change() -> None:
+            if page.is_empty:
+                self.store.discard_page(page_id)
+            else:
+                self.store.delete_page(page_id)
+        if not self._try_persist(change, lambda: self.confirm_delete_page(page_id)):
+            return
         remaining = self.store.page_ids(current_type)
         if remaining:
             self.show_page(remaining[0])
@@ -1008,15 +1616,19 @@ class QuickNotebookWindow(QWidget):
             self._show_empty_type(current_type)
 
     def confirm_clear_all(self) -> None:
-        self.flush_current_page()
-        self.store.clear_type(self._active_type)
-        self.store.save()
+        if not self.flush_current_page():
+            return
+        if not self._try_persist(lambda: self.store.clear_type(self._active_type), self.confirm_clear_all):
+            return
         self._show_empty_type(self._active_type)
         self.directory_overlay.hide()
 
-    def restore_from_trash(self, page_id: str) -> NotebookPage:
-        page = self.store.restore_page(page_id)
-        self.store.save()
+    def restore_from_trash(self, page_id: str) -> NotebookPage | None:
+        if not self.flush_current_page():
+            return None
+        if not self._try_persist(lambda: self.store.restore_page(page_id), lambda: self.restore_from_trash(page_id)):
+            return None
+        page = self.store.page(page_id)
         self.show_page(page.id)
         return page
 
@@ -1024,6 +1636,18 @@ class QuickNotebookWindow(QWidget):
         self._active_type = page_type
         index = ("note", "todo", "reminder").index(page_type)
         self.page_stack.setCurrentIndex(index)
+        self.page_hint.setText({
+            "note": "不填标题时，自动用正文第一行命名。",
+            "todo": "勾选完成一项 · 输入后按回车继续添加",
+            "reminder": "设置时间，到点在宠物旁提醒你。",
+        }[page_type])
+        self.page_hint.setVisible(page_type == "todo")
+        self.directory_button.setText({"note": "全部便签", "todo": "全部清单", "reminder": "全部提醒页"}[page_type])
+        self.new_button.setText({"note": "＋ 新建便签", "todo": "＋ 新建清单", "reminder": "＋ 新建提醒页"}[page_type])
+        self.new_button.setToolTip("另建一页，不会清空当前内容")
+        delete_label = {"note": "删除当前便签", "todo": "删除整张待办清单", "reminder": "删除整页提醒"}[page_type]
+        self.delete_button.setToolTip(delete_label)
+        self.delete_button.setAccessibleName(delete_label)
         for position, button in enumerate(self.type_tabs):
             button.set_active(position == index)
         self._layout_floating_children()
@@ -1034,9 +1658,12 @@ class QuickNotebookWindow(QWidget):
         self._loading = True
         try:
             self._title_is_custom = False
-            self.title_editor.setText(self._fallback_title())
+            self.title_editor.clear()
+            self._set_title_hint(self._fallback_title())
             self.note_editor.clear()
             self.tag_editor.clear()
+            self.category_toggle.setChecked(False)
+            self._update_category_summary()
             self.todo_editor.set_items(())
             self.reminder_editor.set_items(())
         finally:
@@ -1067,6 +1694,7 @@ class QuickNotebookWindow(QWidget):
         if self._loading:
             return
         self._title_is_custom = bool(text.strip())
+        self._set_title_hint(self._derived_editor_title())
         self._dirty = True
         self._schedule_save()
 
@@ -1074,7 +1702,7 @@ class QuickNotebookWindow(QWidget):
         if self._loading:
             return
         if not self._title_is_custom:
-            self._set_title_text(self._derived_editor_title())
+            self._set_title_hint(self._derived_editor_title())
         self._dirty = True
         self._schedule_save()
 
@@ -1087,16 +1715,58 @@ class QuickNotebookWindow(QWidget):
             candidates = [item.text for item in self.reminder_editor.items()]
         return next((text.strip() for text in candidates if text.strip()), self._fallback_title())
 
-    def _set_title_text(self, text: str) -> None:
-        self.title_editor.blockSignals(True)
-        self.title_editor.setText(text)
-        self.title_editor.blockSignals(False)
+    def _set_title_hint(self, derived_title: str) -> None:
+        hint = (
+            "点击输入标题，不填则自动命名"
+            if derived_title == self._fallback_title()
+            else f"自动命名：{derived_title}"
+        )
+        self.title_editor.setPlaceholderText(hint)
 
     def _schedule_save(self) -> None:
+        if not self._loading and self._dirty and self._current_page_id is None:
+            # 删除最后一页后仍可直接编辑，不能让新输入成为无归属数据。
+            page = self.store.create_page(self._active_type)
+            self._current_page_id = page.id
+            self.store.last_type = page.type
+            self.store.last_page_id_by_type[page.type] = page.id
+            self._refresh_navigation()
         if not self._loading and self._current_page_id is not None:
+            if self._retry_save is not None:
+                self._retry_save = self.flush_current_page
+            self._set_save_status("有修改待保存")
             self.save_timer.start()
 
+    def _toggle_categories(self, expanded: bool) -> None:
+        self.category_panel.setVisible(expanded)
+        self._update_category_summary()
+
+    def _update_category_summary(self) -> None:
+        tags = tuple(dict.fromkeys(part.strip() for part in re.split(r"[,，、]", self.tag_editor.text()) if part.strip()))
+        self.category_toggle.setText("收起 ▴" if self.category_toggle.isChecked() else (f"{len(tags)} 个分类 ▾" if tags else "添加分类 ▾"))
+        self.category_toggle.setToolTip("、".join(tags) or "添加分类后可在全部便签中筛选")
+        excess = len(tags) > 5
+        self.tag_hint.setText(f"已有 {len(tags)} 个分类，最多 5 个；请删减后保存" if excess else "多个分类用逗号分隔，最多 5 个")
+        self.tag_hint.setStyleSheet("color: #A23E32;" if excess else "")
+
+    def _categories_changed(self) -> None:
+        self._update_category_summary()
+        if not self._loading:
+            self.category_toggle.setChecked(True)
+        self._on_page_content_changed()
+
+    def _normalize_categories(self) -> None:
+        tags = tuple(dict.fromkeys(part.strip() for part in re.split(r"[,，、]", self.tag_editor.text()) if part.strip()))
+        if len(tags) <= 5:
+            self.tag_editor.blockSignals(True)
+            self.tag_editor.setText("、".join(tags))
+            self.tag_editor.blockSignals(False)
+            self._update_category_summary()
+
     def _update_current_line_highlight(self) -> None:
+        if not self.note_editor.toPlainText():
+            self.note_editor.setExtraSelections([])
+            return
         selection = QTextEdit.ExtraSelection()
         selection.format.setBackground(QColor("#FFF0E8"))
         selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
@@ -1116,7 +1786,7 @@ class QuickNotebookWindow(QWidget):
             return
         self._confirm_kind = "delete"
         self._confirm_page_id = self._current_page_id
-        self.confirm_title.setText("删除当前便签？")
+        self.confirm_title.setText(f"{self.delete_button.accessibleName()}？")
         self.confirm_message.setText("删除后进入回收站，可在 7 天内恢复。")
         self.confirm_action_button.setText("删除")
         self._show_confirm_overlay()
@@ -1157,12 +1827,16 @@ class QuickNotebookWindow(QWidget):
             elif self.directory_overlay.isVisible():
                 self.directory_overlay.hide()
             else:
-                self.flush_current_page()
-                self.hide()
-                self.closed_by_user.emit()
+                self.close_notebook()
             event.accept()  # type: ignore[attr-defined]
             return
         super().keyPressEvent(event)  # type: ignore[arg-type]
+
+    def close_notebook(self) -> None:
+        if not self.flush_current_page():
+            return
+        self.hide()
+        self.closed_by_user.emit()
 
     def reposition(self, pet_rect: QRect, *, avoid_rects: Sequence[QRect] = ()) -> None:
         screen = QGuiApplication.screenAt(pet_rect.center()) or QGuiApplication.primaryScreen()
@@ -1191,6 +1865,7 @@ class QuickNotebookWindow(QWidget):
         if self.confirm_overlay.isVisible():
             self._show_confirm_overlay()
         for index, button in enumerate(self.type_tabs):
+            button.setFixedWidth(min(88, body_x + 1))
             button.move(body_x - button.width() + 1, TAB_TOP + index * (TAB_HEIGHT + TAB_GAP))
             button.raise_()
 
@@ -1203,31 +1878,48 @@ def _notebook_stylesheet() -> str:
             border-radius: 17px;
         }
         QFrame#quickNotebookContent { background: transparent; border: none; }
-        QLineEdit#quickNotebookTitle { background: transparent; border: none; color: #4B4641; font-size: 15px; font-weight: 700; padding: 0; }
+        QLineEdit, QPlainTextEdit { placeholder-text-color: #796C62; }
+        QLabel#quickNotebookFieldLabel { color: #4B4641; font-size: 13px; font-weight: 700; }
+        QLabel#quickNotebookFieldHelp { color: #71655C; font-size: 11px; }
+        QLabel#quickNotebookValidation { color: #A23E32; font-size: 11px; }
+        QToolButton#quickNotebookCategoryToggle { color: #875334; background: #FFF4EC; border: none; padding: 4px 7px; font-size: 11px; }
+        QComboBox#quickNotebookCategoryFilter { color: #4B4641; background: #FFFFFF; border: 1px solid #CDB9A8; border-radius: 7px; padding: 6px 8px; }
+        QLineEdit#quickNotebookTitle { background: #FFFFFF; border: 1px solid #CDB9A8; border-radius: 8px; color: #4B4641; font-size: 14px; font-weight: 600; padding: 5px 9px; }
         QToolButton#quickNotebookDelete { background: transparent; border: none; border-radius: 9px; }
         QToolButton#quickNotebookDelete:hover { background: #F7EEE7; }
+        QToolButton#quickNotebookClose { background: transparent; border: none; color: #81736A; font-size: 20px; }
+        QToolButton#quickNotebookClose:hover { background: #F7EEE7; }
+        QLabel#quickNotebookHelper { color: #81736A; font-size: 11px; }
+        QToolButton#quickNotebookRemoveItem { background: transparent; border: none; }
+        QToolButton#quickNotebookRemoveItem:hover { background: #F9E9E1; }
+        QToolButton#quickNotebookEditTime { background: transparent; border: none; color: #A45F43; font-size: 10px; padding: 2px 0; text-align: left; }
+        QPushButton#quickNotebookUndo { background: #FFF0E8; color: #A45F43; border: none; border-radius: 6px; padding: 4px 9px; }
         QStackedWidget#quickNotebookPageStack {
             background: #FFFEFB;
             border: 1px solid #EEE3DA;
             border-radius: 13px;
         }
         QStackedWidget#quickNotebookPageStack > QWidget { background: transparent; border: none; }
-        QPlainTextEdit#quickNotebookNoteEditor { background: transparent; border: none; color: #57514D; padding: 12px; font-size: 13px; }
-        QLineEdit#quickNotebookTagEditor { background: #FFF0E8; color: #A45F43; border: none; border-radius: 9px; padding: 5px 8px; font-size: 10px; }
+        QPlainTextEdit#quickNotebookNoteEditor { background: #FFFFFF; border: 1px solid #CDB9A8; border-radius: 8px; color: #4B4641; padding: 9px; font-size: 13px; }
+        QLineEdit#quickNotebookTagEditor { background: #FFFFFF; color: #4B4641; border: 1px solid #CDB9A8; border-radius: 8px; padding: 5px 9px; font-size: 13px; }
+        QLineEdit#quickNotebookTitle:hover, QLineEdit#quickNotebookTagEditor:hover, QPlainTextEdit#quickNotebookNoteEditor:hover { border-color: #B8947B; }
+        QLineEdit#quickNotebookTitle:focus, QLineEdit#quickNotebookTagEditor:focus, QPlainTextEdit#quickNotebookNoteEditor:focus { background: #FFFBF7; border: 2px solid #B56F48; }
         QFrame#quickNotebookTodoRow { background: #FFFEFB; border: 1px solid #EEE3DA; border-radius: 11px; }
         QFrame#quickNotebookTodoRow[completed="true"] { background: #FAF7F3; color: #9B918A; }
         QFrame#quickNotebookTodoRow QLineEdit { background: transparent; border: none; color: #57514D; padding: 4px 2px; font-size: 12px; }
+        QFrame#quickNotebookTodoRow QLineEdit:focus { background: #FFF4EC; border-radius: 5px; }
         QFrame#quickNotebookTodoRow[completed="true"] QLineEdit { color: #9B918A; }
         QFrame#quickNotebookReminderRow { background: #FFFEFB; border: 1px solid #EEE3DA; border-radius: 11px; }
         QLineEdit#quickNotebookReminderText { background: transparent; border: none; color: #4B4641; padding: 1px 0; font-size: 12px; font-weight: 600; }
-        QLabel#quickNotebookReminderSub { color: #978A82; font-size: 10px; }
+        QLabel#quickNotebookReminderSub { color: #81736A; font-size: 10px; }
         QToolButton#quickNotebookDateBox { background: #FFF2DF; color: #A96F32; border: none; border-radius: 10px; font-size: 11px; font-weight: 700; }
         QDateTimeEdit#quickNotebookReminderDateTime, QComboBox#quickNotebookReminderRepeat { background: #FFFDF9; color: #57514D; border: 1px solid #E3D7CC; border-radius: 8px; padding: 5px 7px; }
+        QFrame#quickNotebookReminderRow QCheckBox { color: #57514D; font-size: 11px; }
         QScrollArea#quickNotebookTodoScroll, QScrollArea#quickNotebookReminderScroll,
         QScrollArea#quickNotebookTodoScroll > QWidget, QScrollArea#quickNotebookReminderScroll > QWidget { background: transparent; border: none; }
         QWidget#quickNotebookTodoRows, QWidget#quickNotebookReminderRows,
         QWidget#quickNotebookTodoViewport, QWidget#quickNotebookReminderViewport { background: #FFFEFB; border: none; }
-        QFrame#quickNotebookDirectoryOverlay { background: rgba(255, 253, 250, 252); border: 1px solid #DDCFC2; border-radius: 17px; }
+        QFrame#quickNotebookDirectoryOverlay { background: #FFFDFA; border: 1px solid #DDCFC2; border-radius: 17px; }
         QLabel#quickNotebookDirectoryTitle { color: #4B4641; font-size: 16px; font-weight: 700; }
         QLabel#quickNotebookDirectoryScope { color: #96887F; font-size: 11px; }
         QListWidget#quickNotebookDirectoryList { background: transparent; border: none; outline: none; padding: 0; }
@@ -1258,7 +1950,8 @@ def _notebook_stylesheet() -> str:
         QPushButton#quickNotebookDirectory { background: transparent; border: none; color: #81736A; }
         QLabel#quickNotebookPageCount { color: #81736A; font-size: 11px; }
         QToolButton { background: #FFFFFF; color: #7B6E66; border: 1px solid #E3D7CC; border-radius: 9px; }
-        QPushButton#quickNotebookNew { background: #D98663; color: white; border: 1px solid #D98663; border-radius: 9px; font-weight: 700; }
+        QToolButton:disabled { color: #C6BBB2; background: #FAF7F3; border-color: #EEE3DA; }
+        QPushButton#quickNotebookNew { background: #D98663; color: white; border: 1px solid #D98663; border-radius: 9px; font-weight: 700; padding: 0 10px; }
         QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 1px; }
         QScrollBar::handle:vertical { background: #D8C8BC; min-height: 28px; border-radius: 4px; }
         QScrollBar::handle:vertical:hover { background: #C9AD9E; }
