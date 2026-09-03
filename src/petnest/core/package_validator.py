@@ -1,4 +1,4 @@
-"""对不受信任宠物包进行结构、路径和 PNG 资源校验。"""
+"""对不受信任宠物包进行结构、路径和图片资源校验。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ _NUMBER_PARTS = re.compile(r"(\d+)")
 _INTERACTION_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _REQUIRED_ANIMATION = "idle"
 _ENTRANCE_DIRECTIONS = {"left", "right", "none"}
+SUPPORTED_ANIMATION_FRAME_SUFFIXES = frozenset({".png", ".webp"})
 _MAX_INTERACTION_ITEMS = 8
 _MAX_INTERACTION_ICON_SIZE = 512
 MAX_TIMELINE_DURATION_MS = 2_147_483_647
@@ -42,10 +43,25 @@ class ValidationResult:
 
 
 def natural_sort_key(path: Path) -> tuple[object, ...]:
-    """按文件名中的数字而非字典序排列 PNG 帧。"""
+    """按文件名中的数字而非字典序排列动画帧。"""
     return tuple(
         int(part) if part.isdigit() else part.casefold()
         for part in _NUMBER_PARTS.split(path.name)
+    )
+
+
+def animation_frame_paths(animation_path: Path) -> tuple[Path, ...]:
+    """Return naturally sorted PNG/WebP animation frames from a directory."""
+
+    return tuple(
+        sorted(
+            (
+                item
+                for item in animation_path.iterdir()
+                if item.is_file() and item.suffix.casefold() in SUPPORTED_ANIMATION_FRAME_SUFFIXES
+            ),
+            key=natural_sort_key,
+        )
     )
 
 
@@ -158,13 +174,27 @@ class PackageValidator:
                 result.warnings.append(message)
             return
 
-        frames = tuple(sorted((item for item in animation_path.iterdir() if item.is_file() and item.suffix.casefold() == ".png"), key=natural_sort_key))
+        frames = animation_frame_paths(animation_path)
         if not frames:
-            message = f"动画 {name} 没有 PNG 帧"
+            message = f"动画 {name} 没有 PNG 帧或 WebP 帧"
             if name == _REQUIRED_ANIMATION:
                 result.errors.append(message)
             else:
                 result.warnings.append(message)
+            return
+        frames_by_stem: dict[str, Path] = {}
+        duplicate_stems_found = False
+        for frame in frames:
+            stem = frame.stem.casefold()
+            existing = frames_by_stem.get(stem)
+            if existing is not None:
+                result.errors.append(
+                    f"动画 {name} 同时包含同名帧：{existing.name}、{frame.name}"
+                )
+                duplicate_stems_found = True
+            else:
+                frames_by_stem[stem] = frame
+        if duplicate_stems_found:
             return
         result.frames[name] = frames
         self._validate_timeline(name, definition, len(frames), result)
@@ -213,7 +243,7 @@ class PackageValidator:
             if not isinstance(durations, list):
                 result.errors.append(f"动画 {name} 的 frame_durations_ms 必须是数组")
             elif len(durations) != frame_count:
-                result.errors.append(f"动画 {name} 的 frame_durations_ms 数量必须与 PNG 帧数一致")
+                result.errors.append(f"动画 {name} 的 frame_durations_ms 数量必须与动画帧数一致")
             elif any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations):
                 result.errors.append(f"动画 {name} 的 frame_durations_ms 必须全部为正整数")
             elif any(value > MAX_TIMELINE_DURATION_MS for value in durations) or sum(

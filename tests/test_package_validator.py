@@ -36,6 +36,15 @@ def _write_png(path: Path, width: int = 16, height: int = 16, *, alpha: bool = T
     path.write_bytes(_png(width, height, alpha=alpha))
 
 
+def _write_webp(path: Path, width: int = 16, height: int = 16) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGBA", (width, height), (128, 128, 128, 128)).save(
+        path,
+        format="WEBP",
+        lossless=True,
+    )
+
+
 def _package_data(**overrides: object) -> dict[str, object]:
     package: dict[str, object] = {
         "schema_version": 1,
@@ -74,6 +83,38 @@ def test_valid_package_is_accepted_and_frames_use_natural_sorting(tmp_path: Path
     assert result.is_valid
     assert result.errors == []
     assert [frame.name for frame in result.frames["idle"]] == ["2.png", "10.png"]
+
+
+def test_valid_package_accepts_webp_frames_in_natural_order(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "valid-webp")
+    _write_webp(root / "animations" / "idle" / "1.webp")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert [frame.name for frame in result.frames["idle"]] == ["1.webp", "2.png", "10.png"]
+
+
+def test_animation_rejects_png_and_webp_with_the_same_stem(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "duplicate-frame-stem")
+    _write_webp(root / "animations" / "idle" / "2.webp")
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("2.png" in error and "2.webp" in error for error in result.errors)
+
+
+def test_animation_reports_every_png_webp_stem_conflict(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "multiple-frame-conflicts")
+    _write_webp(root / "animations" / "idle" / "2.webp")
+    _write_webp(root / "animations" / "idle" / "10.webp")
+
+    result = PackageValidator().validate(root)
+
+    assert not result.is_valid
+    assert any("2.png" in error and "2.webp" in error for error in result.errors)
+    assert any("10.png" in error and "10.webp" in error for error in result.errors)
 
 
 def test_missing_idle_makes_package_invalid(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from petnest.core.package_loader import PackageLoader
 from petnest.core.package_validator import PackageValidationError
-from tests.test_package_validator import _write_package, _write_png
+from tests.test_package_validator import _write_package, _write_png, _write_webp
 
 
 def test_loader_builds_typed_package_with_resolved_frames(tmp_path: Path) -> None:
@@ -25,6 +25,17 @@ def test_loader_builds_typed_package_with_resolved_frames(tmp_path: Path) -> Non
     assert package.animations["idle"].fps == 8
     assert [frame.name for frame in package.animations["idle"].frames] == ["2.png", "10.png"]
     assert all(frame.is_relative_to(package.root) for frame in package.animations["idle"].frames)
+
+
+def test_loader_builds_package_with_webp_only_animation(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "loaded-webp")
+    for frame in (root / "animations" / "idle").glob("*.png"):
+        frame.unlink()
+    _write_webp(root / "animations" / "idle" / "001.webp")
+
+    package = PackageLoader().load(root)
+
+    assert [frame.name for frame in package.animations["idle"].frames] == ["001.webp"]
 
 
 def test_loader_rejects_invalid_package(tmp_path: Path) -> None:

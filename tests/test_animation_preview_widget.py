@@ -14,6 +14,13 @@ def write_png(path: Path, color: tuple[int, int, int, int]) -> None:
     Image.new("RGBA", (16, 12), color).save(path)
 
 
+def write_webp(path: Path, color: tuple[int, int, int, int]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGBA", (16, 12), color)
+    image.putpixel((0, 0), (0, 255, 0, 64))
+    image.save(path, format="WEBP", lossless=True)
+
+
 def test_preview_uses_frame_durations_when_present(qtbot: object, tmp_path: Path) -> None:
     first = tmp_path / "001.png"
     second = tmp_path / "002.png"
@@ -64,6 +71,18 @@ def test_preview_can_load_definition_relative_to_root_and_pause(qtbot: object, t
 
     assert widget.next_delay_ms() == 70
     assert not widget.preview_timer.isActive()
+    assert not widget.preview_label.pixmap().isNull()
+
+
+def test_preview_can_load_webp_definition_relative_to_root(qtbot: object, tmp_path: Path) -> None:
+    root = tmp_path / "webp-pet"
+    frame = root / "animations" / "idle" / "001.webp"
+    write_webp(frame, (255, 0, 0, 128))
+    widget = AnimationPreviewWidget()
+    qtbot.addWidget(widget)
+
+    widget.set_animation({"path": "animations/idle", "fps": 8, "loop": True}, root)
+
     assert not widget.preview_label.pixmap().isNull()
 
 

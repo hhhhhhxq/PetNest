@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 
-from petnest.core.package_validator import natural_sort_key
+from petnest.core.package_validator import animation_frame_paths
 from petnest.ui.theme import COLORS
 
 
@@ -48,7 +48,7 @@ class CheckerboardLabel(QLabel):
 
 
 class AnimationPreviewWidget(QWidget):
-    """播放 PNG 帧并按逐帧时长或 FPS 驱动计时器。"""
+    """播放 PNG/WebP 帧并按逐帧时长或 FPS 驱动计时器。"""
 
     frame_changed = Signal(int)
 
@@ -118,7 +118,7 @@ class AnimationPreviewWidget(QWidget):
         if not animation_root.is_relative_to(root_resolved) or not animation_root.is_dir():
             self.set_frames(())
             return
-        frames = tuple(sorted((item for item in animation_root.iterdir() if item.is_file() and item.suffix.casefold() == ".png"), key=natural_sort_key))
+        frames = animation_frame_paths(animation_root)
         raw_durations = definition.get("frame_durations_ms")
         durations = raw_durations if isinstance(raw_durations, (list, tuple)) else None
         fps = definition.get("fps") if isinstance(definition.get("fps"), (int, float)) else None

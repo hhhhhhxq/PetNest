@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Mapping
 
-from .package_validator import PackageValidator
+from .package_validator import (
+    SUPPORTED_ANIMATION_FRAME_SUFFIXES,
+    PackageValidator,
+    animation_frame_paths,
+)
 
 
 class AnimationActionSyncError(ValueError):
@@ -20,7 +24,7 @@ class AnimationActionSyncError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SyncedAction:
-    """一个新写入配置的动画动作及其直接 PNG 帧数。"""
+    """一个新写入配置的动画动作及其直接动画帧数。"""
 
     name: str
     frame_count: int
@@ -28,7 +32,7 @@ class SyncedAction:
 
 @dataclass(frozen=True, slots=True)
 class SyncedTimeline:
-    """一个因磁盘 PNG 帧增删而自动调整过的逐帧时长。"""
+    """一个因磁盘动画帧增删而自动调整过的逐帧时长。"""
 
     name: str
     frame_count: int
@@ -75,7 +79,7 @@ class AnimationActionSynchronizer:
             raise AnimationActionSyncError(f"恢复动画配置失败：{error}") from error
 
     def sync(self, package_root: Path) -> AnimationActionSyncResult:
-        """将直接包含 PNG 帧且未声明的 ``animations`` 子目录写入 ``pet.json``。"""
+        """将直接包含动画帧且未声明的 ``animations`` 子目录写入 ``pet.json``。"""
         try:
             root = package_root.expanduser().resolve()
             config_path = root / "pet.json"
@@ -163,21 +167,23 @@ class AnimationActionSynchronizer:
         for directory in directories:
             if directory.name in animations:
                 continue
-            frame_count = 0
-            for path in directory.iterdir():
-                if path.suffix.casefold() != ".png" or path.is_dir():
-                    continue
-                if not AnimationActionSynchronizer._is_safe_png_frame(path, root):
+            frame_entries = tuple(
+                path
+                for path in directory.iterdir()
+                if path.suffix.casefold() in SUPPORTED_ANIMATION_FRAME_SUFFIXES and not path.is_dir()
+            )
+            for path in frame_entries:
+                if not AnimationActionSynchronizer._is_safe_animation_frame(path, root):
                     raise AnimationActionSyncError(
-                        f"动画目录 {directory.name} 的 PNG 帧 {path.name} 必须是包内的常规文件，不能是符号链接"
+                        f"动画目录 {directory.name} 的 PNG/WebP 帧 {path.name} 必须是包内的常规文件，不能是符号链接"
                     )
-                frame_count += 1
-            if frame_count:
-                actions.append(SyncedAction(directory.name, frame_count))
+            frames = animation_frame_paths(directory)
+            if frames:
+                actions.append(SyncedAction(directory.name, len(frames)))
         return tuple(actions)
 
     @staticmethod
-    def _is_safe_png_frame(path: Path, root: Path) -> bool:
+    def _is_safe_animation_frame(path: Path, root: Path) -> bool:
         return (
             not path.is_symlink()
             and stat.S_ISREG(path.lstat().st_mode)
@@ -198,7 +204,7 @@ class AnimationActionSynchronizer:
 
     @staticmethod
     def _reconcile_frame_durations(root: Path, animations: dict[str, Any]) -> tuple[SyncedTimeline, ...]:
-        """按磁盘上的直接 PNG 帧数补齐或截断已有逐帧时长。"""
+        """按磁盘上的直接动画帧数补齐或截断已有逐帧时长。"""
         reconciled: list[SyncedTimeline] = []
         for name, definition in animations.items():
             if not isinstance(name, str) or not isinstance(definition, dict):
@@ -208,7 +214,7 @@ class AnimationActionSynchronizer:
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in durations
             ):
                 continue
-            frame_count = AnimationActionSynchronizer._direct_png_frame_count(root, definition)
+            frame_count = AnimationActionSynchronizer._direct_animation_frame_count(root, definition)
             if frame_count is None or frame_count == 0 or len(durations) == frame_count:
                 continue
             if len(durations) > frame_count:
@@ -223,7 +229,7 @@ class AnimationActionSynchronizer:
         return tuple(reconciled)
 
     @staticmethod
-    def _direct_png_frame_count(root: Path, definition: dict[str, Any]) -> int | None:
+    def _direct_animation_frame_count(root: Path, definition: dict[str, Any]) -> int | None:
         configured_path = definition.get("path")
         if not isinstance(configured_path, str) or not configured_path.strip():
             return None
@@ -233,7 +239,7 @@ class AnimationActionSynchronizer:
         animation_path = (root / path).resolve()
         if not animation_path.is_relative_to(root) or not animation_path.is_dir():
             return None
-        return sum(item.is_file() and item.suffix.casefold() == ".png" for item in animation_path.iterdir())
+        return len(animation_frame_paths(animation_path))
 
     @staticmethod
     def _fps_duration(definition: dict[str, Any]) -> int:

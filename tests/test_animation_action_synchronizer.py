@@ -12,7 +12,7 @@ from petnest.core.animation_action_synchronizer import (
     AnimationActionSynchronizer,
     SyncedAction,
 )
-from tests.test_package_validator import _write_package, _write_png
+from tests.test_package_validator import _write_package, _write_png, _write_webp
 
 
 def _config(root: Path) -> dict[str, object]:
@@ -49,6 +49,17 @@ def test_sync_adds_sorted_png_action_directories_and_reports_frame_counts(tmp_pa
         "loop": True,
         "priority": 20,
     }
+
+
+def test_sync_adds_webp_action_directory_and_reports_frame_count(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "sync-webp")
+    _write_webp(root / "animations" / "sleep" / "1.webp")
+    _write_webp(root / "animations" / "sleep" / "2.webp")
+
+    result = AnimationActionSynchronizer().sync(root)
+
+    assert result.added == (SyncedAction("sleep", 2),)
+    assert _config(root)["animations"]["sleep"]["path"] == "animations/sleep"
 
 
 def test_sync_adds_non_looping_wake_with_context_transition(tmp_path: Path) -> None:
@@ -116,6 +127,26 @@ def test_sync_extends_a_registered_timeline_when_a_png_frame_is_added(tmp_path: 
     result = AnimationActionSynchronizer().sync(root)
 
     assert result.added == ()
+    assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [90, 110, 110]
+
+
+def test_sync_extends_a_registered_timeline_for_webp_only_frames(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "webp-timeline",
+        animations={
+            "idle": {
+                "path": "animations/idle", "fps": 8, "loop": True,
+                "priority": 10, "frame_durations_ms": [90, 110],
+            }
+        },
+    )
+    for frame in (root / "animations" / "idle").glob("*.png"):
+        frame.unlink()
+    for index in range(1, 4):
+        _write_webp(root / "animations" / "idle" / f"{index:03d}.webp")
+
+    AnimationActionSynchronizer().sync(root)
+
     assert _config(root)["animations"]["idle"]["frame_durations_ms"] == [90, 110, 110]
 
 
@@ -239,6 +270,30 @@ def test_sync_rejects_a_candidate_directory_with_an_external_png_symlink(tmp_pat
 
     assert config_path.read_bytes() == before
     assert "sleep" not in _config(root)["animations"]
+
+
+def test_sync_rejects_a_candidate_directory_with_a_dangling_webp_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _write_package(tmp_path / "dangling-webp-frame")
+    _write_webp(root / "animations" / "sleep" / "001.webp")
+    dangling = root / "animations" / "sleep" / "broken.webp"
+    dangling.write_bytes(b"simulated dangling link")
+    original_is_file = Path.is_file
+    original_is_symlink = Path.is_symlink
+
+    def simulated_is_file(path: Path) -> bool:
+        return False if path == dangling else original_is_file(path)
+
+    def simulated_is_symlink(path: Path) -> bool:
+        return True if path == dangling else original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_file", simulated_is_file)
+    monkeypatch.setattr(Path, "is_symlink", simulated_is_symlink)
+
+    with pytest.raises(AnimationActionSyncError, match="符号链接"):
+        AnimationActionSynchronizer().sync(root)
 
 
 def test_sync_with_no_candidates_leaves_mtime_and_contents_unchanged(tmp_path: Path) -> None:
