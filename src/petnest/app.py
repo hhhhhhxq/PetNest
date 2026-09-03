@@ -3001,12 +3001,12 @@ class PetNest:
         if self.work_finish_reminder.is_visible and state is not None and state.status == "prompting":
             self._show_work_finish_prompt(state)
 
-    def _record_clock_in(self, recorded_at: datetime) -> None:
+    def _record_clock_in(self, recorded_at: datetime | None) -> None:
         """保存当天的弹性打卡时间，并让控制器继续负责显示。"""
         self.settings = replace(
             self.settings,
-            clock_in_date=recorded_at.date().isoformat(),
-            clock_in_time=recorded_at.strftime("%H:%M"),
+            clock_in_date=recorded_at.date().isoformat() if recorded_at is not None else None,
+            clock_in_time=recorded_at.strftime("%H:%M") if recorded_at is not None else None,
         )
         self.settings_manager.save(self.settings)
 

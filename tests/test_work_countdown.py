@@ -1,6 +1,6 @@
 """上下班倒计时文字与窗口配置。"""
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, QSize, QTime
@@ -791,6 +791,264 @@ def test_fixed_countdown_discards_work_finish_state_older_than_previous_day(qtbo
     assert saved == [None]
     assert not prompts
     assert pet.texts[-1] == "距离下班 04:04:00"
+    countdown.timer.stop()
+
+
+@pytest.mark.parametrize(
+    ("schedule_mode", "boundary", "expected_text"),
+    (
+        ("fixed", datetime(2026, 8, 25, 9, 0, tzinfo=timezone(timedelta(hours=8))), "距离下班 09:30:00"),
+        ("elastic", datetime(2026, 8, 25, 9, 30, tzinfo=timezone(timedelta(hours=8))), None),
+    ),
+)
+def test_previous_day_overtime_clears_at_next_day_schedule_start(
+    qtbot: QtBot,
+    schedule_mode: str,
+    boundary: datetime,
+    expected_text: str | None,
+) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    previous_day = boundary.date() - timedelta(days=1)
+    stale_state = WorkFinishState(
+        work_date=previous_day,
+        end_at=datetime.combine(previous_day, time(18, 30), tzinfo=boundary.tzinfo),
+        status="overtime",
+        next_prompt_at=datetime.combine(previous_day, time(19, 30), tzinfo=boundary.tzinfo),
+    )
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    saved: list[WorkFinishState | None] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:30",
+        daily_end_times={str(day): "18:30" for day in range(5)} | {"5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode=schedule_mode,
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=540,
+        work_finish_state=stale_state,
+        on_work_finish_state=saved.append,
+    )
+    countdown._enabled = True
+
+    countdown.refresh(boundary - timedelta(seconds=1))
+    assert countdown.work_finish_state is not None
+
+    countdown.refresh(boundary)
+
+    assert countdown.work_finish_state is None
+    assert saved[-1] is None
+    assert pet.texts[-1] == expected_text
+    countdown.timer.stop()
+
+
+def test_previous_day_overtime_clears_on_rest_day_at_schedule_start(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    friday = date(2026, 8, 14)
+    stale_state = WorkFinishState(
+        work_date=friday,
+        end_at=datetime.combine(friday, time(18, 30)),
+        status="overtime",
+        next_prompt_at=datetime.combine(friday, time(19, 30)),
+    )
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:30",
+        daily_end_times={str(day): "18:30" for day in range(5)} | {"5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        work_finish_state=stale_state,
+    )
+    countdown._enabled = True
+
+    countdown.refresh(datetime(2026, 8, 15, 9, 0))
+
+    assert countdown.work_finish_state is None
+    assert pet.texts[-1] == "今天休息 ☕"
+    countdown.timer.stop()
+
+
+def test_elastic_overtime_waits_for_first_schedule_start_after_overnight_end(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    monday = date(2026, 8, 24)
+    overnight_state = WorkFinishState(
+        work_date=monday,
+        end_at=datetime(2026, 8, 25, 10, 0),
+        status="overtime",
+        next_prompt_at=datetime(2026, 8, 25, 11, 0),
+    )
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:30",
+        daily_end_times={str(day): "18:30" for day in range(5)} | {"5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=1_440,
+        work_finish_state=overnight_state,
+    )
+    countdown._enabled = True
+
+    countdown.refresh(datetime(2026, 8, 25, 10, 1))
+    assert countdown.work_finish_state is not None
+
+    countdown.refresh(datetime(2026, 8, 26, 9, 30))
+
+    assert countdown.work_finish_state is None
+    countdown.timer.stop()
+
+
+def test_elastic_reset_clears_matching_old_clock_in_before_refresh(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    monday = date(2026, 8, 24)
+    boundary = datetime(2026, 8, 25, 9, 30)
+    overtime_state = WorkFinishState(
+        work_date=monday,
+        end_at=boundary,
+        status="overtime",
+        next_prompt_at=datetime(2026, 8, 25, 10, 30),
+    )
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    clock_in_updates: list[datetime | None] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:30",
+        daily_end_times={str(day): "18:30" for day in range(5)} | {"5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=1_440,
+        clock_in_date=monday.isoformat(),
+        clock_in_time="09:30",
+        work_finish_state=overtime_state,
+        on_clock_in=clock_in_updates.append,
+    )
+    countdown._enabled = True
+
+    countdown.refresh(boundary)
+
+    assert countdown.work_finish_state is None
+    assert countdown._clock_in_date is None
+    assert countdown._clock_in_time is None
+    assert clock_in_updates == [None]
+    countdown.timer.stop()
+
+
+def test_elastic_old_clock_in_without_state_clears_at_reset_boundary(qtbot: QtBot) -> None:
+    class _PetWindow(QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.texts: list[str | None] = []
+
+        def set_countdown_appearance(self, **_kwargs: object) -> None:
+            pass
+
+        def set_countdown_text(self, text: str | None) -> None:
+            self.texts.append(text)
+
+    monday = date(2026, 8, 24)
+    boundary = datetime(2026, 8, 25, 9, 30)
+    pet = _PetWindow()
+    qtbot.addWidget(pet)
+    clock_in_updates: list[datetime | None] = []
+    countdown = WorkCountdownWindow(pet)
+    countdown.configure(
+        enabled=False,
+        start_time="09:00",
+        end_time="18:30",
+        daily_end_times={str(day): "18:30" for day in range(5)} | {"5": None, "6": None},
+        gap=0,
+        width=132,
+        height=37,
+        theme="cream",
+        always_on_top=True,
+        schedule_mode="elastic",
+        clock_in_start_time="09:30",
+        clock_in_end_time="10:00",
+        work_duration_minutes=1_440,
+        clock_in_date=monday.isoformat(),
+        clock_in_time="09:30",
+        on_clock_in=clock_in_updates.append,
+    )
+    countdown._enabled = True
+
+    countdown.refresh(boundary)
+
+    assert countdown.work_finish_state is None
+    assert countdown._clock_in_date is None
+    assert countdown._clock_in_time is None
+    assert clock_in_updates == [None]
     countdown.timer.stop()
 
 

@@ -375,7 +375,7 @@ class WorkCountdownWindow(QObject):
         self.work_duration_minutes = 540
         self._clock_in_date: str | None = None
         self._clock_in_time: str | None = None
-        self._on_clock_in: Callable[[datetime], object] | None = None
+        self._on_clock_in: Callable[[datetime | None], object] | None = None
         self._work_finish_state: WorkFinishState | None = None
         self._on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None
         self._on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None
@@ -409,7 +409,7 @@ class WorkCountdownWindow(QObject):
         work_duration_minutes: int = 540,
         clock_in_date: str | None = None,
         clock_in_time: str | None = None,
-        on_clock_in: Callable[[datetime], object] | None = None,
+        on_clock_in: Callable[[datetime | None], object] | None = None,
         work_finish_state: WorkFinishState | None = None,
         on_work_finish_state: Callable[[WorkFinishState | None], object] | None = None,
         on_work_finish_prompt: Callable[[WorkFinishState], object] | None = None,
@@ -460,8 +460,11 @@ class WorkCountdownWindow(QObject):
         self._last_now = current
         if (
             self._work_finish_state is not None
-            and self._work_finish_state.work_date < current.date() - timedelta(days=1)
+            and self._work_finish_state.work_date < current.date()
+            and current >= self._next_day_reset_at(self._work_finish_state, current)
         ):
+            self._clear_clock_in_for(self._work_finish_state.work_date)
+            self._work_finish_prompt_visible = False
             self._set_work_finish_state(None)
         if (
             self._work_finish_state is not None
@@ -490,6 +493,22 @@ class WorkCountdownWindow(QObject):
             return
         self._refresh_elastic(current)
 
+    def _next_day_reset_at(self, state: WorkFinishState, now: datetime) -> datetime:
+        """返回旧班次结束后第一次到达的次日班次开始时刻。"""
+        return self._next_schedule_start_after(state.work_date, state.end_at, now)
+
+    def _next_schedule_start_after(self, work_date: date, end_at: datetime, now: datetime) -> datetime:
+        """返回工作日次日起、不早于预计结束时刻的第一次班次开始。"""
+        if self.schedule_mode == "elastic":
+            start = _parse_time(self.clock_in_start_time, time(9, 30))
+        else:
+            start = _parse_time(self.start_time, time(9))
+        reset_date = max(work_date + timedelta(days=1), end_at.date())
+        reset_at = datetime.combine(reset_date, start, tzinfo=now.tzinfo)
+        if reset_at < end_at:
+            reset_at += timedelta(days=1)
+        return reset_at
+
     def _refresh_elastic(self, now: datetime) -> None:
         workdays = self.daily_end_times or {
             "0": self.end_time,
@@ -502,8 +521,7 @@ class WorkCountdownWindow(QObject):
         }
         recorded = self._recorded_at(now)
         if (self._clock_in_date or self._clock_in_time) and recorded is None:
-            self._clock_in_date = None
-            self._clock_in_time = None
+            self._clear_clock_in()
         if recorded is not None:
             end_at = elastic_work_end_at(
                 recorded,
@@ -511,6 +529,13 @@ class WorkCountdownWindow(QObject):
                 self.clock_in_end_time,
                 self.work_duration_minutes,
             )
+            if (
+                recorded.date() < now.date()
+                and now >= self._next_schedule_start_after(recorded.date(), end_at, now)
+            ):
+                self._clear_clock_in()
+                recorded = None
+        if recorded is not None:
             is_today = recorded.date() == now.date()
             latest_recorded = datetime.combine(
                 recorded.date(),
@@ -526,8 +551,7 @@ class WorkCountdownWindow(QObject):
                 text = f"距离下班 {_duration(end_at - now)}" if now < end_at else self._work_finish_text(state, now)
                 self.pet_window.set_countdown_text(text)  # type: ignore[attr-defined]
                 return
-            self._clock_in_date = None
-            self._clock_in_time = None
+            self._clear_clock_in()
 
         work_date = _available_clock_in_date(
             now,
@@ -639,6 +663,31 @@ class WorkCountdownWindow(QObject):
         except (TypeError, ValueError):
             return None
         return datetime.combine(recorded_date, recorded_time, tzinfo=now.tzinfo)
+
+    def _clear_clock_in_for(self, work_date: date) -> None:
+        """清除属于已结束工作日的打卡，不覆盖可能已写入的次日记录。"""
+        if not self._clock_in_date:
+            if self._clock_in_time:
+                self._clear_clock_in()
+            return
+        try:
+            recorded_date = date.fromisoformat(self._clock_in_date)
+        except (TypeError, ValueError):
+            self._clear_clock_in()
+            return
+        if recorded_date <= work_date:
+            self._clear_clock_in()
+
+    def _clear_clock_in(self) -> None:
+        if self._clock_in_date is None and self._clock_in_time is None:
+            return
+        self._clock_in_date = None
+        self._clock_in_time = None
+        if self._on_clock_in is not None:
+            try:
+                self._on_clock_in(None)
+            except Exception:  # noqa: BLE001 - 持久化失败不应让倒计时崩溃。
+                LOGGER.exception("清除上班打卡记录失败")
 
     def _handle_clock_in(self, selected_time: object) -> None:
         now = self._last_now or datetime.now().astimezone()
