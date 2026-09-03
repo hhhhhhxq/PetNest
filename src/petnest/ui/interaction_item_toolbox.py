@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,15 +22,16 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QColor,
+    QCloseEvent,
     QDrag,
     QEnterEvent,
     QGuiApplication,
+    QHideEvent,
     QIcon,
     QMouseEvent,
     QPaintEvent,
     QPainter,
     QPen,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,6 +41,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -52,8 +54,10 @@ from petnest.ui.lucide_icons import lucide_icon
 
 INTERACTION_ITEM_MIME = "application/x-petnest-interaction-item"
 _TOOLBOX_GAP = 8
-_MAX_ITEMS = 8
-_GRID_COLUMNS = 4
+_GRID_COLUMNS = 3
+_MAX_VISIBLE_ROWS = 3
+_ITEM_CARD_SIZE = QSize(70, 78)
+_ITEM_GRID_SPACING = 4
 _ITEM_ICON_SIZE = QSize(44, 44)
 _ITEM_HOVER_ICON_SIZE = QSize(48, 48)
 _ITEM_DRAG_PIXMAP_SIZE = QSize(50, 50)
@@ -93,6 +97,62 @@ def _clamp_rect_origin(rect: QRect, available: QRect) -> QPoint:
     )
 
 
+def _overlap_area(rect: QRect, others: Sequence[QRect]) -> int:
+    return sum(
+        max(0, intersection.width()) * max(0, intersection.height())
+        for other in others
+        if not (intersection := rect.intersected(other)).isEmpty()
+    )
+
+
+def place_interaction_panel(
+    anchor_rect: QRect,
+    pet_rect: QRect,
+    panel_size: QSize,
+    available: QRect,
+    *,
+    preferred_side: Literal["right", "left"],
+) -> QPoint:
+    """在不移动入口锚点的前提下，为独立面板选择屏幕内位置。"""
+    width = min(max(1, panel_size.width()), max(1, available.width()))
+    height = min(max(1, panel_size.height()), max(1, available.height()))
+    if preferred_side == "right":
+        outward = QPoint(anchor_rect.right() + 1 + _PANEL_GAP, anchor_rect.top())
+        opposite = QPoint(pet_rect.left() - _PANEL_GAP - width, anchor_rect.top())
+    else:
+        outward = QPoint(anchor_rect.left() - _PANEL_GAP - width, anchor_rect.top())
+        opposite = QPoint(pet_rect.right() + 1 + _PANEL_GAP, anchor_rect.top())
+    candidates = (
+        outward,
+        QPoint(
+            anchor_rect.center().x() - width // 2,
+            max(anchor_rect.bottom(), pet_rect.bottom()) + 1 + _PANEL_GAP,
+        ),
+        QPoint(
+            anchor_rect.center().x() - width // 2,
+            min(anchor_rect.top(), pet_rect.top()) - _PANEL_GAP - height,
+        ),
+        opposite,
+    )
+    bounded: list[QPoint] = []
+    for candidate in candidates:
+        point = _clamp_rect_origin(
+            QRect(candidate, QSize(width, height)),
+            available,
+        )
+        rect = QRect(point, QSize(width, height))
+        bounded.append(point)
+        if not rect.intersects(anchor_rect) and not rect.intersects(pet_rect):
+            return point
+    return min(
+        bounded,
+        key=lambda point: _overlap_area(
+            QRect(point, QSize(width, height)),
+            (anchor_rect, pet_rect),
+        ),
+    )
+
+
 def plan_launcher_arc(
     pet_rect: QRect,
     available: QRect,
@@ -103,11 +163,6 @@ def plan_launcher_arc(
     """规划入口组及可选展开面板在宠物外侧的位置。"""
     panel_width = max(0, panel_size.width()) if expanded else 0
     panel_height = max(0, panel_size.height()) if expanded else 0
-    extra_width = panel_width + (_PANEL_GAP if panel_width else 0)
-    window_size = QSize(
-        _LAUNCHER_CANVAS_SIZE.width() + extra_width,
-        max(_LAUNCHER_CANVAS_SIZE.height(), panel_height),
-    )
     group_y = pet_rect.top() - 22
     right_group_x = pet_rect.right() + 1 + _TOOLBOX_GAP
     left_group_x = (
@@ -116,16 +171,38 @@ def plan_launcher_arc(
         - _LAUNCHER_SIZE.width()
         - _LAUNCHER_ARC_DELTA.x()
     )
-    right_rect = QRect(QPoint(right_group_x, group_y), window_size)
-    left_rect = QRect(QPoint(left_group_x - extra_width, group_y), window_size)
+    right_canvas = QRect(
+        QPoint(right_group_x, group_y),
+        _LAUNCHER_CANVAS_SIZE,
+    )
+    left_canvas = QRect(
+        QPoint(left_group_x, group_y),
+        _LAUNCHER_CANVAS_SIZE,
+    )
+    right_rect = right_canvas
+    left_rect = left_canvas
+    if expanded and panel_width and panel_height:
+        right_rect = right_rect.united(
+            QRect(
+                QPoint(right_canvas.right() + 1 + _PANEL_GAP, group_y),
+                QSize(panel_width, panel_height),
+            )
+        )
+        left_rect = left_rect.united(
+            QRect(
+                QPoint(left_canvas.left() - _PANEL_GAP - panel_width, group_y),
+                QSize(panel_width, panel_height),
+            )
+        )
     side: Literal["right", "left"] = (
         "right"
-        if _overflow_score(right_rect, available) <= _overflow_score(left_rect, available)
+        if _overflow_score(right_rect, available)
+        <= _overflow_score(left_rect, available)
         else "left"
     )
-    candidate = right_rect if side == "right" else left_rect
+    candidate = right_canvas if side == "right" else left_canvas
     window_position = _clamp_rect_origin(candidate, available)
-    canvas_offset = QPoint(0 if side == "right" else extra_width, 0)
+    canvas_offset = QPoint(0, 0)
     toolbox_position = QPoint(0, 0) if side == "right" else QPoint(43, 0)
     notebook_position = QPoint(43, 35) if side == "right" else QPoint(0, 35)
     return LauncherArcPlacement(
@@ -138,10 +215,9 @@ def plan_launcher_arc(
 
 
 class InteractionItemPanel(QFrame):
-    """使用生成图片端盖保护绘制的自然木置物架。"""
+    """承载独立磨砂道具卡片的透明面板。"""
 
-    _SOURCE_CAP_WIDTH = 150
-    _LABEL_BAND_HEIGHT = 18
+    hover_changed = Signal(bool)
 
     def __init__(
         self,
@@ -149,66 +225,35 @@ class InteractionItemPanel(QFrame):
         *,
         shelf_asset_path: Path | None = None,
     ) -> None:
-        super().__init__(parent)
-        if shelf_asset_path is None:
-            root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
-            shelf_asset_path = root / "assets" / "interaction_items" / "wood_shelf.png"
-        self.shelf_asset_path = shelf_asset_path
-        self.shelf_pixmap = QPixmap(str(shelf_asset_path))
-
-    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt override
-        del event
-        source = self.shelf_pixmap
-        target = self.shelf_target_rect()
-        if source.isNull() or target.width() <= 0 or target.height() <= 0:
-            return
-
-        source_cap = min(self._SOURCE_CAP_WIDTH, source.width() // 2)
-        natural_target_cap = round(source_cap * target.height() / source.height())
-        target_cap = min(target.width() // 2, max(1, natural_target_cap))
-        source_middle_width = source.width() - source_cap * 2
-        target_middle_width = target.width() - target_cap * 2
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.drawPixmap(
-            QRect(target.left(), target.top(), target_cap, target.height()),
-            source,
-            QRect(0, 0, source_cap, source.height()),
+        del shelf_asset_path
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowStaysOnTopHint
         )
-        if target_middle_width > 0 and source_middle_width > 0:
-            painter.drawPixmap(
-                QRect(
-                    target.left() + target_cap,
-                    target.top(),
-                    target_middle_width,
-                    target.height(),
-                ),
-                source,
-                QRect(source_cap, 0, source_middle_width, source.height()),
-            )
-        painter.drawPixmap(
-            QRect(
-                target.right() - target_cap + 1,
-                target.top(),
-                target_cap,
-                target.height(),
-            ),
-            source,
-            QRect(source.width() - source_cap, 0, source_cap, source.height()),
-        )
-        painter.end()
+        super().__init__(parent, flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setStyleSheet("background: transparent; border: none;")
 
-    def shelf_target_rect(self) -> QRect:
-        shelf_height = max(1, self.height() - self._LABEL_BAND_HEIGHT)
-        rise = max(1, round(shelf_height * 0.10))
-        return QRect(0, -rise, self.width(), shelf_height)
+    def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt override
+        self.hover_changed.emit(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt override
+        self.hover_changed.emit(False)
+        super().leaveEvent(event)
 
 
 class InteractionItemButton(QToolButton):
     """以通用道具 ID 作为 Qt 拖放载荷的道具按钮。"""
 
-    def __init__(self, item: ResolvedInteractionItem, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, item: ResolvedInteractionItem, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.item = item
         self._drag_start: QPoint | None = None
@@ -235,7 +280,7 @@ class InteractionItemButton(QToolButton):
         self.setAccessibleDescription(f"拖动 {item.definition.label} 到宠物身上")
         self.setIcon(self._source_icon)
         self.setIconSize(_ITEM_ICON_SIZE)
-        self.setFixedSize(68, 88)
+        self.setFixedSize(_ITEM_CARD_SIZE)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -297,16 +342,61 @@ class InteractionItemButton(QToolButton):
         super().leaveEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - Qt override
-        if self.property("dragging"):
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        card = QRectF(0.5, 0.5, self.width() - 1.0, self.height() - 1.0)
+        lifted = bool(self.property("lifted"))
+        painter.setPen(QPen(QColor(185, 174, 163, 125), 1))
+        card_alpha = 88 if self.isDown() else 72 if lifted else 56
+        painter.setBrush(QColor(248, 244, 238, card_alpha))
+        painter.drawRoundedRect(card, 9, 9)
+
+        chip_width = min(
+            self.width() - 8,
+            max(34, self.fontMetrics().horizontalAdvance(self.text()) + 10),
+        )
+        chip = QRectF(
+            (self.width() - chip_width) / 2,
+            self.height() - 22,
+            chip_width,
+            17,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 252, 247, 190))
+        painter.drawRoundedRect(chip, 7, 7)
+
+        icon_size = self.iconSize()
+        icon = self.icon().pixmap(icon_size)
+        if not icon.isNull():
+            device_ratio = max(1.0, icon.devicePixelRatio())
+            logical_size = QSize(
+                max(1, round(icon.width() / device_ratio)),
+                max(1, round(icon.height() / device_ratio)),
+            )
+            slot_top = 0 if lifted else 4
+            icon_rect = QRect(
+                (self.width() - logical_size.width()) // 2,
+                slot_top + (icon_size.height() - logical_size.height()) // 2,
+                logical_size.width(),
+                logical_size.height(),
+            )
+            painter.drawPixmap(icon_rect, icon)
+        elif self.property("dragging"):
             slot = QRectF(self.width() / 2 - 18, 7, 36, 38)
             pen = QPen(QColor(190, 125, 92, 85), 1, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(slot)
-            painter.end()
-        super().paintEvent(event)
+
+        painter.setPen(QColor(87, 66, 57))
+        painter.drawText(
+            chip,
+            Qt.AlignmentFlag.AlignCenter,
+            self.text(),
+        )
+        painter.end()
 
     def _set_lifted(self, lifted: bool) -> None:
         self.setProperty("lifted", lifted)
@@ -323,7 +413,7 @@ class InteractionItemButton(QToolButton):
 
 
 class InteractionItemToolbox(QFrame):
-    """跟随宠物显示、可展开至两行道具网格的独立工具窗。"""
+    """跟随宠物显示、以三列磨砂卡片展示道具的独立工具窗。"""
 
     hover_changed = Signal(bool)
     intro_hint_started = Signal()
@@ -355,16 +445,25 @@ class InteractionItemToolbox(QFrame):
             "QToolButton#quickNotebookLauncher:checked { background: rgba(255, 242, 236, 190); }"
             "QLabel#interactionItemHint { background: transparent; border: none; color: #785F52; "
             "font-size: 11px; font-weight: 600; padding: 0 2px 2px 2px; }"
-            "QLabel#interactionItemHint[intro=\"true\"] { color: #C86845; "
+            'QLabel#interactionItemHint[intro="true"] { color: #C86845; '
             "background: rgba(255, 226, 213, 150); border-radius: 6px; }"
             "QWidget#interactionItemGrid { background: transparent; border: none; }"
+            "QScrollArea#interactionItemScroll { background: transparent; border: none; }"
+            "QScrollArea#interactionItemScroll QWidget#qt_scrollarea_viewport { "
+            "background: transparent; border: none; }"
+            "QScrollBar:vertical { background: transparent; width: 7px; margin: 0; }"
+            "QScrollBar::handle:vertical { background: rgba(166, 150, 137, 105); "
+            "border-radius: 3px; min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { "
+            "background: transparent; }"
             "QToolButton#interactionItemButton { background: transparent; border: none; "
             "border-radius: 10px; color: #574239; font-size: 11px; "
             "padding: 2px 2px 4px 2px; }"
-            "QToolButton#interactionItemButton[lifted=\"true\"] { padding: 0 2px 8px 2px; }"
+            'QToolButton#interactionItemButton[lifted="true"] { padding: 0 2px 8px 2px; }'
             "QToolButton#interactionItemButton:hover, "
             "QToolButton#interactionItemButton:pressed { background: transparent; border: none; }"
-            "QToolButton#interactionItemButton[dragging=\"true\"] { "
+            'QToolButton#interactionItemButton[dragging="true"] { '
             "background: transparent; color: rgba(108, 85, 74, 150); }"
         )
 
@@ -418,7 +517,9 @@ class InteractionItemToolbox(QFrame):
         self.notebook_launcher.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.notebook_launcher.setToolTip("便签本")
         self.notebook_launcher.setAccessibleName("便签本")
-        self.notebook_launcher.clicked.connect(lambda _checked=False: self.notebook_requested.emit())
+        self.notebook_launcher.clicked.connect(
+            lambda _checked=False: self.notebook_requested.emit()
+        )
         notebook_shadow = QGraphicsDropShadowEffect(self.notebook_launcher)
         notebook_shadow.setBlurRadius(6)
         notebook_shadow.setOffset(0, 1)
@@ -430,22 +531,36 @@ class InteractionItemToolbox(QFrame):
 
         self.panel = InteractionItemPanel(self)
         self.panel.setObjectName("interactionItemPanel")
+        self.panel.hover_changed.connect(self.hover_changed.emit)
         panel_layout = QVBoxLayout(self.panel)
-        panel_layout.setContentsMargins(9, 8, 9, 19)
+        panel_layout.setContentsMargins(4, 4, 4, 4)
         panel_layout.setSpacing(3)
         self.hint_label = QLabel("拖给宠物", self.panel)
         self.hint_label.setObjectName("interactionItemHint")
-        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.hint_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         panel_layout.addWidget(self.hint_label)
 
         self._item_grid = QWidget(self.panel)
         self._item_grid.setObjectName("interactionItemGrid")
         self._item_layout = QGridLayout(self._item_grid)
         self._item_layout.setContentsMargins(0, 0, 0, 0)
-        self._item_layout.setHorizontalSpacing(4)
-        self._item_layout.setVerticalSpacing(4)
-        panel_layout.addWidget(self._item_grid)
-        layout.addWidget(self.panel, 0, Qt.AlignmentFlag.AlignTop)
+        self._item_layout.setHorizontalSpacing(_ITEM_GRID_SPACING)
+        self._item_layout.setVerticalSpacing(_ITEM_GRID_SPACING)
+        self._item_scroll = QScrollArea(self.panel)
+        self._item_scroll.setObjectName("interactionItemScroll")
+        self._item_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._item_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._item_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._item_scroll.setWidgetResizable(False)
+        self._item_scroll.setWidget(self._item_grid)
+        panel_layout.addWidget(self._item_scroll)
+        self._natural_item_scroll_size = QSize(0, 0)
 
         self._item_buttons: tuple[InteractionItemButton, ...] = ()
         self._notebook_enabled = False
@@ -481,11 +596,14 @@ class InteractionItemToolbox(QFrame):
             button.deleteLater()
 
         buttons: list[InteractionItemButton] = []
-        for index, item in enumerate(tuple(items)[:_MAX_ITEMS]):
+        for index, item in enumerate(tuple(items)):
             button = InteractionItemButton(item, self.panel)
-            self._item_layout.addWidget(button, index // _GRID_COLUMNS, index % _GRID_COLUMNS)
+            self._item_layout.addWidget(
+                button, index // _GRID_COLUMNS, index % _GRID_COLUMNS
+            )
             buttons.append(button)
         self._item_buttons = tuple(buttons)
+        self._sync_item_grid_size()
 
         self.launcher.setVisible(bool(buttons))
         if not buttons and not self._notebook_enabled:
@@ -495,6 +613,42 @@ class InteractionItemToolbox(QFrame):
             self.open_panel()
         else:
             self.collapse()
+
+    def _sync_item_grid_size(self) -> None:
+        count = len(self._item_buttons)
+        if count == 0:
+            self._natural_item_scroll_size = QSize(0, 0)
+            self._item_grid.setFixedSize(0, 0)
+            self._item_scroll.setFixedSize(0, 0)
+            return
+
+        columns = min(count, _GRID_COLUMNS)
+        rows = (count + _GRID_COLUMNS - 1) // _GRID_COLUMNS
+        visible_rows = min(rows, _MAX_VISIBLE_ROWS)
+        grid_width = (
+            columns * _ITEM_CARD_SIZE.width() + max(0, columns - 1) * _ITEM_GRID_SPACING
+        )
+        grid_height = (
+            rows * _ITEM_CARD_SIZE.height() + max(0, rows - 1) * _ITEM_GRID_SPACING
+        )
+        visible_height = (
+            visible_rows * _ITEM_CARD_SIZE.height()
+            + max(0, visible_rows - 1) * _ITEM_GRID_SPACING
+        )
+        scrollbar_width = (
+            self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+            if rows > _MAX_VISIBLE_ROWS
+            else 0
+        )
+        self._natural_item_scroll_size = QSize(
+            grid_width + scrollbar_width,
+            visible_height,
+        )
+        self._item_grid.setFixedSize(grid_width, grid_height)
+        self._item_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._item_scroll.setFixedSize(self._natural_item_scroll_size)
 
     def set_notebook_enabled(self, enabled: bool) -> None:
         self._notebook_enabled = bool(enabled)
@@ -517,10 +671,14 @@ class InteractionItemToolbox(QFrame):
             return
         self._is_expanded = True
         self.launcher.setChecked(True)
-        self.panel.show()
         self._fit_contents()
         if self.isVisible():
+            self.panel.show()
             self.reposition(self._pet_rect)
+            self.panel.raise_()
+            self.raise_()
+        else:
+            self.panel.hide()
         self._play_intro_hint_once()
 
     def collapse(self) -> None:
@@ -553,18 +711,36 @@ class InteractionItemToolbox(QFrame):
         self._pet_rect = QRect(pet_rect)
         if not self.isVisible():
             return
-        screen = QGuiApplication.screenAt(self._pet_rect.center()) or QGuiApplication.primaryScreen()
+        screen = (
+            QGuiApplication.screenAt(self._pet_rect.center())
+            or QGuiApplication.primaryScreen()
+        )
         if screen is None:
             return
+        available = screen.availableGeometry()
+        self._fit_contents(available.size())
         placement = plan_launcher_arc(
             self._pet_rect,
-            screen.availableGeometry(),
-            self._planned_panel_size(),
-            expanded=self._is_expanded,
+            available,
+            self.panel.size() if self._item_buttons else QSize(0, 0),
+            expanded=bool(self._item_buttons),
         )
         self._apply_arc_side(placement.side)
-        self._fit_contents()
         self.move(placement.window_position)
+        if self._is_expanded and self.panel.isVisible():
+            anchor_rect = QRect(
+                self.launcher_canvas.mapToGlobal(QPoint()),
+                self.launcher_canvas.size(),
+            )
+            self.panel.move(
+                place_interaction_panel(
+                    anchor_rect,
+                    self._pet_rect,
+                    self.panel.size(),
+                    available,
+                    preferred_side=placement.side,
+                )
+            )
 
     def enterEvent(self, event: QEnterEvent) -> None:  # noqa: N802 - Qt override
         self.hover_changed.emit(True)
@@ -574,15 +750,24 @@ class InteractionItemToolbox(QFrame):
         self.hover_changed.emit(False)
         super().leaveEvent(event)
 
+    def hideEvent(self, event: QHideEvent) -> None:  # noqa: N802 - Qt override
+        self._stop_intro_animation()
+        self._is_expanded = False
+        self.launcher.setChecked(False)
+        self.panel.hide()
+        super().hideEvent(event)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        self.panel.close()
+        super().closeEvent(event)
+
     def _apply_arc_side(self, side: Literal["right", "left"]) -> None:
         self._arc_side = side
         root_layout = self.layout()
         if not isinstance(root_layout, QBoxLayout):
             return
         both_launchers = bool(self._item_buttons) and self._notebook_enabled
-        notebook_position = (
-            _LAUNCHER_ARC_DELTA if both_launchers else QPoint(0, 0)
-        )
+        notebook_position = _LAUNCHER_ARC_DELTA if both_launchers else QPoint(0, 0)
         if side == "right":
             self.launcher.move(0, 0)
             self.notebook_launcher.move(notebook_position)
@@ -596,11 +781,6 @@ class InteractionItemToolbox(QFrame):
             )
             root_layout.setDirection(QBoxLayout.Direction.RightToLeft)
         root_layout.activate()
-
-    def _planned_panel_size(self) -> QSize:
-        if not self._is_expanded or not self.panel.isVisible():
-            return QSize(0, 0)
-        return self.panel.sizeHint().expandedTo(self.panel.minimumSizeHint())
 
     def _toggle_panel(self, checked: bool) -> None:
         if checked:
@@ -666,7 +846,39 @@ class InteractionItemToolbox(QFrame):
         widget.style().polish(widget)
         widget.update()
 
-    def _fit_contents(self) -> None:
+    def _fit_contents(self, available_size: QSize | None = None) -> None:
+        scroll_size = QSize(self._natural_item_scroll_size)
+        self._item_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        if available_size is not None and not scroll_size.isEmpty():
+            panel_layout = self.panel.layout()
+            if panel_layout is not None:
+                margins = panel_layout.contentsMargins()
+                panel_chrome_height = (
+                    margins.top()
+                    + margins.bottom()
+                    + panel_layout.spacing()
+                    + self.hint_label.sizeHint().height()
+                )
+                max_scroll_size = QSize(
+                    max(
+                        1,
+                        available_size.width() - margins.left() - margins.right(),
+                    ),
+                    max(1, available_size.height() - panel_chrome_height),
+                )
+                scroll_size = scroll_size.boundedTo(max_scroll_size)
+                if scroll_size.width() < self._natural_item_scroll_size.width():
+                    self._item_scroll.setHorizontalScrollBarPolicy(
+                        Qt.ScrollBarPolicy.ScrollBarAsNeeded
+                    )
+        self._item_scroll.setFixedSize(scroll_size)
+        self.panel.resize(
+            self.panel.sizeHint().expandedTo(self.panel.minimumSizeHint())
+            if available_size is None
+            else self.panel.sizeHint().boundedTo(available_size)
+        )
         if self.layout() is not None:
             self.layout().activate()
         self.resize(self.sizeHint())
@@ -678,5 +890,6 @@ __all__ = [
     "InteractionItemPanel",
     "InteractionItemToolbox",
     "LauncherArcPlacement",
+    "place_interaction_panel",
     "plan_launcher_arc",
 ]

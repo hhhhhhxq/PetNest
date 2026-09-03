@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
-from PySide6.QtGui import QEnterEvent, QGuiApplication
+from PySide6.QtGui import QColor, QEnterEvent, QGuiApplication, QImage, QPainter
 from PySide6.QtWidgets import QBoxLayout
 
 from petnest.core.interaction_items import ResolvedInteractionItem
@@ -15,6 +15,7 @@ from petnest.ui.interaction_item_toolbox import (
     InteractionItemPanel,
     InteractionItemToolbox,
     LauncherArcPlacement,
+    place_interaction_panel,
     plan_launcher_arc,
 )
 
@@ -24,7 +25,9 @@ def _resolved_item(
 ) -> ResolvedInteractionItem:
     icon = tmp_path / f"{identifier}.png"
     Image.new("RGBA", (24, 24), (217, 134, 99, 255)).save(icon)
-    definition = InteractionItemDefinition(identifier, label or f"Item {identifier}", icon)
+    definition = InteractionItemDefinition(
+        identifier, label or f"Item {identifier}", icon
+    )
     return ResolvedInteractionItem(
         definition=definition,
         event_name=f"interaction.item.{identifier}",
@@ -32,7 +35,9 @@ def _resolved_item(
     )
 
 
-def test_button_mime_contains_only_generic_item_identifier(qtbot, tmp_path: Path) -> None:
+def test_button_mime_contains_only_generic_item_identifier(
+    qtbot, tmp_path: Path
+) -> None:
     item = _resolved_item(tmp_path, "toy_ball")
     button = InteractionItemButton(item)
     qtbot.addWidget(button)
@@ -45,7 +50,7 @@ def test_button_mime_contains_only_generic_item_identifier(qtbot, tmp_path: Path
     assert button.toolTip() == "拖动 Item toy_ball 到宠物身上"
     assert button.accessibleName() == item.definition.label
     assert button.iconSize() == QSize(44, 44)
-    assert button.size() == QSize(68, 88)
+    assert button.size() == QSize(70, 78)
     assert not button.icon().isNull()
 
 
@@ -80,20 +85,89 @@ def test_item_button_advertises_dragging(qtbot, tmp_path: Path) -> None:
     assert button.iconSize() == QSize(44, 44)
 
 
-def test_interaction_item_panel_loads_transparent_wood_shelf_asset(qtbot) -> None:
+def test_item_button_keeps_text_inside_label_chip_with_or_without_icon(
+    qtbot, tmp_path: Path
+) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items((_resolved_item(tmp_path, "toy"),))
+    button = toolbox.item_buttons[0]
+    toolbox.show()
+    qtbot.wait(1)
+
+    def dark_text_rows() -> list[int]:
+        image = QImage(button.size(), QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(image)
+        button.render(painter, QPoint())
+        painter.end()
+        return [
+            y
+            for y in range(40, button.height() - 4)
+            if any(
+                image.pixelColor(x, y).alpha() > 80
+                and image.pixelColor(x, y).lightness() < 110
+                for x in range(8, button.width() - 8)
+            )
+        ]
+
+    normal_rows = dark_text_rows()
+    button._set_dragging_visual(True)
+    dragging_rows = dark_text_rows()
+
+    assert normal_rows and min(normal_rows) >= 54 and max(normal_rows) <= 73
+    assert dragging_rows and min(dragging_rows) >= 54 and max(dragging_rows) <= 73
+
+
+def test_item_button_preserves_non_square_icon_aspect_ratio(
+    qtbot, tmp_path: Path
+) -> None:
+    icon_path = tmp_path / "wide.png"
+    Image.new("RGBA", (80, 40), (5, 250, 5, 255)).save(icon_path)
+    item = ResolvedInteractionItem(
+        definition=InteractionItemDefinition("wide", "Wide", icon_path),
+        event_name="interaction.item.wide",
+        action_name="action_wide",
+    )
+    button = InteractionItemButton(item)
+    qtbot.addWidget(button)
+    button.show()
+
+    image = QImage(button.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(image)
+    button.render(painter, QPoint())
+    painter.end()
+    green_pixels = [
+        (x, y)
+        for y in range(button.height())
+        for x in range(button.width())
+        if image.pixelColor(x, y).green() > 235
+        and image.pixelColor(x, y).red() < 20
+        and image.pixelColor(x, y).blue() < 20
+    ]
+
+    assert green_pixels
+    xs = [point[0] for point in green_pixels]
+    ys = [point[1] for point in green_pixels]
+    assert max(xs) - min(xs) + 1 == 44
+    assert max(ys) - min(ys) + 1 == 22
+
+
+def test_interaction_item_panel_is_a_transparent_card_container(qtbot) -> None:
     panel = InteractionItemPanel()
     qtbot.addWidget(panel)
     panel.resize(300, 110)
     panel.show()
 
-    assert panel.shelf_asset_path.name == "wood_shelf.png"
-    assert panel.shelf_pixmap.size() == QSize(1200, 400)
-    source = panel.shelf_pixmap.toImage()
-    assert source.pixelColor(600, 20).alpha() == 0
-    assert source.pixelColor(600, 260).alpha() > 0
-    assert source.pixelColor(600, 320).alpha() == 0
-    assert panel.shelf_target_rect().top() == -9
-    assert panel.shelf_target_rect().size() == QSize(300, 92)
+    image = QImage(panel.size(), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor(0, 0, 0, 0))
+    painter = QPainter(image)
+    panel.render(painter, QPoint())
+    painter.end()
+
+    assert image.pixelColor(150, 55).alpha() == 0
+    assert not hasattr(panel, "shelf_pixmap")
 
 
 def test_item_button_elides_long_label_but_keeps_full_accessible_text(
@@ -109,7 +183,7 @@ def test_item_button_elides_long_label_but_keeps_full_accessible_text(
     assert label in button.toolTip()
 
 
-def test_toolbox_keeps_first_eight_items_in_order_and_opens_or_collapses(
+def test_toolbox_keeps_all_items_in_three_column_rows_and_opens_or_collapses(
     qtbot, tmp_path: Path
 ) -> None:
     items = tuple(_resolved_item(tmp_path, str(index)) for index in range(10))
@@ -119,22 +193,31 @@ def test_toolbox_keeps_first_eight_items_in_order_and_opens_or_collapses(
     toolbox.set_items(items)
 
     assert [button.item.definition.identifier for button in toolbox.item_buttons] == [
-        str(index) for index in range(8)
+        str(index) for index in range(10)
     ]
     assert toolbox.hint_label.text() == "拖给宠物"
-    assert [toolbox._item_layout.getItemPosition(index)[:2] for index in range(8)] == [
+    assert [toolbox._item_layout.getItemPosition(index)[:2] for index in range(10)] == [
         (0, 0),
         (0, 1),
         (0, 2),
-        (0, 3),
         (1, 0),
         (1, 1),
         (1, 2),
-        (1, 3),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (3, 0),
     ]
     assert not toolbox.is_expanded
     toolbox.open_panel()
+    toolbox.show()
+    qtbot.wait(1)
     assert toolbox.is_expanded
+    assert toolbox._item_grid.height() > toolbox._item_scroll.viewport().height()
+    scroll_bar = toolbox._item_scroll.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    scroll_bar.setValue(scroll_bar.maximum())
+    assert scroll_bar.value() == scroll_bar.maximum()
     toolbox.collapse()
     assert not toolbox.is_expanded
 
@@ -152,7 +235,9 @@ def test_setting_new_items_detaches_old_buttons_and_empty_items_hide_toolbox(
     toolbox.set_items((_resolved_item(tmp_path, "new"),))
 
     assert old_button.parent() is None
-    assert [button.item.definition.identifier for button in toolbox.item_buttons] == ["new"]
+    assert [button.item.definition.identifier for button in toolbox.item_buttons] == [
+        "new"
+    ]
 
     toolbox.open_panel()
     toolbox.set_items(())
@@ -247,18 +332,37 @@ def test_expanded_arc_panel_stays_outside_pet_on_both_sides() -> None:
 
     right = plan_launcher_arc(right_pet, available, panel_size, expanded=True)
     left = plan_launcher_arc(left_pet, available, panel_size, expanded=True)
+    right_anchor = QRect(right.window_position, QSize(87, 79))
+    left_anchor = QRect(left.window_position, QSize(87, 79))
     right_panel = QRect(
-        right.window_position + right.canvas_offset + QPoint(87 + 6, 0),
+        place_interaction_panel(
+            right_anchor,
+            right_pet,
+            panel_size,
+            available,
+            preferred_side=right.side,
+        ),
         panel_size,
     )
-    left_panel = QRect(left.window_position, panel_size)
+    left_panel = QRect(
+        place_interaction_panel(
+            left_anchor,
+            left_pet,
+            panel_size,
+            available,
+            preferred_side=left.side,
+        ),
+        panel_size,
+    )
 
     assert right.side == "right"
     assert left.side == "left"
     assert not right_panel.intersects(right_pet)
     assert not left_panel.intersects(left_pet)
-    assert available.contains(QRect(right.window_position, QSize(393, 190)))
-    assert available.contains(QRect(left.window_position, QSize(393, 190)))
+    assert not right_panel.intersects(right_anchor)
+    assert not left_panel.intersects(left_anchor)
+    assert available.contains(right_panel)
+    assert available.contains(left_panel)
 
 
 def test_toolbox_has_nonactivating_always_on_top_flags_and_emits_hover(
@@ -314,7 +418,10 @@ def test_matching_toolbox_and_notebook_launchers(qtbot) -> None:
     assert toolbox.launcher_canvas.size() == QSize(87, 79)
     assert toolbox.launcher.geometry() == QRect(0, 0, 44, 44)
     assert toolbox.notebook_launcher.geometry() == QRect(43, 35, 44, 44)
-    delta = toolbox.notebook_launcher.geometry().center() - toolbox.launcher.geometry().center()
+    delta = (
+        toolbox.notebook_launcher.geometry().center()
+        - toolbox.launcher.geometry().center()
+    )
     assert delta == QPoint(43, 35)
     assert round((delta.x() ** 2 + delta.y() ** 2) ** 0.5, 1) == 55.4
     assert toolbox.launcher.hitButton(QPoint(43, 43))
@@ -323,7 +430,9 @@ def test_matching_toolbox_and_notebook_launchers(qtbot) -> None:
     assert not toolbox.notebook_launcher.icon().isNull()
 
 
-def test_toolbox_applies_mirrored_arc_and_panel_direction(qtbot, tmp_path: Path) -> None:
+def test_toolbox_applies_mirrored_arc_and_panel_direction(
+    qtbot, tmp_path: Path
+) -> None:
     toolbox = InteractionItemToolbox()
     qtbot.addWidget(toolbox)
     toolbox.set_items((_resolved_item(tmp_path, "toy"),))
@@ -353,6 +462,133 @@ def test_reposition_mirrors_actual_toolbox_near_screen_right_edge(
     assert toolbox._arc_side == "left"
     assert toolbox.layout().direction() == QBoxLayout.Direction.RightToLeft
     assert available.contains(toolbox.frameGeometry())
+
+
+def test_opening_panel_keeps_launcher_under_cursor_near_screen_edge(
+    qtbot, tmp_path: Path
+) -> None:
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    available = screen.availableGeometry()
+    pet_rect = QRect(
+        available.right() - 179,
+        available.top() + 100,
+        80,
+        100,
+    )
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items(tuple(_resolved_item(tmp_path, str(index)) for index in range(5)))
+
+    toolbox.show_for(pet_rect)
+    qtbot.wait(1)
+    before = toolbox.launcher.mapToGlobal(QPoint())
+
+    toolbox.open_panel()
+    qtbot.wait(1)
+
+    assert toolbox.launcher.mapToGlobal(QPoint()) == before
+    assert toolbox.panel.isWindow()
+    assert available.contains(toolbox.panel.frameGeometry())
+
+    toolbox.collapse()
+    qtbot.wait(1)
+
+    assert toolbox.launcher.mapToGlobal(QPoint()) == before
+
+
+def test_separate_panel_relays_hover_to_toolbox(qtbot) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    hovered: list[bool] = []
+    toolbox.hover_changed.connect(hovered.append)
+
+    toolbox.panel.enterEvent(QEnterEvent(QPointF(), QPointF(), QPointF()))
+    toolbox.panel.leaveEvent(QEvent(QEvent.Type.Leave))
+
+    assert hovered == [True, False]
+
+
+def test_detached_panel_visibility_follows_toolbox_owner(qtbot, tmp_path: Path) -> None:
+    screen = QGuiApplication.primaryScreen()
+    assert screen is not None
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items((_resolved_item(tmp_path, "toy"),))
+
+    toolbox.open_panel()
+    qtbot.wait(1)
+
+    assert toolbox.is_expanded
+    assert not toolbox.panel.isVisible()
+
+    toolbox.show_for(QRect(screen.availableGeometry().topLeft(), QSize(80, 100)))
+    toolbox.open_panel()
+    qtbot.wait(1)
+    assert toolbox.panel.isVisible()
+
+    toolbox.hide()
+    qtbot.wait(1)
+
+    assert not toolbox.panel.isVisible()
+
+
+def test_panel_can_use_space_above_pet_without_overlapping_anchor() -> None:
+    available = QRect(0, 0, 800, 600)
+    pet_rect = QRect(650, 450, 80, 100)
+    anchor_rect = QRect(738, 428, 62, 79)
+    panel_size = QSize(300, 190)
+
+    point = place_interaction_panel(
+        anchor_rect,
+        pet_rect,
+        panel_size,
+        available,
+        preferred_side="right",
+    )
+    panel_rect = QRect(point, panel_size)
+
+    assert point.y() == anchor_rect.top() - 6 - panel_size.height()
+    assert available.contains(panel_rect)
+    assert not panel_rect.intersects(anchor_rect)
+    assert not panel_rect.intersects(pet_rect)
+
+
+def test_panel_size_is_capped_to_small_screen_with_both_scroll_directions(
+    qtbot, tmp_path: Path
+) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items(
+        tuple(_resolved_item(tmp_path, str(index)) for index in range(10))
+    )
+
+    toolbox._fit_contents(QSize(200, 150))
+
+    assert toolbox.panel.width() <= 200
+    assert toolbox.panel.height() <= 150
+    assert (
+        toolbox._item_scroll.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
+
+
+def test_vertical_scrollbar_never_clips_last_column_at_borderline_width(
+    qtbot, tmp_path: Path
+) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items(
+        tuple(_resolved_item(tmp_path, str(index)) for index in range(10))
+    )
+
+    toolbox._fit_contents(QSize(228, 300))
+
+    assert toolbox._item_scroll.viewport().width() < toolbox._item_grid.width()
+    assert (
+        toolbox._item_scroll.horizontalScrollBarPolicy()
+        == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    )
 
 
 def test_notebook_launcher_survives_empty_items(qtbot) -> None:
