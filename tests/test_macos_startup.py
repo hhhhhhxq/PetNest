@@ -72,13 +72,34 @@ def test_macos_login_item_unregisters_and_is_idempotent() -> None:
     assert disabled_service.unregistered == 0
 
 
-def test_macos_login_item_rejects_old_macos_and_source_mode() -> None:
+def test_macos_login_item_rejects_old_packaged_macos() -> None:
     loads: list[bool] = []
     loader = lambda: loads.append(True)  # type: ignore[return-value]
 
     assert MacOSLoginItem(frozen=True, macos_version=(12, 6), service_loader=loader).supported is False
-    assert MacOSLoginItem(frozen=False, macos_version=(15, 0), service_loader=loader).supported is False
     assert loads == []
+
+
+def test_source_mode_delegates_without_loading_service_management() -> None:
+    calls: list[bool] = []
+    backend = SimpleNamespace(
+        supported=True,
+        configure=lambda enabled: calls.append(enabled) or StartupRegistrationResult(True),
+    )
+    item = MacOSLoginItem(frozen=False, source_item=backend, service_loader=lambda: pytest.fail("native bridge loaded"))
+
+    assert item.supported is True
+    assert item.configure(True).success is True
+    assert item.configure(False).success is True
+    assert calls == [True, False]
+
+
+def test_source_mode_preserves_backend_errors() -> None:
+    failure = StartupRegistrationResult(False, message="source missing")
+    backend = SimpleNamespace(supported=False, configure=lambda enabled: failure)
+    item = MacOSLoginItem(frozen=False, source_item=backend)
+    assert item.supported is False
+    assert item.configure(True) == failure
 
 
 def test_macos_login_item_reports_bridge_import_failure() -> None:

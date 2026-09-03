@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+import sys
 
 from PySide6.QtCore import QEventLoop, QMargins, QPoint, QSignalBlocker, QTime, QTimer, Qt, QRect, QSize, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
@@ -1743,7 +1744,11 @@ class SettingsCenterDialog(QDialog):
             startup_layout.addWidget(self.auto_start_input)
             self.auto_start_hint = QLabel(
                 "登录电脑后自动启动 PetNest\n"
-                "Windows 上异常退出后将自动重试，最多 3 次。",
+                + (
+                    "源码版使用当前 Python 环境；请勿移动或删除项目目录及虚拟环境。"
+                    if sys.platform == "darwin" and not getattr(sys, "frozen", False)
+                    else "Windows 上异常退出后将自动重试，最多 3 次。"
+                ),
                 startup_card,
             )
             self.auto_start_hint.setObjectName("mutedLabel")

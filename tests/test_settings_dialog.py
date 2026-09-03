@@ -652,7 +652,8 @@ def test_application_update_entry_is_opt_in_for_platform_owner(qtbot) -> None:
     assert called == [True]
 
 
-def test_auto_start_card_uses_confirmed_copy_and_persists(qtbot) -> None:
+def test_auto_start_card_uses_confirmed_copy_and_persists(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr("petnest.ui.settings_center_dialog.sys.platform", "win32")
     dialog = SettingsDialog(
         Settings(run_at_startup=False),
         auto_start_supported=True,
@@ -667,6 +668,25 @@ def test_auto_start_card_uses_confirmed_copy_and_persists(qtbot) -> None:
     )
     dialog.auto_start_input.setChecked(True)
     assert dialog.updated_settings().run_at_startup is True
+
+
+def test_source_macos_auto_start_card_is_visible_and_explains_paths(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr("petnest.ui.settings_center_dialog.sys.platform", "darwin")
+    monkeypatch.setattr("petnest.ui.settings_center_dialog.sys.frozen", False, raising=False)
+    from petnest.platforms.macos import MacOSPlatformAdapter
+
+    dialog = SettingsDialog(
+        Settings(run_at_startup=True),
+        auto_start_supported=MacOSPlatformAdapter().startup_supported,
+        initial_section="app_update",
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    assert dialog.auto_start_input.isVisible()
+    assert dialog.auto_start_input.isChecked()
+    assert "源码版使用当前 Python 环境" in dialog.auto_start_hint.text()
+    dialog.auto_start_input.setChecked(False)
+    assert dialog.updated_settings().run_at_startup is False
 
 
 def test_auto_start_card_is_hidden_when_unsupported(qtbot) -> None:

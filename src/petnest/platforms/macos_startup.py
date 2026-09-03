@@ -1,4 +1,4 @@
-"""macOS 13+ 主应用登录项封装。"""
+"""macOS 已打包应用登录项和源码版 LaunchAgent 的统一入口。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from .base import StartupRegistrationResult
+from .macos_source_startup import MacOSSourceLoginItem
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class _PyObjCLoginItemService:
 
 
 class MacOSLoginItem:
-    """通过 ``SMAppService.mainAppService`` 管理已打包主应用。"""
+    """打包版使用 Service Management，源码版使用用户 LaunchAgent。"""
 
     def __init__(
         self,
@@ -87,6 +88,7 @@ class MacOSLoginItem:
         frozen: bool | None = None,
         macos_version: tuple[int, int] | None = None,
         service_loader: Callable[[], LoginItemService] | None = None,
+        source_item: MacOSSourceLoginItem | None = None,
     ) -> None:
         self.frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
         self.macos_version = _macos_version() if macos_version is None else macos_version
@@ -94,14 +96,19 @@ class MacOSLoginItem:
         self._service: LoginItemService | None = None
         self._service_loaded = False
         self._load_error = ""
+        self._source_item = source_item
 
     @property
     def supported(self) -> bool:
-        if not self.frozen or self.macos_version < (13, 0):
+        if not self.frozen:
+            return self._source_backend().supported
+        if self.macos_version < (13, 0):
             return False
         return self._load_service() is not None
 
     def configure(self, enabled: bool) -> StartupRegistrationResult:
+        if not self.frozen:
+            return self._source_backend().configure(enabled)
         if not self.supported:
             message = self._load_error or "仅 macOS 13 及更高版本的已打包应用支持自动启动"
             return StartupRegistrationResult(False, message=message)
@@ -128,6 +135,11 @@ class MacOSLoginItem:
         except Exception as error:  # PyObjC 可能抛出 Objective-C 异常类型
             LOGGER.warning("无法修改 macOS 自动启动项", exc_info=True)
             return StartupRegistrationResult(False, message=str(error))
+
+    def _source_backend(self) -> MacOSSourceLoginItem:
+        if self._source_item is None:
+            self._source_item = MacOSSourceLoginItem()
+        return self._source_item
 
     def _load_service(self) -> LoginItemService | None:
         if self._service_loaded:
