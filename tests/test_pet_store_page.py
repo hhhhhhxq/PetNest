@@ -57,12 +57,16 @@ class _Service:
         self.install_calls: list[_InstallCall] = []
         self.confirmed: list[str] = []
         self.install_error: Exception | None = None
+        self.package_overrides: dict[str, PetStoreFile] = {}
 
     def load_catalog(self) -> CatalogLoadResult:
         return CatalogLoadResult(self.catalog, self.offline)
 
     def status_for(self, item: PetStoreItem) -> PetStoreStatus:
         return self.statuses[item.identifier]
+
+    def package_for(self, item: PetStoreItem) -> PetStoreFile:
+        return self.package_overrides.get(item.identifier, item.package)
 
     def load_media(self, remote: PetStoreFile, *, cancel: Event | None = None) -> Path:
         return self.media[remote.sha256]
@@ -231,6 +235,23 @@ def test_install_is_confirmed_only_after_host_completion(qtbot: object, tmp_path
 
     assert service.confirmed == ["miffy"]
     assert page.footer_state().primary_text == "已领养"
+
+
+def test_store_page_displays_the_package_selected_for_this_client(qtbot: object, tmp_path: Path) -> None:
+    service = _Service(tmp_path)
+    service.package_overrides["miffy"] = PetStoreFile(
+        "store/pets/miffy/package-webp-q95.zip",
+        10 * 1024 * 1024,
+        "a" * 64,
+    )
+    page = PetStorePage(service, run_tasks_inline=True)  # type: ignore[arg-type]
+    qtbot.addWidget(page)
+
+    page.activate()
+    page.show_detail("miffy")
+
+    assert page._cards["miffy"].size_label.text() == "10.0 MB"
+    assert "10.0 MB" in page.detail_facts.text()
 
 
 def test_production_worker_loads_catalog_and_preview_without_blocking(qtbot: object, tmp_path: Path) -> None:

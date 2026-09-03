@@ -9,10 +9,16 @@ from threading import Event, Lock
 
 from .pet_package_importer import (
     PetImportResult,
+    PetPackageImportError,
     import_pet_package,
     rollback_pet_import,
 )
-from .pet_store_cache import CatalogLoadResult, PetStoreCache
+from .pet_store_cache import (
+    CatalogLoadResult,
+    PetStoreCache,
+    PetStoreDownloadCancelled,
+    PetStoreDownloadError,
+)
 from .pet_store_catalog import PetStoreFile, PetStoreItem
 from .pet_store_state import PetStoreStateStore, PetStoreStatus
 
@@ -37,9 +43,12 @@ class PetStoreBusyError(PetStoreServiceError):
 class PetStoreInstallResult:
     item: PetStoreItem
     pet_import: PetImportResult
+    package: PetStoreFile | None = None
 
 
 class PetStoreService:
+    DEFAULT_SUPPORTED_PACKAGE_FORMATS = frozenset({"webp-q95"})
+
     def __init__(
         self,
         cache: PetStoreCache,
@@ -47,11 +56,17 @@ class PetStoreService:
         pets_root: Path,
         *,
         is_pet_locked: Callable[[str], bool] | None = None,
+        supported_package_formats: frozenset[str] | None = None,
     ) -> None:
         self.cache = cache
         self.state = state
         self.pets_root = Path(pets_root).expanduser().resolve()
         self._is_pet_locked = is_pet_locked or (lambda _identifier: False)
+        self.supported_package_formats = (
+            self.DEFAULT_SUPPORTED_PACKAGE_FORMATS
+            if supported_package_formats is None
+            else frozenset(supported_package_formats)
+        )
         self._install_lock = Lock()
 
     def load_catalog(self) -> CatalogLoadResult:
@@ -59,6 +74,12 @@ class PetStoreService:
 
     def status_for(self, item: PetStoreItem) -> PetStoreStatus:
         return self.state.status_for(item, self.pets_root)
+
+    def package_for(self, item: PetStoreItem) -> PetStoreFile:
+        for variant in item.package_variants:
+            if variant.format in self.supported_package_formats:
+                return variant.package
+        return item.package
 
     def load_media(
         self, remote: PetStoreFile, *, cancel: Event | None = None
@@ -81,18 +102,30 @@ class PetStoreService:
             status = self.status_for(item)
             if status is PetStoreStatus.LOCAL_EXISTING and not allow_local_replace:
                 raise PetStoreLocalConflict("本地已有同 ID 宠物，需要确认备份并替换")
-            package = self.cache.fetch_package(
-                item.package,
-                progress=progress,
-                cancel=cancel,
-            )
-            imported = import_pet_package(package, self.pets_root)
-            return PetStoreInstallResult(item, imported)
+            preferred = self.package_for(item)
+            candidates = (preferred,) if preferred == item.package else (preferred, item.package)
+            for remote in candidates:
+                if cancel is not None and cancel.is_set():
+                    raise PetStoreDownloadCancelled("宠物包下载已取消")
+                try:
+                    package = self.cache.fetch_package(
+                        remote,
+                        progress=progress,
+                        cancel=cancel,
+                    )
+                    imported = import_pet_package(package, self.pets_root)
+                    return PetStoreInstallResult(item, imported, remote)
+                except PetStoreDownloadCancelled:
+                    raise
+                except (PetStoreDownloadError, PetPackageImportError):
+                    if remote == item.package:
+                        raise
+            raise PetStoreServiceError("没有可用的宠物包")
         finally:
             self._install_lock.release()
 
     def confirm_install(self, result: PetStoreInstallResult) -> None:
-        self.state.record_install(result.item)
+        self.state.record_install(result.item, package=result.package)
 
     def rollback_install(self, result: PetStoreInstallResult) -> None:
         rollback_pet_import(result.pet_import, self.pets_root)

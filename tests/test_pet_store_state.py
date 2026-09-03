@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 
-from petnest.core.pet_store_catalog import PetStoreCatalog, PetStoreItem
+import pytest
+
+from petnest.core.pet_store_catalog import PetStoreCatalog, PetStoreFile, PetStoreItem
 from petnest.core.pet_store_state import PetStoreStateStore, PetStoreStatus
 from tests.test_pet_store_catalog import _catalog, _pet
 
@@ -58,6 +60,21 @@ def test_record_install_writes_atomic_schema_and_round_trips(tmp_path: Path) -> 
     assert receipt is not None
     assert receipt.catalog_updated_at == item.updated_at
     assert not list(tmp_path.glob(".state.json-*.tmp"))
+
+
+def test_record_install_rejects_package_not_declared_by_catalog_item(tmp_path: Path) -> None:
+    store = PetStoreStateStore(tmp_path / "state.json")
+    item = _item()
+    unrelated = PetStoreFile(
+        "store/pets/sample_pet/unrelated.zip",
+        1,
+        "d" * 64,
+    )
+
+    with pytest.raises(ValueError, match="package|宠物包"):
+        store.record_install(item, package=unrelated)
+
+    assert store.receipt(item.identifier) is None
 
 
 def test_corrupt_state_is_quarantined_and_treated_as_empty(tmp_path: Path) -> None:

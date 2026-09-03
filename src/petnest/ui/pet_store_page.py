@@ -213,7 +213,7 @@ class PetStorePage(ExchangePage):
         self.detail_summary.setText(item.summary)
         self.detail_tags.setText(" · ".join(item.tags))
         self.detail_facts.setText(
-            f"{item.action_count} 个动作  ·  {_format_bytes(item.package.size)}  ·  "
+            f"{item.action_count} 个动作  ·  {_format_bytes(self.service.package_for(item).size)}  ·  "
             f"更新于 {item.updated_at.astimezone().strftime('%Y-%m-%d')}"
         )
         self.detail_capabilities.setText(_capability_text(item.capabilities))
@@ -475,7 +475,11 @@ class PetStorePage(ExchangePage):
         else:
             self.hero.hide()
         for index, item in enumerate(self._catalog.pets):
-            card = PetStoreCard(item, self.scroll_content)
+            card = PetStoreCard(
+                item,
+                self.scroll_content,
+                package_size=self.service.package_for(item).size,
+            )
             card.selected.connect(self.show_detail)
             card.cover_requested.connect(self._queue_cover)
             self.cards_layout.addWidget(card, index // 3, index % 3)
@@ -587,7 +591,11 @@ class PetStorePage(ExchangePage):
         elif status is PetStoreStatus.LOCAL_EXISTING:
             message, primary, enabled = "本地已有同 ID 宠物，更新前会要求确认", "更新", True
         else:
-            message, primary, enabled = f"下载大小 {_format_bytes(item.package.size)}", "领养", True
+            message, primary, enabled = (
+                f"下载大小 {_format_bytes(self.service.package_for(item).size)}",
+                "领养",
+                True,
+            )
         self.set_footer(
             status=status_override or message,
             primary_text=primary,

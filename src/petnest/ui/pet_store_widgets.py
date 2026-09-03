@@ -30,7 +30,13 @@ class PetStoreCard(QFrame):
     selected = Signal(str)
     cover_requested = Signal(str)
 
-    def __init__(self, item: PetStoreItem, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        item: PetStoreItem,
+        parent: QWidget | None = None,
+        *,
+        package_size: int | None = None,
+    ) -> None:
         super().__init__(parent)
         self.item = item
         self._cover_requested = False
@@ -67,7 +73,10 @@ class PetStoreCard(QFrame):
         self.action_label.setObjectName("mutedLabel")
         details.addWidget(self.action_label)
         details.addStretch(1)
-        self.size_label = QLabel(_format_bytes(item.package.size), self)
+        self.size_label = QLabel(
+            _format_bytes(item.package.size if package_size is None else package_size),
+            self,
+        )
         self.size_label.setObjectName("mutedLabel")
         details.addWidget(self.size_label)
         layout.addLayout(details)

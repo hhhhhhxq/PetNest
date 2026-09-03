@@ -13,8 +13,10 @@ import re
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
 MAX_MEDIA_SIZE = 32 * 1024 * 1024
 MAX_PACKAGE_SIZE = 512 * 1024 * 1024
+MAX_PACKAGE_VARIANTS = 4
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+_PACKAGE_VARIANT_FORMAT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
 class PetStoreCatalogError(ValueError):
@@ -30,6 +32,12 @@ class PetStoreFile:
     @property
     def relative_path(self) -> PurePosixPath:
         return PurePosixPath(self.path)
+
+
+@dataclass(frozen=True, slots=True)
+class PetStorePackageVariant:
+    format: str
+    package: PetStoreFile
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +74,11 @@ class PetStoreItem:
     cover: PetStoreFile
     idle_preview: PetStorePreview
     package: PetStoreFile
+    package_variants: tuple[PetStorePackageVariant, ...] = ()
+
+    @property
+    def package_files(self) -> tuple[PetStoreFile, ...]:
+        return (self.package, *(variant.package for variant in self.package_variants))
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +143,7 @@ def _item(raw: Mapping[str, object], paths: set[str]) -> PetStoreItem:
     prefix = f"store/pets/{identifier}/"
     cover = _file(raw.get("cover"), "cover", prefix, MAX_MEDIA_SIZE, paths)
     package = _file(raw.get("package"), "package", prefix, MAX_PACKAGE_SIZE, paths)
+    package_variants = _package_variants(raw.get("package_variants"), prefix, paths)
     preview_raw = raw.get("idle_preview")
     if not isinstance(preview_raw, Mapping):
         raise PetStoreCatalogError("idle_preview 必须是对象")
@@ -159,7 +173,43 @@ def _item(raw: Mapping[str, object], paths: set[str]) -> PetStoreItem:
         cover,
         preview,
         package,
+        package_variants,
     )
+
+
+def _package_variants(
+    value: object,
+    prefix: str,
+    paths: set[str],
+) -> tuple[PetStorePackageVariant, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise PetStoreCatalogError("package_variants 必须是数组")
+    if len(value) > MAX_PACKAGE_VARIANTS:
+        raise PetStoreCatalogError(
+            f"package_variants 数量不能超过 {MAX_PACKAGE_VARIANTS}"
+        )
+    variants: list[PetStorePackageVariant] = []
+    formats: set[str] = set()
+    for index, raw_variant in enumerate(value):
+        if not isinstance(raw_variant, Mapping):
+            raise PetStoreCatalogError(f"package_variants[{index}] 必须是对象")
+        format_name = raw_variant.get("format")
+        if not isinstance(format_name, str) or _PACKAGE_VARIANT_FORMAT_RE.fullmatch(format_name) is None:
+            raise PetStoreCatalogError(f"package_variants[{index}].format 无效")
+        if format_name in formats:
+            raise PetStoreCatalogError(f"package_variants format 重复：{format_name}")
+        formats.add(format_name)
+        package = _file(
+            raw_variant.get("package"),
+            f"package_variants[{index}].package",
+            prefix,
+            MAX_PACKAGE_SIZE,
+            paths,
+        )
+        variants.append(PetStorePackageVariant(format_name, package))
+    return tuple(variants)
 
 
 def _identifier(value: object) -> str:
@@ -248,9 +298,11 @@ __all__ = [
     "MAX_CATALOG_BYTES",
     "MAX_MEDIA_SIZE",
     "MAX_PACKAGE_SIZE",
+    "MAX_PACKAGE_VARIANTS",
     "PetStoreCatalog",
     "PetStoreCatalogError",
     "PetStoreFile",
     "PetStoreItem",
+    "PetStorePackageVariant",
     "PetStorePreview",
 ]

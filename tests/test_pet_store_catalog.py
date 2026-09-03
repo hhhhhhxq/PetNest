@@ -13,6 +13,7 @@ from petnest.core.pet_store_catalog import (
     MAX_PACKAGE_SIZE,
     PetStoreCatalog,
     PetStoreCatalogError,
+    PetStoreItem,
 )
 
 
@@ -44,6 +45,21 @@ def _pet(identifier: str = "sample_pet", **overrides: object) -> dict[str, objec
     return value
 
 
+def _package_variant(
+    identifier: str = "sample_pet",
+    *,
+    format: str = "webp-q95",
+    content: bytes = b"webp-package",
+) -> dict[str, object]:
+    return {
+        "format": format,
+        "package": _file(
+            f"store/pets/{identifier}/package-{format}.zip",
+            content,
+        ),
+    }
+
+
 def _catalog(*pets: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -64,6 +80,79 @@ def test_catalog_parses_featured_pet_and_preview_timeline() -> None:
     assert pet.idle_preview.frame_count == 4
     assert pet.idle_preview.frame_durations_ms == (80, 120, 100, 140)
     assert pet.cover.relative_path.parts == ("store", "pets", "sample_pet", "cover.png")
+
+
+def test_catalog_parses_optional_package_variants_without_replacing_legacy_package() -> None:
+    raw_pet = _pet(package_variants=[_package_variant()])
+
+    pet = PetStoreCatalog.from_dict(_catalog(raw_pet)).pet("sample_pet")
+
+    assert pet is not None
+    assert pet.package.path.endswith("/package.zip")
+    assert len(pet.package_variants) == 1
+    assert pet.package_variants[0].format == "webp-q95"
+    assert pet.package_variants[0].package.path.endswith("/package-webp-q95.zip")
+
+
+def test_pet_store_item_keeps_the_legacy_constructor_signature() -> None:
+    parsed = PetStoreCatalog.from_dict(_catalog(_pet())).pet("sample_pet")
+    assert parsed is not None
+
+    item = PetStoreItem(
+        parsed.identifier,
+        parsed.name,
+        parsed.author,
+        parsed.summary,
+        parsed.tags,
+        parsed.updated_at,
+        parsed.action_count,
+        parsed.capabilities,
+        parsed.cover,
+        parsed.idle_preview,
+        parsed.package,
+    )
+
+    assert item.package_variants == ()
+
+
+def test_catalog_rejects_webp_only_item_without_legacy_package() -> None:
+    raw_pet = _pet(package_variants=[_package_variant()])
+    raw_pet.pop("package")
+
+    with pytest.raises(PetStoreCatalogError, match="package"):
+        PetStoreCatalog.from_dict(_catalog(raw_pet))
+
+
+def test_catalog_rejects_duplicate_package_variant_formats() -> None:
+    variants = [
+        _package_variant(content=b"first"),
+        {
+            "format": "webp-q95",
+            "package": _file("store/pets/sample_pet/package-webp-q95-second.zip", b"second"),
+        },
+    ]
+
+    with pytest.raises(PetStoreCatalogError, match="format|重复"):
+        PetStoreCatalog.from_dict(_catalog(_pet(package_variants=variants)))
+
+
+@pytest.mark.parametrize(
+    "variants",
+    [
+        {},
+        [_package_variant(format="Bad Format")],
+        [_package_variant(format=f"format-{index}") for index in range(5)],
+        [
+            {
+                "format": "webp-q95",
+                "package": _file("store/pets/other/package-webp-q95.zip"),
+            }
+        ],
+    ],
+)
+def test_catalog_rejects_invalid_package_variants(variants: object) -> None:
+    with pytest.raises(PetStoreCatalogError, match="package_variants|format|路径"):
+        PetStoreCatalog.from_dict(_catalog(_pet(package_variants=variants)))
 
 
 @pytest.mark.parametrize(
