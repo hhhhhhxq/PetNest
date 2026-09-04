@@ -251,6 +251,9 @@ class InteractionItemPanel(QFrame):
 class InteractionItemButton(QToolButton):
     """以通用道具 ID 作为 Qt 拖放载荷的道具按钮。"""
 
+    drag_started = Signal(str)
+    drag_finished = Signal(str, object)
+
     def __init__(
         self, item: ResolvedInteractionItem, parent: QWidget | None = None
     ) -> None:
@@ -309,18 +312,30 @@ class InteractionItemButton(QToolButton):
             return
 
         self._drag_start = None
+        self._start_drag()
+
+    def _start_drag(self) -> Qt.DropAction:
         pixmap = self._source_icon.pixmap(_ITEM_DRAG_PIXMAP_SIZE)
         drag = QDrag(self)
         drag.setMimeData(self.mime_data())
         if not pixmap.isNull():
             drag.setPixmap(pixmap)
             drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+        identifier = self.item.definition.identifier
         self._set_dragging_visual(True)
+        self.drag_started.emit(identifier)
+        result = Qt.DropAction.IgnoreAction
         try:
-            drag.exec(Qt.DropAction.MoveAction)
+            result = self._execute_drag(drag)
+            return result
         finally:
+            self.drag_finished.emit(identifier, result)
             self._set_dragging_visual(False)
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    @staticmethod
+    def _execute_drag(drag: QDrag) -> Qt.DropAction:
+        return drag.exec(Qt.DropAction.MoveAction)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
         self._drag_start = None
@@ -418,6 +433,8 @@ class InteractionItemToolbox(QFrame):
     hover_changed = Signal(bool)
     intro_hint_started = Signal()
     notebook_requested = Signal()
+    item_drag_started = Signal(str)
+    item_drag_finished = Signal(str, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         flags = (
@@ -598,6 +615,8 @@ class InteractionItemToolbox(QFrame):
         buttons: list[InteractionItemButton] = []
         for index, item in enumerate(tuple(items)):
             button = InteractionItemButton(item, self.panel)
+            button.drag_started.connect(self.item_drag_started.emit)
+            button.drag_finished.connect(self.item_drag_finished.emit)
             self._item_layout.addWidget(
                 button, index // _GRID_COLUMNS, index % _GRID_COLUMNS
             )

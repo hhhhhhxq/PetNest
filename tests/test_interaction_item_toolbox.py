@@ -85,6 +85,49 @@ def test_item_button_advertises_dragging(qtbot, tmp_path: Path) -> None:
     assert button.iconSize() == QSize(44, 44)
 
 
+def test_item_button_emits_drag_lifecycle(qtbot, tmp_path: Path, monkeypatch) -> None:
+    button = InteractionItemButton(_resolved_item(tmp_path, "toy_ball"))
+    qtbot.addWidget(button)
+    events: list[tuple[str, str, object | None]] = []
+    button.drag_started.connect(lambda item_id: events.append(("start", item_id, None)))
+    button.drag_finished.connect(
+        lambda item_id, result: events.append(("finish", item_id, result))
+    )
+    monkeypatch.setattr(
+        button,
+        "_execute_drag",
+        lambda _drag: Qt.DropAction.MoveAction,
+    )
+
+    result = button._start_drag()
+
+    assert result == Qt.DropAction.MoveAction
+    assert events == [
+        ("start", "toy_ball", None),
+        ("finish", "toy_ball", Qt.DropAction.MoveAction),
+    ]
+
+
+def test_toolbox_relays_item_drag_lifecycle(qtbot, tmp_path: Path) -> None:
+    toolbox = InteractionItemToolbox()
+    qtbot.addWidget(toolbox)
+    toolbox.set_items((_resolved_item(tmp_path, "toy"),))
+    events: list[tuple[str, object | None]] = []
+    toolbox.item_drag_started.connect(lambda item_id: events.append((item_id, None)))
+    toolbox.item_drag_finished.connect(
+        lambda item_id, result: events.append((item_id, result))
+    )
+
+    button = toolbox.item_buttons[0]
+    button.drag_started.emit("toy")
+    button.drag_finished.emit("toy", Qt.DropAction.IgnoreAction)
+
+    assert events == [
+        ("toy", None),
+        ("toy", Qt.DropAction.IgnoreAction),
+    ]
+
+
 def test_item_button_keeps_text_inside_label_chip_with_or_without_icon(
     qtbot, tmp_path: Path
 ) -> None:
