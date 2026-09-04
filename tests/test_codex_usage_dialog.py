@@ -45,6 +45,7 @@ def test_usage_dialog_is_a_movable_non_modal_window(tmp_path, qtbot) -> None:
     assert not dialog.isModal()
     assert dialog.windowFlags() & Qt.WindowType.WindowTitleHint
     assert dialog.claim_pending_button.text() == "补登到当前账号"
+    assert "combobox-popup: 0;" in dialog.styleSheet()
 
 
 def _report(tmp_path: Path) -> CodexUsageReport:

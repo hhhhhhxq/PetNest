@@ -403,6 +403,9 @@ def dialog_stylesheet() -> str:
             padding: 7px 9px;
             min-height: 18px;
         }}
+        QComboBox {{
+            combobox-popup: 0;
+        }}
         QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTimeEdit:focus, QComboBox:focus {{
             border: 1px solid {c['accent']};
         }}
@@ -420,9 +423,23 @@ def dialog_stylesheet() -> str:
             background: {c['surface']};
             color: {c['text']};
             border: 1px solid {c['border']};
+            border-radius: 7px;
+            padding: 4px;
             selection-background-color: {c['accent_soft']};
             selection-color: {c['accent']};
             outline: none;
+        }}
+        QComboBox QAbstractItemView::item {{
+            background: transparent;
+            color: {c['text']};
+            border: none;
+            border-radius: 5px;
+            min-height: 24px;
+            padding: 2px 7px;
+        }}
+        QComboBox QAbstractItemView::item:selected {{
+            background: {c['accent_soft']};
+            color: {c['accent']};
         }}
         QTextEdit, QPlainTextEdit {{
             background: {c['surface']};

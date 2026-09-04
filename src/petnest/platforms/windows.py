@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import locale
+import csv
+from dataclasses import dataclass
+import getpass
 import logging
 import os
 from pathlib import Path
-import socket
 import subprocess
-from subprocess import CompletedProcess
 import sys
 
 from .base import PlatformEventAdapter, StartupRegistrationResult
@@ -17,95 +17,75 @@ from .windows_startup import WindowsStartupTask
 
 LOGGER = logging.getLogger(__name__)
 
-WECHAT_PROCESS_NAMES = ("WeChat.exe", "Weixin.exe")
-WECHAT_TERMINATION_LOCAL_IP = "192.168.101.14"
-TASKKILL_TIMEOUT_SECONDS = 10
-
-CommandRunner = Callable[[list[str]], CompletedProcess[str]]
+WECHAT_PROCESS_NAMES = frozenset({"WeChat.exe", "Weixin.exe"})
+WECHAT_PROCESS_QUERY_ACCOUNT = "覃师傅-安装包"
 
 
-def _system_taskkill_path() -> Path:
-    windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    return windows_root / "System32" / "taskkill.exe"
+@dataclass(frozen=True, slots=True)
+class WechatProcess:
+    name: str
+    pid: int
 
 
-def _run_taskkill(arguments: list[str]) -> CompletedProcess[str]:
-    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-    return subprocess.run(
-        arguments,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding=locale.getpreferredencoding(False),
-        errors="replace",
-        timeout=TASKKILL_TIMEOUT_SECONDS,
-        creationflags=creation_flags,
-    )
-
-
-def _local_ipv4_addresses() -> frozenset[str]:
-    addresses: set[str] = set()
-    try:
-        for address_info in socket.getaddrinfo(
-            socket.gethostname(),
-            None,
-            family=socket.AF_INET,
-            type=socket.SOCK_DGRAM,
-        ):
-            addresses.add(str(address_info[4][0]))
-    except OSError:
-        LOGGER.warning("无法读取本机 IPv4 地址，跳过微信强制退出", exc_info=True)
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect((WECHAT_TERMINATION_LOCAL_IP, 9))
-            addresses.add(str(probe.getsockname()[0]))
-    except OSError:
-        pass
-    return frozenset(addresses)
+ProcessQueryRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def terminate_wechat_processes(
     *,
     platform_name: str | None = None,
-    runner: CommandRunner | None = None,
+    runner: object | None = None,
     local_ipv4_addresses: frozenset[str] | set[str] | tuple[str, ...] | None = None,
 ) -> tuple[str, ...]:
-    """只在指定 Windows 主机登录启动时强制结束微信进程。"""
+    """保留兼容入口；进程终止功能已停用。"""
+    del platform_name, runner, local_ipv4_addresses
+    return ()
+
+
+def find_wechat_processes(
+    *,
+    platform_name: str | None = None,
+    account_name: str | None = None,
+    runner: ProcessQueryRunner | None = None,
+) -> tuple[WechatProcess, ...]:
+    """只读返回正在运行的微信进程，不改变其状态。"""
     if (platform_name or sys.platform) != "win32":
         return ()
-    addresses = (
-        set(local_ipv4_addresses)
-        if local_ipv4_addresses is not None
-        else set(_local_ipv4_addresses())
-    )
-    if WECHAT_TERMINATION_LOCAL_IP not in addresses:
-        LOGGER.info(
-            "本机 IP 不包含 %s，跳过微信强制退出",
-            WECHAT_TERMINATION_LOCAL_IP,
-        )
+    if (account_name or getpass.getuser()) != WECHAT_PROCESS_QUERY_ACCOUNT:
         return ()
-    command_runner = runner or _run_taskkill
-    terminated: list[str] = []
-    for process_name in WECHAT_PROCESS_NAMES:
-        arguments = [
-            str(_system_taskkill_path()),
-            "/F",
-            "/T",
-            "/IM",
-            process_name,
-        ]
-        try:
-            result = command_runner(arguments)
-        except (OSError, subprocess.SubprocessError):
-            LOGGER.warning("无法强制结束微信进程：%s", process_name, exc_info=True)
+
+    command_runner = runner or subprocess.run
+    windows_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    try:
+        completed = command_runner(
+            [str(windows_root / "System32" / "tasklist.exe"), "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        LOGGER.warning("无法查询 Windows 进程：%s", error)
+        return ()
+
+    if completed.returncode != 0:
+        LOGGER.warning("Windows 进程查询失败：退出码 %s", completed.returncode)
+        return ()
+
+    wanted_names = {name.casefold() for name in WECHAT_PROCESS_NAMES}
+    matches: list[WechatProcess] = []
+    seen_pids: set[int] = set()
+    for row in csv.reader(completed.stdout.splitlines()):
+        if len(row) < 2 or row[0].casefold() not in wanted_names:
             continue
-        if result.returncode == 0:
-            terminated.append(process_name)
-            LOGGER.info("Windows 登录启动时已强制结束微信进程：%s", process_name)
-        elif result.returncode != 128:
-            detail = (result.stderr or result.stdout).strip() or f"退出码 {result.returncode}"
-            LOGGER.warning("强制结束微信进程失败：%s（%s）", process_name, detail)
-    return tuple(terminated)
+        try:
+            pid = int(row[1])
+        except ValueError:
+            continue
+        if pid <= 0 or pid in seen_pids:
+            continue
+        seen_pids.add(pid)
+        matches.append(WechatProcess(name=row[0], pid=pid))
+    return tuple(matches)
 
 
 class WindowsPlatformAdapter(PlatformEventAdapter):
