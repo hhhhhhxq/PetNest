@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from petnest.core.fallback_resolver import FallbackResolver, GLOBAL_PLACEHOLDER
 from petnest.models.pet_package import (
     AnimationDefinition,
+    HoldPlayDefinition,
+    HoldPlayTargetDefinition,
     InteractionItemDefinition,
     PetPackage,
 )
@@ -26,8 +28,8 @@ class ResolvedInteractionItem:
     """一个已经解析到可播放宠物动作的互动道具。"""
 
     definition: InteractionItemDefinition
-    event_name: str
-    action_name: str
+    event_name: str | None
+    action_name: str | None
 
 
 class InteractionItemResolver:
@@ -53,14 +55,67 @@ class InteractionItemResolver:
         for definition in source_definitions:
             event_name = interaction_item_event(definition.identifier)
             requested = source_bindings.get(event_name)
-            if requested is None:
+            action_name: str | None = None
+            if requested is not None:
+                candidate = fallback_resolver.resolve(requested, pet_actions)
+                action = source_animations.get(candidate)
+                if candidate != GLOBAL_PLACEHOLDER and action is not None and action.scope == "pet":
+                    action_name = candidate
+            hold_play = _resolve_hold_play(
+                definition.hold_play,
+                pet_actions,
+                source_animations,
+                fallback_resolver,
+            )
+            if action_name is None and hold_play is None:
                 continue
-            action_name = fallback_resolver.resolve(requested, pet_actions)
-            action = source_animations.get(action_name)
-            if action_name == GLOBAL_PLACEHOLDER or action is None or action.scope != "pet":
-                continue
-            resolved.append(ResolvedInteractionItem(definition, event_name, action_name))
+            resolved.append(
+                ResolvedInteractionItem(
+                    replace(definition, hold_play=hold_play),
+                    event_name if action_name is not None else None,
+                    action_name,
+                )
+            )
         return tuple(resolved)
+
+
+def _resolve_hold_play(
+    configured: HoldPlayDefinition | None,
+    pet_actions: set[str],
+    animations: Mapping[str, AnimationDefinition],
+    fallback_resolver: FallbackResolver,
+) -> HoldPlayDefinition | None:
+    if configured is None:
+        return None
+    ready_action = fallback_resolver.resolve(configured.ready_action, pet_actions)
+    ready = animations.get(ready_action)
+    if ready_action == GLOBAL_PLACEHOLDER or ready is None or ready.scope != "pet":
+        return None
+
+    explicit: dict[str, HoldPlayTargetDefinition] = {}
+    for direction, target in configured.targets.items():
+        action_name = fallback_resolver.resolve(target.action, pet_actions)
+        action = animations.get(action_name)
+        if action_name == GLOBAL_PLACEHOLDER or action is None or action.scope != "pet":
+            continue
+        explicit[direction] = replace(target, action=action_name)
+    center = explicit.get("center")
+    if center is None:
+        return None
+    left = explicit.get("left", center)
+    right = explicit.get("right", center)
+    targets = {
+        "center": center,
+        "left": left,
+        "right": right,
+        "up_left": explicit.get("up_left", left),
+        "up_right": explicit.get("up_right", right),
+    }
+    return replace(
+        configured,
+        ready_action=ready_action,
+        targets=targets,  # type: ignore[arg-type]
+    )
 
 
 __all__ = [

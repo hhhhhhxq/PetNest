@@ -286,7 +286,7 @@ def test_pet_scope_cannot_declare_entrance_direction(tmp_path: Path) -> None:
     assert any("全屏" in error and "entrance_direction" in error for error in result.errors)
 
 
-def test_pet_scope_animation_cannot_override_package_canvas(tmp_path: Path) -> None:
+def test_pet_scope_animation_can_declare_independent_canvas(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "pet-canvas-override")
     config_path = root / "pet.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -302,8 +302,8 @@ def test_pet_scope_animation_cannot_override_package_canvas(tmp_path: Path) -> N
 
     result = PackageValidator().validate(root)
 
-    assert not result.is_valid
-    assert any("只有全屏动画" in error for error in result.errors)
+    assert result.is_valid, result.errors
+    assert result.frames["wrong"][0].name == "001.png"
 
 
 def test_animation_scope_must_be_pet_or_fullscreen(tmp_path: Path) -> None:
@@ -590,3 +590,42 @@ def test_interaction_items_warns_and_only_reads_first_eight_entries(tmp_path: Pa
     assert result.is_valid
     assert tuple(result.interaction_item_icons) == tuple(f"item-{index}" for index in range(8))
     assert any("最多" in warning and "8" in warning for warning in result.warnings)
+
+
+def test_invalid_hold_play_is_warning_and_keeps_normal_interaction_item(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "invalid-hold-play",
+        bindings={"interaction.item.toy_wand": "idle"},
+        interaction_items=[
+            {
+                "id": "toy_wand",
+                "label": "逗猫棒",
+                "icon": "items/toy_wand.png",
+                "hold_play": {
+                    "cursor": "items/toy_wand.png",
+                    "cursor_hotspot": [10, 11],
+                    "ready_action": "missing_ready",
+                    "attack_origin": [12, 15],
+                    "settle_ms": 140,
+                    "cooldown_ms": 350,
+                    "rearm_distance": 4,
+                    "targets": {
+                        "center": {
+                            "action": "idle",
+                            "contact_frame": 1,
+                            "contact_point": [12, 8],
+                            "max_correction": [2, 3],
+                        }
+                    },
+                },
+            }
+        ],
+    )
+    _write_png(root / "items" / "toy_wand.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert "toy_wand" in result.interaction_item_icons
+    assert "toy_wand" not in result.interaction_hold_play
+    assert any("toy_wand" in warning and "missing_ready" in warning for warning in result.warnings)

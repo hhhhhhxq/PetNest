@@ -10,6 +10,8 @@ from petnest.core.interaction_items import (
 from petnest.models.pet_package import (
     AnimationDefinition,
     Canvas,
+    HoldPlayDefinition,
+    HoldPlayTargetDefinition,
     InteractionItemDefinition,
     PetPackage,
 )
@@ -44,6 +46,32 @@ def _package(tmp_path: Path) -> PetPackage:
         bindings={"interaction.item.item_1": "wave"},
         fallbacks={},
         interaction_items=(item,),
+    )
+
+
+def _hold_play(tmp_path: Path) -> HoldPlayDefinition:
+    return HoldPlayDefinition(
+        cursor=tmp_path / "item.png",
+        cursor_hotspot=(1, 1),
+        ready_action="idle",
+        attack_origin=(8, 8),
+        settle_ms=140,
+        cooldown_ms=350,
+        rearm_distance=4,
+        targets={
+            "center": HoldPlayTargetDefinition(
+                action="wave",
+                contact_frame=1,
+                contact_point=(8, 4),
+                max_correction=(2, 2),
+            ),
+            "right": HoldPlayTargetDefinition(
+                action="wave",
+                contact_frame=1,
+                contact_point=(12, 4),
+                max_correction=(2, 2),
+            ),
+        },
     )
 
 
@@ -105,3 +133,33 @@ def test_resolver_accepts_definition_binding_and_animation_overrides(tmp_path: P
     assert [(item.definition.identifier, item.action_name) for item in resolved] == [
         ("custom_1", "custom_wave")
     ]
+
+
+def test_resolver_keeps_hold_play_only_item_and_fills_direction_fallbacks(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    hold_only = InteractionItemDefinition(
+        "hold_only",
+        "只陪玩",
+        tmp_path / "hold.png",
+        hold_play=_hold_play(tmp_path),
+    )
+    package = replace(package, interaction_items=(hold_only,), bindings={})
+
+    resolved = InteractionItemResolver().resolve(package)
+
+    assert len(resolved) == 1
+    assert resolved[0].event_name is None
+    assert resolved[0].action_name is None
+    assert resolved[0].definition.hold_play is not None
+    targets = resolved[0].definition.hold_play.targets
+    assert targets["left"] == targets["center"]
+    assert targets["up_left"] == targets["center"]
+    assert targets["up_right"] == targets["right"]
+
+
+def test_resolver_hides_item_when_drop_and_hold_play_are_both_unavailable(tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    item = InteractionItemDefinition("unused", "无能力", tmp_path / "unused.png")
+    package = replace(package, interaction_items=(item,), bindings={})
+
+    assert InteractionItemResolver().resolve(package) == ()

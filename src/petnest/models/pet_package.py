@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,33 @@ class AnimationDefinition:
     entrance_direction: str = "right"
 
 
+HoldPlayDirection = Literal["center", "left", "right", "up_left", "up_right"]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldPlayTargetDefinition:
+    """按住陪玩时一个目标方向对应的动作与接触校正。"""
+
+    action: str
+    contact_frame: int
+    contact_point: tuple[int, int]
+    max_correction: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class HoldPlayDefinition:
+    """互动道具可选的按住拖拽陪玩配置。"""
+
+    cursor: Path
+    cursor_hotspot: tuple[int, int]
+    ready_action: str
+    attack_origin: tuple[int, int]
+    settle_ms: int
+    cooldown_ms: int
+    rearm_distance: int
+    targets: dict[HoldPlayDirection, HoldPlayTargetDefinition]
+
+
 @dataclass(frozen=True, slots=True)
 class InteractionItemDefinition:
     """宠物包声明的无动作语义互动道具。"""
@@ -51,6 +79,7 @@ class InteractionItemDefinition:
     identifier: str
     label: str
     icon: Path
+    hold_play: HoldPlayDefinition | None = None
 
 
 @dataclass(frozen=True, slots=True)

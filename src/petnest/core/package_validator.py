@@ -19,6 +19,7 @@ _ENTRANCE_DIRECTIONS = {"left", "right", "none"}
 SUPPORTED_ANIMATION_FRAME_SUFFIXES = frozenset({".png", ".webp"})
 _MAX_INTERACTION_ITEMS = 8
 _MAX_INTERACTION_ICON_SIZE = 512
+_HOLD_PLAY_DIRECTIONS = {"center", "left", "right", "up_left", "up_right"}
 MAX_TIMELINE_DURATION_MS = 2_147_483_647
 
 
@@ -36,6 +37,7 @@ class ValidationResult:
     config: dict[str, Any] | None = None
     frames: dict[str, tuple[Path, ...]] = field(default_factory=dict)
     interaction_item_icons: dict[str, Path] = field(default_factory=dict)
+    interaction_hold_play: dict[str, Mapping[str, Any]] = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:
@@ -110,6 +112,14 @@ class PackageValidator:
                 result.errors.append("动画名称必须是非空字符串")
                 continue
             self._validate_animation(name, definition, root, canvas, result)
+
+        self._validate_hold_play_items(
+            parsed.get("interaction_items"),
+            root,
+            canvas,
+            animations,
+            result,
+        )
 
         fallbacks = parsed.get("fallbacks")
         self._validate_fallbacks(fallbacks, result)
@@ -226,9 +236,13 @@ class PackageValidator:
         if scope not in {"pet", "fullscreen"}:
             result.errors.append(f"动画 {name} 的 scope 必须是 pet 或 fullscreen")
             return package_canvas
-        if scope == "pet":
-            if "canvas" in definition:
-                result.errors.append(f"动画 {name}：只有全屏动画可以声明独立 canvas")
+        if "canvas" not in definition:
+            if scope == "fullscreen":
+                return PackageValidator._validate_canvas_mapping(
+                    None,
+                    result,
+                    f"动画 {name} 的 canvas",
+                )
             return package_canvas
         return PackageValidator._validate_canvas_mapping(
             definition.get("canvas"),
@@ -405,6 +419,160 @@ class PackageValidator:
             result.warnings.append(f"互动道具 {identifier} 的 icon 无法读取：{error}")
             return None
         return resolved
+
+    @staticmethod
+    def _validate_hold_play_items(
+        configured_items: object,
+        root: Path,
+        package_canvas: tuple[int, int] | None,
+        animations: Mapping[str, object],
+        result: ValidationResult,
+    ) -> None:
+        if not isinstance(configured_items, list):
+            return
+        for raw_item in configured_items[:_MAX_INTERACTION_ITEMS]:
+            if not isinstance(raw_item, Mapping):
+                continue
+            identifier = raw_item.get("id")
+            if not isinstance(identifier, str) or identifier not in result.interaction_item_icons:
+                continue
+            configured = raw_item.get("hold_play")
+            if configured is None:
+                continue
+            reason = PackageValidator._hold_play_error(
+                identifier,
+                configured,
+                root,
+                package_canvas,
+                animations,
+                result,
+            )
+            if reason is not None:
+                result.warnings.append(f"互动道具 {identifier} 的 hold_play {reason}，已忽略")
+                continue
+            result.interaction_hold_play[identifier] = configured
+
+    @staticmethod
+    def _hold_play_error(
+        identifier: str,
+        configured: object,
+        root: Path,
+        package_canvas: tuple[int, int] | None,
+        animations: Mapping[str, object],
+        result: ValidationResult,
+    ) -> str | None:
+        if not isinstance(configured, Mapping):
+            return "必须是对象"
+        cursor = PackageValidator._validate_interaction_item_icon(
+            f"{identifier} 陪玩光标",
+            configured.get("cursor"),
+            root,
+            result,
+        )
+        if cursor is None:
+            return "cursor 无效"
+        try:
+            with Image.open(cursor) as cursor_image:
+                cursor_size = cursor_image.size
+        except OSError:
+            return "cursor 无法读取"
+        hotspot = PackageValidator._hold_play_pair(configured.get("cursor_hotspot"))
+        if hotspot is None or not (0 <= hotspot[0] < cursor_size[0] and 0 <= hotspot[1] < cursor_size[1]):
+            return "cursor_hotspot 必须落在光标图片范围内"
+
+        ready_name = configured.get("ready_action")
+        ready_canvas = PackageValidator._hold_play_action_canvas(
+            ready_name,
+            animations,
+            package_canvas,
+            result,
+        )
+        if ready_canvas is None:
+            return f"ready_action {ready_name!r} 不可用"
+        origin = PackageValidator._hold_play_pair(configured.get("attack_origin"))
+        if origin is None or not PackageValidator._point_in_canvas(origin, ready_canvas):
+            return "attack_origin 必须落在动作画布内"
+
+        for key, minimum, maximum in (
+            ("settle_ms", 50, 1000),
+            ("cooldown_ms", 0, 5000),
+            ("rearm_distance", 1, 512),
+        ):
+            value = configured.get(key)
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                return f"{key} 必须是 {minimum}–{maximum} 的整数"
+
+        targets = configured.get("targets")
+        if not isinstance(targets, Mapping) or "center" not in targets:
+            return "targets 必须是至少包含 center 的对象"
+        if any(direction not in _HOLD_PLAY_DIRECTIONS for direction in targets):
+            return "targets 包含不支持的方向"
+        for direction, raw_target in targets.items():
+            if not isinstance(raw_target, Mapping):
+                return f"targets.{direction} 必须是对象"
+            action_name = raw_target.get("action")
+            action_canvas = PackageValidator._hold_play_action_canvas(
+                action_name,
+                animations,
+                package_canvas,
+                result,
+            )
+            if action_canvas is None:
+                return f"targets.{direction}.action {action_name!r} 不可用"
+            if action_canvas != ready_canvas:
+                return f"targets.{direction} 与 ready_action 的画布不一致"
+            contact_frame = raw_target.get("contact_frame")
+            frame_count = len(result.frames.get(str(action_name), ()))
+            if (
+                isinstance(contact_frame, bool)
+                or not isinstance(contact_frame, int)
+                or not 1 <= contact_frame <= frame_count
+            ):
+                return f"targets.{direction}.contact_frame 必须落在动作帧范围内"
+            point = PackageValidator._hold_play_pair(raw_target.get("contact_point"))
+            if point is None or not PackageValidator._point_in_canvas(point, ready_canvas):
+                return f"targets.{direction}.contact_point 必须落在动作画布内"
+            correction = PackageValidator._hold_play_pair(raw_target.get("max_correction"))
+            if correction is None or any(value < 0 or value > 64 for value in correction):
+                return f"targets.{direction}.max_correction 每轴必须是 0–64"
+        return None
+
+    @staticmethod
+    def _hold_play_action_canvas(
+        action_name: object,
+        animations: Mapping[str, object],
+        package_canvas: tuple[int, int] | None,
+        result: ValidationResult,
+    ) -> tuple[int, int] | None:
+        if not isinstance(action_name, str) or action_name not in result.frames:
+            return None
+        raw = animations.get(action_name)
+        if not isinstance(raw, Mapping) or raw.get("scope", "pet") != "pet":
+            return None
+        canvas = raw.get("canvas")
+        if canvas is None:
+            return package_canvas
+        if not isinstance(canvas, Mapping):
+            return None
+        width, height = canvas.get("width"), canvas.get("height")
+        if isinstance(width, bool) or isinstance(height, bool):
+            return None
+        if not isinstance(width, int) or not isinstance(height, int):
+            return None
+        return width, height
+
+    @staticmethod
+    def _hold_play_pair(value: object) -> tuple[int, int] | None:
+        if not isinstance(value, list) or len(value) != 2:
+            return None
+        x, y = value
+        if isinstance(x, bool) or isinstance(y, bool) or not isinstance(x, int) or not isinstance(y, int):
+            return None
+        return x, y
+
+    @staticmethod
+    def _point_in_canvas(point: tuple[int, int], canvas: tuple[int, int]) -> bool:
+        return 0 <= point[0] < canvas[0] and 0 <= point[1] < canvas[1]
 
     @staticmethod
     def _validate_bindings(

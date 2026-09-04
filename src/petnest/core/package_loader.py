@@ -10,6 +10,8 @@ from petnest.models import (
     AnimationDefinition,
     Canvas,
     DisplaySettings,
+    HoldPlayDefinition,
+    HoldPlayTargetDefinition,
     InteractionItemDefinition,
     PetPackage,
 )
@@ -33,6 +35,7 @@ class PackageLoader:
             result.config,
             result.frames,
             result.interaction_item_icons,
+            result.interaction_hold_play,
         )
 
     def discover(self, pets_root: Path) -> list[PetPackage]:
@@ -57,6 +60,7 @@ class PackageLoader:
         config: dict[str, Any],
         frames: dict[str, tuple[Path, ...]],
         interaction_item_icons: dict[str, Path],
+        interaction_hold_play: Mapping[str, Mapping[str, Any]],
     ) -> PetPackage:
         canvas_config = _mapping(config["canvas"])
         animations: dict[str, AnimationDefinition] = {}
@@ -96,6 +100,9 @@ class PackageLoader:
             interaction_items=_interaction_items(
                 config.get("interaction_items"),
                 interaction_item_icons,
+                root,
+                animations,
+                interaction_hold_play,
             ),
         )
 
@@ -132,15 +139,19 @@ def _display_settings(value: object) -> DisplaySettings:
 
 
 def _animation_canvas(definition: Mapping[str, Any]) -> Canvas | None:
-    if definition.get("scope", "pet") != "fullscreen":
+    configured = definition.get("canvas")
+    if configured is None:
         return None
-    canvas = _mapping(definition.get("canvas"))
+    canvas = _mapping(configured)
     return Canvas(width=int(canvas["width"]), height=int(canvas["height"]))
 
 
 def _interaction_items(
     configured_items: object,
     approved_icons: Mapping[str, Path],
+    root: Path,
+    animations: Mapping[str, AnimationDefinition],
+    approved_hold_play: Mapping[str, Mapping[str, Any]],
 ) -> tuple[InteractionItemDefinition, ...]:
     if not isinstance(configured_items, list):
         return ()
@@ -163,6 +174,43 @@ def _interaction_items(
                 identifier=identifier,
                 label=label.strip(),
                 icon=icon,
+                hold_play=_hold_play(approved_hold_play.get(identifier), root, animations),
             )
         )
     return tuple(items)
+
+
+def _hold_play(
+    configured: object,
+    root: Path,
+    animations: Mapping[str, AnimationDefinition],
+) -> HoldPlayDefinition | None:
+    if not isinstance(configured, Mapping):
+        return None
+    ready_action = str(configured["ready_action"])
+    targets: dict[str, HoldPlayTargetDefinition] = {}
+    for direction, raw_target in _mapping(configured["targets"]).items():
+        target = _mapping(raw_target)
+        targets[str(direction)] = HoldPlayTargetDefinition(
+            action=str(target["action"]),
+            contact_frame=int(target["contact_frame"]),
+            contact_point=_integer_pair(target["contact_point"]),
+            max_correction=_integer_pair(target["max_correction"]),
+        )
+    cursor = (root / str(configured["cursor"])).resolve()
+    return HoldPlayDefinition(
+        cursor=cursor,
+        cursor_hotspot=_integer_pair(configured["cursor_hotspot"]),
+        ready_action=ready_action,
+        attack_origin=_integer_pair(configured["attack_origin"]),
+        settle_ms=int(configured["settle_ms"]),
+        cooldown_ms=int(configured["cooldown_ms"]),
+        rearm_distance=int(configured["rearm_distance"]),
+        targets=targets,  # type: ignore[arg-type]
+    )
+
+
+def _integer_pair(value: object) -> tuple[int, int]:
+    if not isinstance(value, list) or len(value) != 2:
+        raise PackageValidationError("坐标必须是两个整数")
+    return int(value[0]), int(value[1])

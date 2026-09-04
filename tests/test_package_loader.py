@@ -87,6 +87,28 @@ def test_loader_preserves_fullscreen_scope_and_action_canvas(tmp_path: Path) -> 
     assert (definition.canvas.width, definition.canvas.height) == (24, 18)
 
 
+def test_loader_preserves_pet_scope_action_canvas(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "pet-action-canvas")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["animations"]["toy_ready"] = {
+        "path": "animations/toy_ready",
+        "scope": "pet",
+        "canvas": {"width": 24, "height": 18},
+        "fps": 8,
+        "loop": True,
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    _write_webp(root / "animations" / "toy_ready" / "001.webp", 24, 18)
+
+    package = PackageLoader().load(root)
+    definition = package.animations["toy_ready"]
+
+    assert definition.scope == "pet"
+    assert definition.canvas is not None
+    assert (definition.canvas.width, definition.canvas.height) == (24, 18)
+
+
 def test_loader_preserves_fullscreen_entrance_direction(tmp_path: Path) -> None:
     root = _write_package(tmp_path / "loaded-direction")
     config_path = root / "pet.json"
@@ -133,3 +155,91 @@ def test_loader_uses_empty_interaction_items_for_legacy_packages(tmp_path: Path)
     package = PackageLoader().load(root)
 
     assert package.interaction_items == ()
+
+
+def test_loader_preserves_optional_hold_play_configuration(tmp_path: Path) -> None:
+    root = _write_package(tmp_path / "hold-play")
+    config_path = root / "pet.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    for name in ("toy_ready", "toy_pounce"):
+        config["animations"][name] = {
+            "path": f"animations/{name}",
+            "scope": "pet",
+            "canvas": {"width": 24, "height": 18},
+            "fps": 8,
+            "loop": name == "toy_ready",
+        }
+        _write_webp(root / "animations" / name / "001.webp", 24, 18)
+    config["interaction_items"] = [
+        {
+            "id": "toy_wand",
+            "label": "逗猫棒",
+            "icon": "items/toy_wand.png",
+            "hold_play": {
+                "cursor": "items/toy_wand.png",
+                "cursor_hotspot": [10, 11],
+                "ready_action": "toy_ready",
+                "attack_origin": [12, 15],
+                "settle_ms": 140,
+                "cooldown_ms": 350,
+                "rearm_distance": 4,
+                "targets": {
+                    "center": {
+                        "action": "toy_pounce",
+                        "contact_frame": 1,
+                        "contact_point": [12, 8],
+                        "max_correction": [2, 3],
+                    }
+                },
+            },
+        }
+    ]
+    _write_png(root / "items" / "toy_wand.png")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    package = PackageLoader().load(root)
+    item = package.interaction_items[0]
+
+    assert item.hold_play is not None
+    assert item.hold_play.cursor == (root / "items" / "toy_wand.png").resolve()
+    assert item.hold_play.cursor_hotspot == (10, 11)
+    assert item.hold_play.ready_action == "toy_ready"
+    assert item.hold_play.attack_origin == (12, 15)
+    assert item.hold_play.targets["center"].action == "toy_pounce"
+    assert item.hold_play.targets["center"].contact_point == (12, 8)
+
+
+def test_loader_discards_invalid_hold_play_but_keeps_item(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "invalid-hold-play",
+        bindings={"interaction.item.toy_wand": "idle"},
+        interaction_items=[
+            {
+                "id": "toy_wand",
+                "label": "逗猫棒",
+                "icon": "items/toy_wand.png",
+                "hold_play": {
+                    "cursor": "items/toy_wand.png",
+                    "cursor_hotspot": [10, 11],
+                    "ready_action": "missing_ready",
+                    "attack_origin": [12, 15],
+                    "settle_ms": 140,
+                    "cooldown_ms": 350,
+                    "rearm_distance": 4,
+                    "targets": {
+                        "center": {
+                            "action": "idle",
+                            "contact_frame": 1,
+                            "contact_point": [12, 8],
+                            "max_correction": [2, 3],
+                        }
+                    },
+                },
+            }
+        ],
+    )
+    _write_png(root / "items" / "toy_wand.png")
+
+    package = PackageLoader().load(root)
+
+    assert package.interaction_items[0].hold_play is None
