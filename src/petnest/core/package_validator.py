@@ -521,6 +521,18 @@ class PackageValidator:
                 return f"targets.{direction}.action {action_name!r} 不可用"
             if action_canvas != ready_canvas:
                 return f"targets.{direction} 与 ready_action 的画布不一致"
+            return_action = raw_target.get("return_action")
+            if return_action is not None:
+                return_canvas = PackageValidator._hold_play_action_canvas(
+                    return_action,
+                    animations,
+                    package_canvas,
+                    result,
+                )
+                if return_canvas is None:
+                    return f"targets.{direction}.return_action {return_action!r} 不可用"
+                if return_canvas != ready_canvas:
+                    return f"targets.{direction}.return_action 与 ready_action 的画布不一致"
             contact_frame = raw_target.get("contact_frame")
             frame_count = len(result.frames.get(str(action_name), ()))
             if (

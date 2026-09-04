@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from petnest.core.interaction_play import HoldPlayController, HoldPlayPhase
@@ -81,6 +83,23 @@ def test_attack_requires_cooldown_and_target_movement_to_rearm(definition) -> No
     controller.move((140, 140), now_ms=560)
     assert controller.tick(now_ms=699).action is None
     assert controller.tick(now_ms=700).action == "pounce_center"
+
+
+def test_direction_target_can_override_return_ready_action(definition) -> None:
+    left = replace(definition.targets["left"], return_action="ready_left")
+    configured = replace(
+        definition,
+        targets={**definition.targets, "left": left},
+    )
+    controller = HoldPlayController(configured)
+    controller.enter(now_ms=0)
+    controller.move((20, 140), now_ms=0)
+    assert controller.tick(now_ms=140).action == "pounce_left"
+
+    completed = controller.attack_completed(now_ms=200)
+
+    assert completed.phase is HoldPlayPhase.COOLDOWN
+    assert completed.action == "ready_left"
 
 
 def test_release_inside_waits_for_attack_only_when_drop_action_exists(definition) -> None:

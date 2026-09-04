@@ -139,6 +139,11 @@ class HoldPlayController:
             self._set_inactive()
             return HoldPlayUpdate(self.phase)
 
+        return_action = (
+            self._attack_definition.return_action
+            if self._attack_definition is not None
+            else None
+        )
         self._last_attack_target = self._attack_target
         self._attack_target = None
         self._attack_definition = None
@@ -147,7 +152,7 @@ class HoldPlayController:
         self._cooldown_until_ms = now_ms + self.definition.cooldown_ms
         return HoldPlayUpdate(
             self.phase,
-            action=self.definition.ready_action,
+            action=return_action or self.definition.ready_action,
             deadline_ms=self._cooldown_until_ms,
         )
 

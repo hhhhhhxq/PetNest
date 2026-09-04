@@ -629,3 +629,42 @@ def test_invalid_hold_play_is_warning_and_keeps_normal_interaction_item(tmp_path
     assert "toy_wand" in result.interaction_item_icons
     assert "toy_wand" not in result.interaction_hold_play
     assert any("toy_wand" in warning and "missing_ready" in warning for warning in result.warnings)
+
+
+def test_hold_play_rejects_missing_direction_return_action(tmp_path: Path) -> None:
+    root = _write_package(
+        tmp_path / "invalid-return-action",
+        bindings={"interaction.item.toy_wand": "idle"},
+        interaction_items=[
+            {
+                "id": "toy_wand",
+                "label": "逗猫棒",
+                "icon": "items/toy_wand.png",
+                "hold_play": {
+                    "cursor": "items/toy_wand.png",
+                    "cursor_hotspot": [10, 11],
+                    "ready_action": "idle",
+                    "attack_origin": [12, 15],
+                    "settle_ms": 140,
+                    "cooldown_ms": 350,
+                    "rearm_distance": 4,
+                    "targets": {
+                        "center": {
+                            "action": "idle",
+                            "return_action": "missing_ready_left",
+                            "contact_frame": 1,
+                            "contact_point": [12, 8],
+                            "max_correction": [2, 3],
+                        }
+                    },
+                },
+            }
+        ],
+    )
+    _write_png(root / "items" / "toy_wand.png")
+
+    result = PackageValidator().validate(root)
+
+    assert result.is_valid
+    assert "toy_wand" not in result.interaction_hold_play
+    assert any("return_action" in warning and "missing_ready_left" in warning for warning in result.warnings)

@@ -56,6 +56,7 @@ class HoldPlayTargetDefinition:
     contact_frame: int
     contact_point: tuple[int, int]
     max_correction: tuple[int, int]
+    return_action: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

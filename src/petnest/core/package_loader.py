@@ -196,6 +196,7 @@ def _hold_play(
             contact_frame=int(target["contact_frame"]),
             contact_point=_integer_pair(target["contact_point"]),
             max_correction=_integer_pair(target["max_correction"]),
+            return_action=_optional_string(target.get("return_action")),
         )
     cursor = (root / str(configured["cursor"])).resolve()
     return HoldPlayDefinition(

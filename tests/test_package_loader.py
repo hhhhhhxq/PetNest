@@ -161,7 +161,7 @@ def test_loader_preserves_optional_hold_play_configuration(tmp_path: Path) -> No
     root = _write_package(tmp_path / "hold-play")
     config_path = root / "pet.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    for name in ("toy_ready", "toy_pounce"):
+    for name in ("toy_ready", "toy_ready_left", "toy_pounce"):
         config["animations"][name] = {
             "path": f"animations/{name}",
             "scope": "pet",
@@ -186,6 +186,7 @@ def test_loader_preserves_optional_hold_play_configuration(tmp_path: Path) -> No
                 "targets": {
                     "center": {
                         "action": "toy_pounce",
+                        "return_action": "toy_ready_left",
                         "contact_frame": 1,
                         "contact_point": [12, 8],
                         "max_correction": [2, 3],
@@ -206,6 +207,7 @@ def test_loader_preserves_optional_hold_play_configuration(tmp_path: Path) -> No
     assert item.hold_play.ready_action == "toy_ready"
     assert item.hold_play.attack_origin == (12, 15)
     assert item.hold_play.targets["center"].action == "toy_pounce"
+    assert item.hold_play.targets["center"].return_action == "toy_ready_left"
     assert item.hold_play.targets["center"].contact_point == (12, 8)
 
 
