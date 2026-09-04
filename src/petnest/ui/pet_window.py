@@ -1130,7 +1130,7 @@ class PetWindow(QWidget):
         definition = self.package.animations[action]
         canvas_changes = (definition.canvas or self.package.canvas) != previous_canvas
         bottom_center = (
-            self.mapToGlobal(QPoint(self.width() // 2, self.height()))
+            self._pet_bottom_center_global()
             if self.isVisible() and canvas_changes
             else None
         )
@@ -1139,7 +1139,7 @@ class PetWindow(QWidget):
         self._playing_action = action
         self.player.play(definition)
         self._set_current_frame()
-        current_bottom_center = self.mapToGlobal(QPoint(self.width() // 2, self.height()))
+        current_bottom_center = self._pet_bottom_center_global()
         if bottom_center is not None and current_bottom_center != bottom_center:
             self.move(self.clamp_position(self.pos() + bottom_center - current_bottom_center))
         self._start_animation_timer()
@@ -1245,6 +1245,11 @@ class PetWindow(QWidget):
     def _current_pet_canvas(self) -> Canvas:
         definition = self.package.animations[self._playing_action]
         return definition.canvas or self.package.canvas
+
+    def _pet_bottom_center_global(self) -> QPoint:
+        return self.mapToGlobal(
+            QPoint(self._pet_left() + self._pet_width() // 2, self._pet_height())
+        )
 
     def _pet_left(self) -> int:
         return max(0, (self.width() - self._pet_width()) // 2)

@@ -673,6 +673,20 @@ def test_action_canvas_resize_preserves_global_bottom_center(
         canvas=Canvas(20, 16),
         frames=tuple(frames),
     )
+    window = PetWindow(replace(package, animations={**package.animations, "toy_ready": ready}))
+    qtbot.addWidget(window)
+    window.move(200, 180)
+    window.show()
+    before = window._pet_bottom_center_global()
+
+    window._play_action("toy_ready")
+
+    assert window.size() == QSize(30, 24)
+    assert window._pet_bottom_center_global().y() == before.y()
+
+    window._play_action("idle")
+    assert window.size() == QSize(15, 12)
+    assert window._pet_bottom_center_global().y() == before.y()
 
 
 def _hold_play_package(tmp_path: Path) -> PetPackage:
@@ -711,20 +725,45 @@ def _hold_play_package(tmp_path: Path) -> PetPackage:
         animations={**package.animations, "toy_ready": ready, "toy_pounce": pounce},
         interaction_items=(item,),
     )
-    window = PetWindow(replace(package, animations={**package.animations, "toy_ready": ready}))
+
+
+def test_action_canvas_resize_anchors_pet_feet_when_countdown_is_visible(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    frames = []
+    for index in range(2):
+        path = tmp_path / f"large-action-{index}.png"
+        Image.new("RGBA", (20, 16), (255, 120, 0, 255)).save(path)
+        frames.append(path)
+    action = replace(
+        package.animations["idle"],
+        name="large",
+        canvas=Canvas(20, 16),
+        frames=tuple(frames),
+    )
+    window = PetWindow(replace(package, animations={**package.animations, "large": action}))
     qtbot.addWidget(window)
     window.move(200, 180)
+    window.set_countdown_text("距离下班 01:23:45")
     window.show()
-    before = window.mapToGlobal(QPoint(window.width() // 2, window.height()))
+    before = window.mapToGlobal(
+        QPoint(window._pet_left() + window._pet_width() // 2, window._pet_height())
+    )
 
-    window._play_action("toy_ready")
+    window._play_action("large")
 
-    assert window.size() == QSize(30, 24)
-    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+    after = window.mapToGlobal(
+        QPoint(window._pet_left() + window._pet_width() // 2, window._pet_height())
+    )
+    assert after.y() == before.y()
+    assert abs(after.x() - before.x()) <= 1
 
     window._play_action("idle")
-    assert window.size() == QSize(15, 12)
-    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+    restored = window._pet_bottom_center_global()
+    assert restored.y() == before.y()
+    assert abs(restored.x() - before.x()) <= 1
+    assert window._current_pet_canvas() == package.canvas
 
 
 def test_follow_mode_falls_back_to_drag_when_walk_is_absent(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -1328,9 +1367,12 @@ def test_hold_play_drag_uses_expanded_canvas_and_drop_action(
     window = PetWindow(_hold_play_package(tmp_path))
     qtbot.addWidget(window)
     window.move(200, 180)
+    window.set_countdown_text("距离下班 01:23:45")
     window.show()
     monkeypatch.setattr(window, "_hold_play_now_ms", lambda: 0)
-    before = window.mapToGlobal(QPoint(window.width() // 2, window.height()))
+    before = window.mapToGlobal(
+        QPoint(window._pet_left() + window._pet_width() // 2, window._pet_height())
+    )
 
     enter = _drag_enter(_item_mime("toy_ball"), QPoint(7, 4))
     window.dragEnterEvent(enter)
@@ -1338,7 +1380,11 @@ def test_hold_play_drag_uses_expanded_canvas_and_drop_action(
     assert enter.isAccepted()
     assert window.playing_action == "toy_ready"
     assert window.size() == QSize(30, 24)
-    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+    after = window.mapToGlobal(
+        QPoint(window._pet_left() + window._pet_width() // 2, window._pet_height())
+    )
+    assert after.y() == before.y()
+    assert abs(after.x() - before.x()) <= 1
 
     move = _drag_move_event(_item_mime("toy_ball"), QPoint(25, 10))
     window.dragMoveEvent(move)
@@ -1350,6 +1396,14 @@ def test_hold_play_drag_uses_expanded_canvas_and_drop_action(
     window.dropEvent(drop)
     assert drop.isAccepted()
     assert window._hold_play_pending_item is not None
+
+    window._on_animation_tick()
+    window._on_animation_tick()
+
+    assert window._hold_play_pending_item is None
+    assert window.current_action == "wave"
+    assert window.playing_action == "wave"
+    assert window._current_pet_canvas() == window.package.canvas
 
 
 @pytest.mark.parametrize("mode", ["mouse-disabled", "follow"])
