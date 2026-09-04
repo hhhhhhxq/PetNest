@@ -37,6 +37,8 @@ from petnest.models.pet_package import (
     AnimationDefinition,
     Canvas,
     DisplaySettings,
+    HoldPlayDefinition,
+    HoldPlayTargetDefinition,
     InteractionItemDefinition,
     PetPackage,
 )
@@ -656,6 +658,75 @@ def test_follow_mode_temporarily_overrides_animation_and_hides_countdown(
     assert window.countdown_is_visible
 
 
+def test_action_canvas_resize_preserves_global_bottom_center(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    frames = []
+    for index in range(2):
+        path = tmp_path / f"toy-ready-{index}.png"
+        Image.new("RGBA", (20, 16), (255, 120, 0, 255)).save(path)
+        frames.append(path)
+    ready = replace(
+        package.animations["idle"],
+        name="toy_ready",
+        canvas=Canvas(20, 16),
+        frames=tuple(frames),
+    )
+
+
+def _hold_play_package(tmp_path: Path) -> PetPackage:
+    package = _interaction_package(tmp_path)
+    frames = []
+    for index in range(2):
+        path = tmp_path / f"hold-{index}.png"
+        Image.new("RGBA", (20, 16), (255, 120, 0, 255)).save(path)
+        frames.append(path)
+    ready = replace(
+        package.animations["idle"],
+        name="toy_ready",
+        canvas=Canvas(20, 16),
+        frames=tuple(frames),
+    )
+    pounce = replace(
+        ready,
+        name="toy_pounce",
+        loop=False,
+        interruptible=False,
+    )
+    target = HoldPlayTargetDefinition("toy_pounce", 1, (10, 4), (2, 2))
+    hold_play = HoldPlayDefinition(
+        cursor=package.interaction_items[0].icon,
+        cursor_hotspot=(1, 1),
+        ready_action="toy_ready",
+        attack_origin=(10, 12),
+        settle_ms=140,
+        cooldown_ms=350,
+        rearm_distance=4,
+        targets={direction: target for direction in ("center", "left", "right", "up_left", "up_right")},
+    )
+    item = replace(package.interaction_items[0], hold_play=hold_play)
+    return replace(
+        package,
+        animations={**package.animations, "toy_ready": ready, "toy_pounce": pounce},
+        interaction_items=(item,),
+    )
+    window = PetWindow(replace(package, animations={**package.animations, "toy_ready": ready}))
+    qtbot.addWidget(window)
+    window.move(200, 180)
+    window.show()
+    before = window.mapToGlobal(QPoint(window.width() // 2, window.height()))
+
+    window._play_action("toy_ready")
+
+    assert window.size() == QSize(30, 24)
+    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+
+    window._play_action("idle")
+    assert window.size() == QSize(15, 12)
+    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+
+
 def test_follow_mode_falls_back_to_drag_when_walk_is_absent(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)
@@ -1226,7 +1297,6 @@ def test_interaction_item_qt_drag_events_validate_mime_hit_test_and_clear_highli
     window.dragMoveEvent(transparent)
     assert not transparent.isAccepted()
     assert not window._drop_highlight
-
     opaque = _drag_move_event(_item_mime("toy_ball"), QPoint(12, 2))
     window.dragMoveEvent(opaque)
     assert opaque.isAccepted()
@@ -1250,6 +1320,36 @@ def test_interaction_item_qt_drag_events_validate_mime_hit_test_and_clear_highli
     window.dropEvent(failed)
     assert not failed.isAccepted()
     assert not window._drop_highlight
+
+
+def test_hold_play_drag_uses_expanded_canvas_and_drop_action(
+    qtbot: pytest.QtBot, tmp_path: Path, monkeypatch
+) -> None:
+    window = PetWindow(_hold_play_package(tmp_path))
+    qtbot.addWidget(window)
+    window.move(200, 180)
+    window.show()
+    monkeypatch.setattr(window, "_hold_play_now_ms", lambda: 0)
+    before = window.mapToGlobal(QPoint(window.width() // 2, window.height()))
+
+    enter = _drag_enter(_item_mime("toy_ball"), QPoint(7, 4))
+    window.dragEnterEvent(enter)
+
+    assert enter.isAccepted()
+    assert window.playing_action == "toy_ready"
+    assert window.size() == QSize(30, 24)
+    assert window.mapToGlobal(QPoint(window.width() // 2, window.height())) == before
+
+    move = _drag_move_event(_item_mime("toy_ball"), QPoint(25, 10))
+    window.dragMoveEvent(move)
+    assert move.isAccepted()
+    window._on_hold_play_deadline(now_ms=140)
+    assert window.playing_action == "toy_pounce"
+
+    drop = _drop_event(_item_mime("toy_ball"), QPoint(25, 10))
+    window.dropEvent(drop)
+    assert drop.isAccepted()
+    assert window._hold_play_pending_item is not None
 
 
 @pytest.mark.parametrize("mode", ["mouse-disabled", "follow"])

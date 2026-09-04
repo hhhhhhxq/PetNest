@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from math import ceil, floor, hypot
 from pathlib import Path
 import sys
+from time import monotonic
 
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, QTimer, Qt, Signal
@@ -31,10 +32,12 @@ from PySide6.QtWidgets import QLabel, QWidget
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.codex_link import CodexLinkSnapshot
 from petnest.core.interaction_items import InteractionItemResolver, ResolvedInteractionItem
+from petnest.core.interaction_play import HoldPlayController, HoldPlayPhase
 from petnest.core.state_machine import PetStateMachine, StateTransition
 from petnest.models.event import PetEvent
-from petnest.models.pet_package import PetPackage
+from petnest.models.pet_package import Canvas, PetPackage
 from petnest.ui.codex_status_bubble import CodexStatusBubble
+from petnest.ui.drag_cursor_overlay import DragCursorOverlay
 from petnest.ui.interaction_item_toolbox import INTERACTION_ITEM_MIME, InteractionItemToolbox
 from petnest.ui.lan_firewall_notice import LanFirewallNoticeBubble
 
@@ -137,6 +140,15 @@ class PetWindow(QWidget):
         self.interaction_toolbox.set_items(self._interaction_items)
         self.interaction_toolbox.hover_changed.connect(self._on_interaction_toolbox_hover_changed)
         self.interaction_toolbox.notebook_requested.connect(self.quick_notebook_requested)
+        self.interaction_toolbox.item_drag_finished.connect(self._on_item_drag_finished)
+        self._hold_play_controller: HoldPlayController | None = None
+        self._hold_play_item: ResolvedInteractionItem | None = None
+        self._hold_play_pending_item: ResolvedInteractionItem | None = None
+        self._hold_play_restore_action: str | None = None
+        self._hold_play_timer = QTimer(self)
+        self._hold_play_timer.setSingleShot(True)
+        self._hold_play_timer.timeout.connect(self._on_hold_play_deadline)
+        self._drag_cursor_overlay = DragCursorOverlay()
         toolbox = self.interaction_toolbox
         toolbox_disposed = False
 
@@ -249,7 +261,11 @@ class PetWindow(QWidget):
     @property
     def countdown_is_visible(self) -> bool:
         """倒计时在跟随模式中保留内容但不显示，以免影响鼠标操作。"""
-        return self._countdown_text is not None and not self._follow_mode_enabled
+        return (
+            self._countdown_text is not None
+            and not self._follow_mode_enabled
+            and self._hold_play_controller is None
+        )
 
     @property
     def follow_direction(self) -> str:
@@ -335,6 +351,7 @@ class PetWindow(QWidget):
     def set_follow_mode(self, enabled: bool, *, scale_multiplier: float) -> None:
         """切换鼠标跟随显示层，并保留普通模式的缩放与倒计时内容。"""
         if enabled:
+            self._cancel_hold_play(restore=True)
             self._clear_interaction_item_ui()
         multiplier = max(0.25, min(float(scale_multiplier), 1.0))
         if enabled:
@@ -436,6 +453,7 @@ class PetWindow(QWidget):
         """关闭后忽略宠物鼠标事件，保留窗口显示和动画。"""
         self._mouse_interaction_enabled = enabled
         if not enabled:
+            self._cancel_hold_play(restore=True)
             self._clear_interaction_item_ui()
 
     def set_quick_notebook_enabled(self, enabled: bool) -> None:
@@ -604,6 +622,7 @@ class PetWindow(QWidget):
 
     def load_package(self, package: PetPackage) -> None:
         """切换宠物包，并释放旧动画缓存以避免积累图像内存。"""
+        self._cancel_hold_play(restore=False)
         self._clear_interaction_item_ui()
         self.animation_timer.stop()
         self.clear_effect()
@@ -655,7 +674,12 @@ class PetWindow(QWidget):
         super().leaveEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802 - Qt 覆盖名。
-        if self._interaction_can_show() and self._interaction_item_id(event.mimeData()) is not None:
+        item = self._interaction_item(event.mimeData())
+        if self._interaction_can_show() and item is not None and item.definition.hold_play is not None:
+            self._begin_hold_play(item, event.position().toPoint())
+            event.acceptProposedAction()
+            return
+        if self._interaction_can_show() and item is not None:
             event.acceptProposedAction()
             return
         self._set_drop_highlight(False)
@@ -663,6 +687,12 @@ class PetWindow(QWidget):
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802 - Qt 覆盖名。
         position = event.position().toPoint()
+        item = self._interaction_item(event.mimeData())
+        if self._hold_play_controller is not None and item == self._hold_play_item:
+            self._update_hold_play_target(position, now_ms=self._hold_play_now_ms())
+            self._drag_cursor_overlay.move_hotspot(self.mapToGlobal(position))
+            event.acceptProposedAction()
+            return
         accepted = (
             self._interaction_can_show()
             and self._interaction_item_id(event.mimeData()) is not None
@@ -675,6 +705,7 @@ class PetWindow(QWidget):
         event.ignore()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._cancel_hold_play(restore=True)
         self._set_drop_highlight(False)
         event.accept()
 
@@ -684,6 +715,26 @@ class PetWindow(QWidget):
                 event.ignore()
                 return
             item_id = self._interaction_item_id(event.mimeData())
+            if (
+                item_id is not None
+                and self._hold_play_controller is not None
+                and self._hold_play_item is not None
+                and self._hold_play_item.definition.identifier == item_id
+            ):
+                item = self._hold_play_item
+                update = self._hold_play_controller.release_inside(
+                    has_drop_action=item.action_name is not None
+                )
+                if update.finish_drop:
+                    self._finish_hold_play_drop(item)
+                elif update.phase in {HoldPlayPhase.ATTACKING, HoldPlayPhase.PENDING_DROP}:
+                    self._hold_play_pending_item = item
+                    self._drag_cursor_overlay.clear()
+                else:
+                    self._cancel_hold_play(restore=True)
+                event.setDropAction(Qt.DropAction.MoveAction)
+                event.accept()
+                return
             if item_id is not None and self.trigger_interaction_item(item_id, event.position().toPoint()):
                 event.setDropAction(Qt.DropAction.MoveAction)
                 event.accept()
@@ -804,10 +855,14 @@ class PetWindow(QWidget):
         self.position_changed.emit()
 
     def hideEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._cancel_hold_play(restore=False)
         self._clear_interaction_item_ui()
         super().hideEvent(event)  # type: ignore[arg-type]
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self._cancel_hold_play(restore=False)
+        self._drag_cursor_overlay.close()
+        self._drag_cursor_overlay.deleteLater()
         self._clear_interaction_item_ui()
         self._dispose_interaction_toolbox()
         self.clear_interaction_bubble()
@@ -833,6 +888,14 @@ class PetWindow(QWidget):
         # with SourceOver so transparent effect pixels preserve the pet beneath.
         _prepare_translucent_frame(painter, self.rect())
         pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
+        if self._hold_play_controller is not None:
+            correction = self._hold_play_controller.correction_for_frame(
+                self.player.current_frame_index + 1
+            )
+            pet_rect.translate(
+                round(correction[0] * self.scale),
+                round(correction[1] * self.scale),
+            )
         if self._active_effect_layer == "under":
             self._draw_active_effect(painter, pet_rect)
         if self._follow_motion and self._follow_facing_left and self._playing_action in {"walk", "drag"}:
@@ -970,17 +1033,115 @@ class PetWindow(QWidget):
             return item_id
         return None
 
+    def _interaction_item(self, mime_data: QMimeData) -> ResolvedInteractionItem | None:
+        item_id = self._interaction_item_id(mime_data)
+        if item_id is None:
+            return None
+        return next(
+            (item for item in self._interaction_items if item.definition.identifier == item_id),
+            None,
+        )
+
+    @staticmethod
+    def _hold_play_now_ms() -> int:
+        return round(monotonic() * 1000)
+
+    def _begin_hold_play(self, item: ResolvedInteractionItem, position: QPoint) -> None:
+        configured = item.definition.hold_play
+        if configured is None:
+            return
+        if self._hold_play_controller is None:
+            self._hold_play_restore_action = self.state_machine.current_action
+            self._hold_play_controller = HoldPlayController(configured)
+            self._hold_play_item = item
+        update = self._hold_play_controller.enter(now_ms=self._hold_play_now_ms())
+        if update.action is not None:
+            self._play_action(update.action)
+        self._drag_cursor_overlay.show_at(
+            self.mapToGlobal(position),
+            configured.cursor,
+            hotspot=configured.cursor_hotspot,
+        )
+
+    def _update_hold_play_target(self, position: QPoint, *, now_ms: int) -> None:
+        controller = self._hold_play_controller
+        if controller is None:
+            return
+        point = (
+            round((position.x() - self._pet_left()) / self.scale),
+            round(position.y() / self.scale),
+        )
+        update = controller.move(point, now_ms=now_ms)
+        if update.deadline_ms is not None:
+            self._hold_play_timer.start(max(1, update.deadline_ms - now_ms))
+
+    def _on_hold_play_deadline(self, *, now_ms: int | None = None) -> None:
+        controller = self._hold_play_controller
+        if controller is None:
+            return
+        current = self._hold_play_now_ms() if now_ms is None else now_ms
+        update = controller.tick(now_ms=current)
+        if update.action is not None:
+            self._play_action(update.action)
+        if update.deadline_ms is not None and update.deadline_ms > current:
+            self._hold_play_timer.start(update.deadline_ms - current)
+
+    def _on_item_drag_finished(self, item_id: str, result: object) -> None:
+        if (
+            self._hold_play_item is not None
+            and self._hold_play_item.definition.identifier == item_id
+            and result != Qt.DropAction.MoveAction
+        ):
+            self._cancel_hold_play(restore=True)
+
+    def _finish_hold_play_drop(self, item: ResolvedInteractionItem) -> None:
+        self._cancel_hold_play(restore=False)
+        if item.event_name is None or item.action_name is None:
+            self._play_current_action()
+            return
+        transition = self.state_machine.handle(
+            PetEvent(item.event_name, source="interaction-item", payload={"item_id": item.definition.identifier})
+        )
+        if transition.changed:
+            self._play_current_action()
+
+    def _cancel_hold_play(self, *, restore: bool) -> None:
+        if self._hold_play_controller is None and self._hold_play_item is None:
+            return
+        self._hold_play_timer.stop()
+        self._drag_cursor_overlay.clear()
+        restore_action = self._hold_play_restore_action
+        self._hold_play_controller = None
+        self._hold_play_item = None
+        self._hold_play_pending_item = None
+        self._hold_play_restore_action = None
+        if restore:
+            if restore_action in self.package.animations:
+                self._play_action(restore_action)
+            else:
+                self._play_current_action()
+
     def _play_current_action(self) -> None:
         action = self._follow_action() if self._follow_motion else self.state_machine.current_action
         self._play_action(action)
 
     def _play_action(self, action: str) -> None:
+        previous_canvas = self._current_pet_canvas()
         definition = self.package.animations[action]
+        canvas_changes = (definition.canvas or self.package.canvas) != previous_canvas
+        bottom_center = (
+            self.mapToGlobal(QPoint(self.width() // 2, self.height()))
+            if self.isVisible() and canvas_changes
+            else None
+        )
         if action != self._playing_action:
             self._pixmap_cache.clear()
         self._playing_action = action
         self.player.play(definition)
         self._set_current_frame()
+        current_bottom_center = self.mapToGlobal(QPoint(self.width() // 2, self.height()))
+        if bottom_center is not None and current_bottom_center != bottom_center:
+            self.move(self.clamp_position(self.pos() + bottom_center - current_bottom_center))
         self._start_animation_timer()
 
     def _start_animation_timer(self) -> None:
@@ -993,6 +1154,26 @@ class PetWindow(QWidget):
     def _on_animation_tick(self) -> None:
         self.player.advance()
         if self.player.is_finished:
+            if self._hold_play_controller is not None and self._hold_play_controller.phase in {
+                HoldPlayPhase.ATTACKING,
+                HoldPlayPhase.PENDING_DROP,
+            }:
+                update = self._hold_play_controller.attack_completed(
+                    now_ms=self._hold_play_now_ms()
+                )
+                if update.finish_drop and self._hold_play_pending_item is not None:
+                    self._finish_hold_play_drop(self._hold_play_pending_item)
+                    return
+                if update.phase is HoldPlayPhase.INACTIVE:
+                    self._cancel_hold_play(restore=True)
+                    return
+                if update.action is not None:
+                    self._play_action(update.action)
+                    if update.deadline_ms is not None:
+                        self._hold_play_timer.start(
+                            max(1, update.deadline_ms - self._hold_play_now_ms())
+                        )
+                    return
             if self._follow_motion:
                 self._play_current_action()
                 return
@@ -1029,7 +1210,7 @@ class PetWindow(QWidget):
         return QSize(width, height)
 
     def _pet_width(self) -> int:
-        return round(self.package.canvas.width * self.scale)
+        return round(self._current_pet_canvas().width * self.scale)
 
     def _drag_action(self, direction: str | None) -> str:
         """按当前水平拖动方向选择专用动作，并逐级回退到通用动作。"""
@@ -1059,7 +1240,11 @@ class PetWindow(QWidget):
         return next((name for name in ("walk", "drag") if name in self.package.animations), self.state_machine.current_action)
 
     def _pet_height(self) -> int:
-        return round(self.package.canvas.height * self.scale)
+        return round(self._current_pet_canvas().height * self.scale)
+
+    def _current_pet_canvas(self) -> Canvas:
+        definition = self.package.animations[self._playing_action]
+        return definition.canvas or self.package.canvas
 
     def _pet_left(self) -> int:
         return max(0, (self.width() - self._pet_width()) // 2)
