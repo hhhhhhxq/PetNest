@@ -32,6 +32,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPainter,
     QPen,
+    QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -318,7 +319,13 @@ class InteractionItemButton(QToolButton):
         pixmap = self._source_icon.pixmap(_ITEM_DRAG_PIXMAP_SIZE)
         drag = QDrag(self)
         drag.setMimeData(self.mime_data())
-        if not pixmap.isNull():
+        if self.item.definition.hold_play is not None:
+            # 陪玩道具有自己的热点对齐光标层；隐藏系统拖拽缩略图，避免显示两份道具。
+            transparent = QPixmap(1, 1)
+            transparent.fill(Qt.GlobalColor.transparent)
+            drag.setPixmap(transparent)
+            drag.setHotSpot(QPoint())
+        elif not pixmap.isNull():
             drag.setPixmap(pixmap)
             drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
         identifier = self.item.definition.identifier

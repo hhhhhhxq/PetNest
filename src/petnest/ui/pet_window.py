@@ -887,7 +887,14 @@ class PetWindow(QWidget):
         # from the previous frame while moving the window. Draw the actual layers
         # with SourceOver so transparent effect pixels preserve the pet beneath.
         _prepare_translucent_frame(painter, self.rect())
-        pet_rect = QRect(self._pet_left(), 0, self._pet_width(), self._pet_height())
+        interaction_canvas = QRect(
+            self._pet_left(), 0, self._pet_width(), self._pet_height()
+        )
+        if self._hold_play_controller is not None:
+            # Windows 的原生拖放不会持续命中完全透明的顶层窗口区域。
+            # 1/255 alpha 肉眼不可见，但能让整个动作画布保持为有效拖放目标。
+            painter.fillRect(interaction_canvas, QColor(0, 0, 0, 1))
+        pet_rect = QRect(interaction_canvas)
         if self._hold_play_controller is not None:
             correction = self._hold_play_controller.correction_for_frame(
                 self.player.current_frame_index + 1
@@ -1062,6 +1069,8 @@ class PetWindow(QWidget):
             configured.cursor,
             hotspot=configured.cursor_hotspot,
         )
+        # 在原生拖放继续派发移动事件前提交可命中的透明动作画布。
+        self.repaint()
 
     def _update_hold_play_target(self, position: QPoint, *, now_ms: int) -> None:
         controller = self._hold_play_controller

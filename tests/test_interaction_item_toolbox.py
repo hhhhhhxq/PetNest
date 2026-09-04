@@ -8,7 +8,11 @@ from PySide6.QtGui import QColor, QEnterEvent, QGuiApplication, QImage, QPainter
 from PySide6.QtWidgets import QBoxLayout
 
 from petnest.core.interaction_items import ResolvedInteractionItem
-from petnest.models.pet_package import InteractionItemDefinition
+from petnest.models.pet_package import (
+    HoldPlayDefinition,
+    HoldPlayTargetDefinition,
+    InteractionItemDefinition,
+)
 from petnest.ui.interaction_item_toolbox import (
     INTERACTION_ITEM_MIME,
     InteractionItemButton,
@@ -106,6 +110,48 @@ def test_item_button_emits_drag_lifecycle(qtbot, tmp_path: Path, monkeypatch) ->
         ("start", "toy_ball", None),
         ("finish", "toy_ball", Qt.DropAction.MoveAction),
     ]
+
+
+def test_hold_play_button_suppresses_native_drag_pixmap(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    item = _resolved_item(tmp_path, "toy_wand")
+    target = HoldPlayTargetDefinition("toy_pounce", 1, (12, 12), (2, 2))
+    hold_play = HoldPlayDefinition(
+        cursor=item.definition.icon,
+        cursor_hotspot=(12, 12),
+        ready_action="toy_ready",
+        attack_origin=(12, 12),
+        settle_ms=120,
+        cooldown_ms=300,
+        rearm_distance=4,
+        targets={"center": target},
+    )
+    item = ResolvedInteractionItem(
+        definition=InteractionItemDefinition(
+            item.definition.identifier,
+            item.definition.label,
+            item.definition.icon,
+            hold_play,
+        ),
+        event_name=item.event_name,
+        action_name=item.action_name,
+    )
+    button = InteractionItemButton(item)
+    qtbot.addWidget(button)
+    seen = []
+
+    def capture_drag(drag):
+        seen.append(drag.pixmap())
+        return Qt.DropAction.IgnoreAction
+
+    monkeypatch.setattr(button, "_execute_drag", capture_drag)
+
+    button._start_drag()
+
+    assert len(seen) == 1
+    assert seen[0].size() == QSize(1, 1)
+    assert seen[0].toImage().pixelColor(0, 0).alpha() == 0
 
 
 def test_toolbox_relays_item_drag_lifecycle(qtbot, tmp_path: Path) -> None:

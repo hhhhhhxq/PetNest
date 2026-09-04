@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QLabel, QWidget
 
 
 class DragCursorOverlay(QLabel):
     """让指定图像热点跟随全局拖拽坐标的小型透明窗口。"""
+
+    _MAX_ICON_SIZE = QSize(64, 64)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         flags = (
@@ -39,7 +41,16 @@ class DragCursorOverlay(QLabel):
         if pixmap.isNull():
             self.clear()
             return
-        self._hotspot = QPoint(*hotspot)
+        source_size = pixmap.size()
+        pixmap = pixmap.scaled(
+            self._MAX_ICON_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._hotspot = QPoint(
+            round(hotspot[0] * pixmap.width() / source_size.width()),
+            round(hotspot[1] * pixmap.height() / source_size.height()),
+        )
         self.setPixmap(pixmap)
         self.setFixedSize(pixmap.size())
         self.move_hotspot(global_hotspot)

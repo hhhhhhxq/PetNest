@@ -694,7 +694,9 @@ def _hold_play_package(tmp_path: Path) -> PetPackage:
     frames = []
     for index in range(2):
         path = tmp_path / f"hold-{index}.png"
-        Image.new("RGBA", (20, 16), (255, 120, 0, 255)).save(path)
+        frame = Image.new("RGBA", (20, 16), (0, 0, 0, 0))
+        frame.paste((255, 120, 0, 255), (7, 5, 13, 16))
+        frame.save(path)
         frames.append(path)
     ready = replace(
         package.animations["idle"],
@@ -1380,6 +1382,9 @@ def test_hold_play_drag_uses_expanded_canvas_and_drop_action(
     assert enter.isAccepted()
     assert window.playing_action == "toy_ready"
     assert window.size() == QSize(30, 24)
+    window.repaint()
+    target_surface = window.grab().toImage()
+    assert 0 < target_surface.pixelColor(1, 1).alpha() <= 2
     after = window.mapToGlobal(
         QPoint(window._pet_left() + window._pet_width() // 2, window._pet_height())
     )
