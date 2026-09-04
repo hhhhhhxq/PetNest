@@ -43,14 +43,19 @@ def definition(tmp_path) -> HoldPlayDefinition:
 @pytest.mark.parametrize(
     ("point", "expected"),
     [
-        ((100, 100), "center"),
-        ((20, 140), "left"),
-        ((180, 140), "right"),
-        ((80, 60), "up_left"),
-        ((120, 60), "up_right"),
+        ((99, 59), "up_left"),
+        ((100, 59), "up_right"),
+        ((100, 60), "center"),
+        ((100, 70), "center"),
+        ((64, 100), "left"),
+        ((65, 100), "center"),
+        ((135, 100), "center"),
+        ((136, 100), "right"),
     ],
 )
-def test_resolve_direction_uses_attack_origin(definition, point, expected) -> None:
+def test_resolve_direction_uses_contact_point_midlines(
+    definition, point, expected
+) -> None:
     assert HoldPlayController(definition).resolve_direction(point) == expected
 
 
@@ -80,7 +85,7 @@ def test_attack_requires_cooldown_and_target_movement_to_rearm(definition) -> No
 
     controller.move((180, 140), now_ms=300)
     assert controller.tick(now_ms=550).action is None
-    controller.move((140, 140), now_ms=560)
+    controller.move((130, 140), now_ms=560)
     assert controller.tick(now_ms=699).action is None
     assert controller.tick(now_ms=700).action == "pounce_center"
 

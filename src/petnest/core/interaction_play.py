@@ -54,13 +54,25 @@ class HoldPlayController:
         return HoldPlayUpdate(self.phase, action=self.definition.ready_action)
 
     def resolve_direction(self, point: tuple[int, int]) -> HoldPlayDirection:
-        dx = point[0] - self.definition.attack_origin[0]
-        dy = point[1] - self.definition.attack_origin[1]
-        if dy < -60:
-            return "up_left" if dx < 0 else "up_right"
-        if abs(dx) <= 60:
+        center = self._target_for("center").contact_point
+        left = self._target_for("left").contact_point
+        right = self._target_for("right").contact_point
+        up_left = self._target_for("up_left").contact_point
+        up_right = self._target_for("up_right").contact_point
+
+        upper_contact_y = self._midpoint(up_left[1], up_right[1])
+        upper_boundary_y = self._midpoint(upper_contact_y, center[1])
+        if point[1] < upper_boundary_y:
+            upper_split_x = self._midpoint(up_left[0], up_right[0])
+            return "up_left" if point[0] < upper_split_x else "up_right"
+
+        left_boundary_x = self._midpoint(left[0], center[0])
+        right_boundary_x = self._midpoint(center[0], right[0])
+        if point[0] < left_boundary_x:
+            return "left"
+        if point[0] <= right_boundary_x:
             return "center"
-        return "left" if dx < 0 else "right"
+        return "right"
 
     def move(self, point: tuple[int, int], *, now_ms: int) -> HoldPlayUpdate:
         if self.phase in {HoldPlayPhase.INACTIVE, HoldPlayPhase.SUSPENDED}:
@@ -206,6 +218,10 @@ class HoldPlayController:
     @staticmethod
     def _distance(first: tuple[int, int], second: tuple[int, int]) -> float:
         return hypot(first[0] - second[0], first[1] - second[1])
+
+    @staticmethod
+    def _midpoint(first: int, second: int) -> int:
+        return round((first + second) / 2)
 
     def _reset_transient(self) -> None:
         self.candidate_target = None
