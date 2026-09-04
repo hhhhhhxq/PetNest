@@ -231,7 +231,7 @@ def _work_finish_state(value: object) -> dict[str, str | None] | None:
     """只保留状态模块认识的字符串字段，损坏值不会拖垮全部设置。"""
     if not isinstance(value, dict):
         return None
-    keys = (
+    required_keys = (
         "work_date",
         "end_at",
         "status",
@@ -239,6 +239,15 @@ def _work_finish_state(value: object) -> dict[str, str | None] | None:
         "prompt_started_at",
         "next_prompt_at",
     )
-    if any(key not in value or value[key] is not None and not isinstance(value[key], str) for key in keys):
+    if any(
+        key not in value or value[key] is not None and not isinstance(value[key], str)
+        for key in required_keys
+    ):
         return None
-    return {key: value[key] for key in keys}
+    prompt_timing = value.get("prompt_timing")
+    if prompt_timing is not None and not isinstance(prompt_timing, str):
+        return None
+    normalized = {key: value[key] for key in required_keys}
+    if "prompt_timing" in value:
+        normalized["prompt_timing"] = prompt_timing
+    return normalized

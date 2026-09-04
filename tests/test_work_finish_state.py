@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from petnest.core.work_finish_state import (
     WorkFinishState,
@@ -52,16 +52,16 @@ def test_overtime_uses_original_end_and_next_relative_hour() -> None:
     assert overtime_duration(overtime, datetime(2026, 8, 14, 18, 50)) == timedelta(minutes=10)
 
 
-def test_reaching_or_missing_an_hourly_node_requests_only_one_hourly_prompt() -> None:
+def test_late_hourly_prompt_keeps_its_original_thirty_minute_deadline() -> None:
     end_at = datetime(2026, 8, 14, 18, 0)
     initial = advance_work_finish(None, end_at, end_at)
     assert initial.state is not None
     overtime = continue_overtime(initial.state, end_at + timedelta(minutes=1))
 
-    due = advance_work_finish(overtime, end_at + timedelta(hours=2, minutes=5), end_at)
+    due = advance_work_finish(overtime, end_at + timedelta(hours=1, minutes=10), end_at)
     repeated = advance_work_finish(
         due.state,
-        end_at + timedelta(hours=2, minutes=5, seconds=1),
+        end_at + timedelta(hours=1, minutes=10, seconds=1),
         end_at,
         prompt_visible=True,
     )
@@ -69,7 +69,71 @@ def test_reaching_or_missing_an_hourly_node_requests_only_one_hourly_prompt() ->
     assert due.should_prompt
     assert due.state is not None
     assert due.state.prompt_kind == "hourly"
+    assert due.state.prompt_started_at == end_at + timedelta(hours=1)
+    assert due.state.prompt_timing == "scheduled"
     assert not repeated.should_prompt
+
+
+def test_hourly_prompt_missed_by_thirty_minutes_finishes_without_showing() -> None:
+    end_at = datetime(2026, 8, 14, 18, 0)
+    initial = advance_work_finish(None, end_at, end_at)
+    assert initial.state is not None
+    overtime = continue_overtime(initial.state, end_at + timedelta(minutes=1))
+
+    expired = advance_work_finish(overtime, end_at + timedelta(hours=1, minutes=30), end_at)
+
+    assert expired.state is not None
+    assert expired.state.status == "finished"
+    assert not expired.should_prompt
+
+
+def test_hourly_prompt_missed_by_many_hours_finishes_without_showing() -> None:
+    end_at = datetime(2026, 8, 14, 18, 0)
+    initial = advance_work_finish(None, end_at, end_at)
+    assert initial.state is not None
+    overtime = continue_overtime(initial.state, end_at + timedelta(minutes=1))
+
+    expired = advance_work_finish(overtime, end_at + timedelta(hours=15), end_at)
+
+    assert expired.state is not None
+    assert expired.state.status == "finished"
+    assert not expired.should_prompt
+
+
+def test_legacy_hourly_prompt_without_scheduled_marker_finishes_without_showing() -> None:
+    end_at = datetime(2026, 8, 14, 18, 0)
+    legacy = WorkFinishState(
+        work_date=end_at.date(),
+        end_at=end_at,
+        status="prompting",
+        prompt_kind="hourly",
+        prompt_started_at=datetime(2026, 8, 14, 22, 5),
+    )
+
+    expired = advance_work_finish(legacy, datetime(2026, 8, 14, 22, 10), end_at)
+
+    assert expired.state is not None
+    assert expired.state.status == "finished"
+    assert not expired.should_prompt
+
+
+def test_timezone_aware_hourly_prompt_keeps_deadline_after_restore() -> None:
+    zone = timezone(timedelta(hours=8))
+    end_at = datetime(2026, 8, 14, 18, 0, tzinfo=zone)
+    initial = advance_work_finish(None, end_at, end_at)
+    assert initial.state is not None
+    overtime = continue_overtime(initial.state, end_at + timedelta(minutes=1))
+    due = advance_work_finish(overtime, end_at + timedelta(hours=1, minutes=10), end_at)
+    restored = state_from_dict(state_to_dict(due.state))
+
+    assert restored is not None
+    assert restored.prompt_timing == "scheduled"
+
+    expired = advance_work_finish(restored, end_at + timedelta(hours=1, minutes=30), end_at)
+
+    assert expired.state is not None
+    assert expired.state.status == "finished"
+    assert not expired.should_prompt
 
 
 def test_prompt_times_out_after_thirty_absolute_minutes() -> None:

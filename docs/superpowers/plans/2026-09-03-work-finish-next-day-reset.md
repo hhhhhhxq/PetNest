@@ -66,3 +66,34 @@
 运行：`git diff --check` 和 `git diff -- src/petnest/ui/work_countdown.py tests/test_work_countdown.py`
 
 预期：没有空白错误，差异仅包含本次边界修复和回归测试。
+
+### 任务 3：让错过的整点提醒按原计划过期
+
+**文件：**
+- 修改：`src/petnest/core/work_finish_state.py`
+- 修改：`src/petnest/models/settings.py`
+- 测试：`tests/test_work_finish_state.py`
+
+- [x] **步骤 1：编写整点提醒迟到边界测试**
+
+验证迟到 10 分钟沿用原整点作为提示起点，迟到恰好 30 分钟直接结束且不展示。
+
+- [x] **步骤 2：运行测试验证失败**
+
+运行：`python -m pytest tests/test_work_finish_state.py -q`
+
+预期：旧逻辑错误地从恢复时刻重新计时，并补出已过期提醒。
+
+- [x] **步骤 3：使用原计划整点推进状态**
+
+创建整点提醒时将 `prompt_started_at` 设为 `next_prompt_at`；若当前时间已经达到 `next_prompt_at + PROMPT_TIMEOUT`，直接进入 `finished`。
+
+- [x] **步骤 4：运行相关测试**
+
+运行：`python -m pytest tests/test_work_finish_state.py tests/test_work_countdown.py -q`
+
+预期：全部通过，且首次晚启动测试继续通过。
+
+- [x] **步骤 5：兼容旧版已持久化的错误提醒**
+
+为新整点提醒持久化 `prompt_timing: scheduled` 标记；加载到旧版无标记的 `hourly prompting` 状态时直接结束。验证错过多个整点以及带时区状态序列化恢复的截止时间。

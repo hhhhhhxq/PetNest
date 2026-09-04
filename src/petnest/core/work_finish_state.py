@@ -10,6 +10,7 @@ from typing import Literal, Mapping
 
 WorkFinishStatus = Literal["prompting", "overtime", "finished"]
 PromptKind = Literal["initial", "hourly"]
+PromptTiming = Literal["scheduled"]
 PROMPT_TIMEOUT = timedelta(minutes=30)
 
 
@@ -23,6 +24,7 @@ class WorkFinishState:
     prompt_kind: PromptKind | None = None
     prompt_started_at: datetime | None = None
     next_prompt_at: datetime | None = None
+    prompt_timing: PromptTiming | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,8 @@ def advance_work_finish(
         return WorkFinishTransition(prompting, should_prompt=True, changed=True)
 
     if state.status == "prompting":
+        if state.prompt_kind == "hourly" and state.prompt_timing != "scheduled":
+            return WorkFinishTransition(finish_work(state), changed=True)
         started_at = state.prompt_started_at or now
         if now >= started_at + PROMPT_TIMEOUT:
             return WorkFinishTransition(finish_work(state), changed=True)
@@ -72,12 +76,15 @@ def advance_work_finish(
     if state.status == "overtime":
         next_prompt = state.next_prompt_at or _next_hour_node(state.end_at, now)
         if now >= next_prompt:
+            if now >= next_prompt + PROMPT_TIMEOUT:
+                return WorkFinishTransition(finish_work(state), changed=True)
             prompting = replace(
                 state,
                 status="prompting",
                 prompt_kind="hourly",
-                prompt_started_at=now,
+                prompt_started_at=next_prompt,
                 next_prompt_at=None,
+                prompt_timing="scheduled",
             )
             return WorkFinishTransition(prompting, should_prompt=True, changed=True)
         if state.next_prompt_at is None:
@@ -93,6 +100,7 @@ def continue_overtime(state: WorkFinishState, now: datetime) -> WorkFinishState:
         prompt_kind=None,
         prompt_started_at=None,
         next_prompt_at=_next_hour_node(state.end_at, now),
+        prompt_timing=None,
     )
 
 
@@ -104,6 +112,7 @@ def finish_work(state: WorkFinishState) -> WorkFinishState:
         prompt_kind=None,
         prompt_started_at=None,
         next_prompt_at=None,
+        prompt_timing=None,
     )
 
 
@@ -123,6 +132,7 @@ def state_to_dict(state: WorkFinishState | None) -> dict[str, str | None] | None
         "prompt_kind": state.prompt_kind,
         "prompt_started_at": _datetime_text(state.prompt_started_at),
         "next_prompt_at": _datetime_text(state.next_prompt_at),
+        "prompt_timing": state.prompt_timing,
     }
 
 
@@ -137,11 +147,16 @@ def state_from_dict(value: object) -> WorkFinishState | None:
         prompt_kind = _optional_text(value.get("prompt_kind"))
         prompt_started_at = _optional_datetime(value.get("prompt_started_at"))
         next_prompt_at = _optional_datetime(value.get("next_prompt_at"))
+        prompt_timing = _optional_text(value.get("prompt_timing"))
     except (TypeError, ValueError):
         return None
     if status not in {"prompting", "overtime", "finished"}:
         return None
     if prompt_kind not in {None, "initial", "hourly"}:
+        return None
+    if prompt_timing not in {None, "scheduled"}:
+        return None
+    if prompt_timing is not None and not (status == "prompting" and prompt_kind == "hourly"):
         return None
     if status == "prompting" and (prompt_kind is None or prompt_started_at is None):
         return None
@@ -154,6 +169,7 @@ def state_from_dict(value: object) -> WorkFinishState | None:
         prompt_kind=prompt_kind,
         prompt_started_at=prompt_started_at,
         next_prompt_at=next_prompt_at,
+        prompt_timing=prompt_timing,
     )
 
 
