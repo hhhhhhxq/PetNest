@@ -23,7 +23,11 @@ manual checks. The Worker keeps the allowlist in an isolate for at most 10
 seconds, so a newly published file may take a few seconds before its first
 request is accepted.
 
-The pet store uses a separate allowlist read from `store/catalog.json`.
+The pet store exposes two complete catalog views: `/v1/store/catalog.json`
+reads `store/catalog.json`, while `/v2/store/catalog.json` reads
+`store/catalog-v2.json`. Store file downloads use the union of both catalogs as
+their allowlist. A path declared by both catalogs must use the same SHA-256 or
+the Worker rejects the combined allowlist.
 Only each listing's `cover`, `idle_preview`, and `package` records are exposed;
 `listing.json`, publishing tools, and other private repository files remain
 unavailable. The store catalog is uncached, while SHA-keyed store files use the

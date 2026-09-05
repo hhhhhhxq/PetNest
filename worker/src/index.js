@@ -7,6 +7,15 @@ let manifestCache = { expiresAt: 0, files: null };
 let manifestRefreshPromise = null;
 let storeCatalogCache = { expiresAt: 0, files: null };
 let storeCatalogRefreshPromise = null;
+let storeCatalogGeneration = 0;
+
+export function resetCachesForTesting() {
+  manifestCache = { expiresAt: 0, files: null };
+  manifestRefreshPromise = null;
+  storeCatalogCache = { expiresAt: 0, files: null };
+  storeCatalogRefreshPromise = null;
+  storeCatalogGeneration = 0;
+}
 
 export default {
   async fetch(request, env) {
@@ -26,6 +35,9 @@ export default {
       catalogKind = "resources";
     } else if (url.pathname === "/v1/store/catalog.json") {
       path = "store/catalog.json";
+      catalogKind = "store";
+    } else if (url.pathname === "/v2/store/catalog.json") {
+      path = "store/catalog-v2.json";
       catalogKind = "store";
     } else if (url.pathname === "/v1/archive.zip") {
       // Do not proxy GitHub's branch zipball: it contains the entire private
@@ -99,7 +111,8 @@ export default {
           : await parseManifestAllowlist(upstream.clone());
         if (files !== null) {
           if (catalogKind === "store") {
-            storeCatalogCache = { expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS, files };
+            storeCatalogCache = { expiresAt: 0, files: null };
+            storeCatalogGeneration += 1;
           } else {
             manifestCache = { expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS, files };
           }
@@ -159,25 +172,47 @@ async function storeAllowlist(env) {
 }
 
 async function loadStoreAllowlist(env) {
-  let upstream;
-  try {
-    upstream = await fetch(githubResourceUrl("store/catalog.json"), githubRequestOptions(env));
-  } catch {
-    return null;
-  }
-  if (!upstream.ok) {
-    return null;
-  }
-  try {
-    const files = await parseStoreAllowlist(upstream);
-    if (files === null) {
+  const generation = storeCatalogGeneration;
+  const combined = new Map();
+  let loaded = false;
+  for (const catalogPath of ["store/catalog.json", "store/catalog-v2.json"]) {
+    let upstream;
+    try {
+      upstream = await fetch(githubResourceUrl(catalogPath), githubRequestOptions(env));
+    } catch {
       return null;
     }
-    storeCatalogCache = { expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS, files };
-    return files;
-  } catch {
+    if (!upstream.ok) {
+      if (upstream.status === 404) {
+        continue;
+      }
+      return null;
+    }
+    try {
+      const files = await parseStoreAllowlist(upstream);
+      if (files === null) {
+        return null;
+      }
+      for (const [path, sha256] of files) {
+        const existing = combined.get(path);
+        if (existing !== undefined && existing !== sha256) {
+          return null;
+        }
+        combined.set(path, sha256);
+      }
+      loaded = true;
+    } catch {
+      return null;
+    }
+  }
+  if (!loaded) {
     return null;
   }
+  if (generation !== storeCatalogGeneration) {
+    return null;
+  }
+  storeCatalogCache = { expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS, files: combined };
+  return combined;
 }
 
 async function loadResourceAllowlist(env) {
