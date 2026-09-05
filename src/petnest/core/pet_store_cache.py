@@ -49,7 +49,12 @@ class CatalogLoadResult:
 
 
 class PetStoreCache:
-    CATALOG_ROUTE = "/v1/store/catalog.json"
+    CATALOG_ROUTE = "/v2/store/catalog.json"
+    LEGACY_CATALOG_ROUTE = "/v1/store/catalog.json"
+    CATALOG_ROUTES = (
+        ("v2", CATALOG_ROUTE),
+        ("v1", LEGACY_CATALOG_ROUTE),
+    )
     FILE_ROUTE = "/v1/store/files/"
 
     def __init__(
@@ -72,6 +77,10 @@ class PetStoreCache:
             raise ValueError("retry_delay 不能为负数")
         self.retry_attempts = int(retry_attempts)
         self.retry_delay = float(retry_delay)
+        self.catalog_paths = {
+            "v2": self.root / "catalog-v2.json",
+            "v1": self.root / "catalog-v1.json",
+        }
         self.catalog_path = self.root / "catalog.json"
         self.media_root = self.root / "media"
         self.packages_root = self.root / "packages"
@@ -81,25 +90,51 @@ class PetStoreCache:
         self.packages_root.mkdir(parents=True, exist_ok=True)
         self._clean_staging()
 
-    def load_catalog(self) -> PetStoreCatalog | None:
-        if not self.catalog_path.is_file():
+    def load_catalog(self, version: str | None = None) -> PetStoreCatalog | None:
+        if version is not None:
+            if version not in self.catalog_paths:
+                raise ValueError(f"不支持的商店目录版本：{version}")
+            return self._load_catalog_path(self.catalog_paths[version])
+        for candidate in (
+            self.catalog_paths["v2"],
+            self.catalog_paths["v1"],
+            self.catalog_path,
+        ):
+            catalog = self._load_catalog_path(candidate)
+            if catalog is not None:
+                return catalog
+        return None
+
+    @staticmethod
+    def _load_catalog_path(path: Path) -> PetStoreCatalog | None:
+        if not path.is_file():
             return None
         try:
-            return PetStoreCatalog.from_bytes(self.catalog_path.read_bytes())
+            return PetStoreCatalog.from_bytes(path.read_bytes())
         except (OSError, PetStoreCatalogError):
             return None
 
     def fetch_catalog_or_cached(self) -> CatalogLoadResult:
-        try:
-            payload = self._fetch_catalog_bytes()
-            catalog = PetStoreCatalog.from_bytes(payload)
-            self._atomic_write(self.catalog_path, payload)
-            return CatalogLoadResult(catalog, False)
-        except (OSError, HTTPError, URLError, PetStoreCatalogError, PetStoreDownloadError) as error:
-            cached = self.load_catalog()
-            if cached is not None:
-                return CatalogLoadResult(cached, True)
-            raise PetStoreDownloadError(f"无法加载宠物商店目录：{error}") from error
+        last_error: Exception | None = None
+        for version, route in self.CATALOG_ROUTES:
+            try:
+                payload = self._fetch_catalog_bytes(route)
+                catalog = PetStoreCatalog.from_bytes(payload)
+                try:
+                    self._atomic_write(self.catalog_paths[version], payload)
+                except OSError:
+                    pass
+                return CatalogLoadResult(catalog, False)
+            except (OSError, HTTPError, URLError, PetStoreCatalogError, PetStoreDownloadError) as error:
+                last_error = error
+                cached = self.load_catalog(version)
+                if cached is not None:
+                    return CatalogLoadResult(cached, True)
+        cached = self._load_catalog_path(self.catalog_path)
+        if cached is not None:
+            return CatalogLoadResult(cached, True)
+        assert last_error is not None
+        raise PetStoreDownloadError(f"无法加载宠物商店目录：{last_error}") from last_error
 
     def fetch_media(
         self,
@@ -127,11 +162,11 @@ class PetStoreCache:
             validate_image=False,
         )
 
-    def _fetch_catalog_bytes(self) -> bytes:
+    def _fetch_catalog_bytes(self, route: str) -> bytes:
         last_error: _PetStoreTransientError | None = None
         for attempt in range(self.retry_attempts):
             try:
-                return self._fetch_catalog_bytes_once()
+                return self._fetch_catalog_bytes_once(route)
             except HTTPError as error:
                 if error.code not in _RETRYABLE_HTTP_STATUSES:
                     raise PetStoreDownloadError(
@@ -149,9 +184,9 @@ class PetStoreCache:
         assert last_error is not None
         raise last_error
 
-    def _fetch_catalog_bytes_once(self) -> bytes:
+    def _fetch_catalog_bytes_once(self, route: str) -> bytes:
         request = Request(
-            f"{self.base_url}{self.CATALOG_ROUTE}",
+            f"{self.base_url}{route}",
             headers={"Accept": "application/json", "User-Agent": "PetNest-Store"},
         )
         chunks: list[bytes] = []

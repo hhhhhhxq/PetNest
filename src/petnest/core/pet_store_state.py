@@ -12,7 +12,7 @@ import re
 import tempfile
 from uuid import uuid4
 
-from .pet_store_catalog import PetStoreFile, PetStoreItem
+from .pet_store_catalog import PetStoreItem
 
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -55,19 +55,15 @@ class PetStoreStateStore:
         self,
         item: PetStoreItem,
         *,
-        package: PetStoreFile | None = None,
         installed_at: datetime | None = None,
     ) -> None:
         installed = installed_at or datetime.now(UTC)
         if installed.tzinfo is None or installed.utcoffset() is None:
             raise ValueError("installed_at 必须包含 UTC 偏移")
         receipts = self.load()
-        installed_package = package or item.package
-        if installed_package not in item.package_files:
-            raise ValueError("安装收据的 package 必须属于当前商店宠物")
         receipts[item.identifier] = PetStoreReceipt(
             item.identifier,
-            installed_package.sha256,
+            item.package.sha256,
             installed.astimezone(UTC),
             item.updated_at.astimezone(UTC),
         )
@@ -88,7 +84,7 @@ class PetStoreStateStore:
             return PetStoreStatus.NOT_ADOPTED
         if receipt is None:
             return PetStoreStatus.LOCAL_EXISTING
-        if any(receipt.package_sha256 == package.sha256 for package in item.package_files):
+        if receipt.package_sha256 == item.package.sha256:
             return PetStoreStatus.ADOPTED
         return PetStoreStatus.UPDATE_AVAILABLE
 

@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 from threading import Event
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from PIL import Image
 import pytest
@@ -101,8 +101,173 @@ def test_fetch_catalog_replaces_only_with_valid_payload(tmp_path: Path) -> None:
 
     assert result.offline is False
     assert result.catalog.pet("sample_pet") is not None
-    assert (tmp_path / "catalog.json").read_bytes() == payload
-    assert urls == ["https://assets.example/v1/store/catalog.json"]
+    assert (tmp_path / "catalog-v2.json").read_bytes() == payload
+    assert urls == ["https://assets.example/v2/store/catalog.json"]
+
+
+def test_fetch_catalog_prefers_v2_and_writes_a_versioned_cache(tmp_path: Path) -> None:
+    payload = _catalog_bytes()
+    urls: list[str] = []
+
+    def opener(request: object, timeout: float = 0) -> _Response:
+        del timeout
+        urls.append(request.full_url)  # type: ignore[attr-defined]
+        return _Response(payload)
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=opener,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is False
+    assert urls == ["https://assets.example/v2/store/catalog.json"]
+    assert (tmp_path / "catalog-v2.json").read_bytes() == payload
+    assert not (tmp_path / "catalog-v1.json").exists()
+
+
+def test_valid_v2_catalog_is_used_even_when_cache_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _catalog_bytes()
+    urls: list[str] = []
+    cache = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=lambda request, timeout=0: (
+            urls.append(request.full_url),  # type: ignore[attr-defined]
+            _Response(payload),
+        )[1],
+    )
+
+    def fail_write(_path: Path, _payload: bytes) -> None:
+        raise OSError("read-only cache")
+
+    monkeypatch.setattr(cache, "_atomic_write", fail_write)
+
+    result = cache.fetch_catalog_or_cached()
+
+    assert result.offline is False
+    assert result.catalog.pet("sample_pet") is not None
+    assert urls == ["https://assets.example/v2/store/catalog.json"]
+
+
+def test_fetch_catalog_falls_back_to_v1_when_v2_is_missing(tmp_path: Path) -> None:
+    payload = _catalog_bytes()
+    urls: list[str] = []
+
+    def opener(request: object, timeout: float = 0) -> _Response:
+        del timeout
+        url = request.full_url  # type: ignore[attr-defined]
+        urls.append(url)
+        if "/v2/" in url:
+            raise HTTPError(url, 404, "missing", None, None)
+        return _Response(payload)
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=opener,
+        retry_delay=0,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is False
+    assert urls == [
+        "https://assets.example/v2/store/catalog.json",
+        "https://assets.example/v1/store/catalog.json",
+    ]
+    assert (tmp_path / "catalog-v1.json").read_bytes() == payload
+
+
+def test_fetch_catalog_falls_back_to_v1_when_v2_payload_is_invalid(tmp_path: Path) -> None:
+    payload = _catalog_bytes()
+    urls: list[str] = []
+
+    def opener(request: object, timeout: float = 0) -> _Response:
+        del timeout
+        url = request.full_url  # type: ignore[attr-defined]
+        urls.append(url)
+        return _Response(b"not-json" if "/v2/" in url else payload)
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=opener,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is False
+    assert result.catalog.pet("sample_pet") is not None
+    assert urls == [
+        "https://assets.example/v2/store/catalog.json",
+        "https://assets.example/v1/store/catalog.json",
+    ]
+
+
+def test_load_catalog_keeps_v1_and_v2_caches_separate(tmp_path: Path) -> None:
+    v1 = _catalog_bytes(package=b"v1")
+    v2 = _catalog_bytes(package=b"v2")
+    (tmp_path / "catalog-v1.json").write_bytes(v1)
+    (tmp_path / "catalog-v2.json").write_bytes(v2)
+    cache = PetStoreCache(tmp_path, "https://assets.example")
+
+    assert cache.load_catalog("v1") == PetStoreCatalog.from_bytes(v1)
+    assert cache.load_catalog("v2") == PetStoreCatalog.from_bytes(v2)
+
+
+def test_v2_failure_uses_v2_cache_without_requesting_v1(tmp_path: Path) -> None:
+    payload = _catalog_bytes(package=b"cached-v2")
+    (tmp_path / "catalog-v2.json").write_bytes(payload)
+    urls: list[str] = []
+
+    def opener(request: object, timeout: float = 0) -> _Response:
+        del timeout
+        urls.append(request.full_url)  # type: ignore[attr-defined]
+        raise URLError("offline")
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=opener,
+        retry_attempts=1,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is True
+    assert result.catalog == PetStoreCatalog.from_bytes(payload)
+    assert urls == ["https://assets.example/v2/store/catalog.json"]
+
+
+def test_v1_cache_wins_over_unversioned_cache_when_both_network_routes_fail(tmp_path: Path) -> None:
+    v1 = _catalog_bytes(package=b"cached-v1")
+    old = _catalog_bytes(package=b"old-unversioned")
+    (tmp_path / "catalog-v1.json").write_bytes(v1)
+    (tmp_path / "catalog.json").write_bytes(old)
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=lambda _request, timeout=0: (_ for _ in ()).throw(URLError("offline")),
+        retry_attempts=1,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is True
+    assert result.catalog == PetStoreCatalog.from_bytes(v1)
+
+
+def test_invalid_v2_cache_is_skipped_in_favor_of_valid_v1_cache(tmp_path: Path) -> None:
+    v1 = _catalog_bytes(package=b"cached-v1")
+    (tmp_path / "catalog-v2.json").write_bytes(b"not-json")
+    (tmp_path / "catalog-v1.json").write_bytes(v1)
+
+    result = PetStoreCache(
+        tmp_path,
+        "https://assets.example",
+        opener=lambda _request, timeout=0: (_ for _ in ()).throw(URLError("offline")),
+        retry_attempts=1,
+    ).fetch_catalog_or_cached()
+
+    assert result.offline is True
+    assert result.catalog == PetStoreCatalog.from_bytes(v1)
 
 
 def test_fetch_catalog_falls_back_to_last_valid_cache(tmp_path: Path) -> None:
