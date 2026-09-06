@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import petnest.core.codex_usage as codex_usage_module
 from petnest.core.codex_usage import (
     CodexAccount,
@@ -440,6 +442,39 @@ def test_client_falls_back_to_next_discovered_codex_launcher(tmp_path: Path, mon
     assert report.account.label == "pe*****@example.com"
     assert attempted == [protected, npm_launcher]
     assert client.executable == npm_launcher
+
+
+def test_client_retries_transient_app_server_failure_once(tmp_path: Path) -> None:
+    responses, _reset = _responses(tmp_path)
+    attempts = 0
+
+    def transport(*_args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise codex_usage_module._TransientCodexUsageError(
+                "Codex app-server 未返回完整用量数据"
+            )
+        return responses
+
+    report = CodexUsageClient(Path("/fake/codex"), transport=transport).fetch_report()
+
+    assert report.account.label == "pe*****@example.com"
+    assert attempts == 2
+
+
+def test_client_does_not_retry_non_transient_app_server_error(tmp_path: Path) -> None:
+    attempts = 0
+
+    def transport(*_args):
+        nonlocal attempts
+        attempts += 1
+        raise CodexUsageError("当前 Codex 版本或账号不支持用量读取")
+
+    with pytest.raises(CodexUsageError, match="不支持用量读取"):
+        CodexUsageClient(Path("/fake/codex"), transport=transport).fetch_report()
+
+    assert attempts == 1
 
 
 def test_windows_cmd_launcher_uses_command_processor(tmp_path: Path, monkeypatch) -> None:

@@ -28,6 +28,10 @@ class CodexUsageError(RuntimeError):
     """A safe, user-facing Codex usage lookup failure."""
 
 
+class _TransientCodexUsageError(CodexUsageError):
+    """An app-server transport failure that is safe to retry once."""
+
+
 @dataclass(frozen=True, slots=True)
 class CodexAccount:
     key: str
@@ -401,9 +405,22 @@ class CodexUsageClient:
         self._observation_store = observation_store
         self._manual_attribution_store = manual_attribution_store
 
+    def _request(
+        self,
+        executable: Path,
+        messages: list[dict[str, Any]],
+        expected_ids: frozenset[int],
+        timeout: float,
+    ) -> dict[int, dict[str, Any]]:
+        """Retry one short-lived app-server transport failure."""
+        try:
+            return self._transport(executable, messages, expected_ids, timeout)
+        except _TransientCodexUsageError:
+            return self._transport(executable, messages, expected_ids, timeout)
+
     def observe_account(self) -> CodexAccount | None:
         """Record the current login without fetching quota or scanning logs."""
-        responses = self._transport(
+        responses = self._request(
             self.executable,
             [
                 {
@@ -446,7 +463,7 @@ class CodexUsageClient:
         failures: list[str] = []
         for executable in self._executables:
             try:
-                responses = self._transport(
+                responses = self._request(
                     executable,
                     [
                         {
@@ -509,7 +526,7 @@ class CodexUsageClient:
             {"id": 3, "method": "account/rateLimits/read"},
             {"id": 4, "method": "account/usage/read"},
         ]
-        responses = self._transport(
+        responses = self._request(
             executable,
             requests,
             frozenset({1, 2, 3, 4}),
@@ -619,7 +636,7 @@ def discover_codex_executables() -> tuple[Path, ...]:
         if normalized in seen:
             continue
         seen.add(normalized)
-        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+        if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
             discovered.append(candidate)
     if discovered:
         return tuple(discovered)
@@ -1458,10 +1475,10 @@ def _stdio_rpc_transport(
                 line = lines.get(timeout=min(remaining, 0.5))
             except Empty:
                 if process.poll() is not None:
-                    raise CodexUsageError("Codex app-server 提前退出，请更新 Codex 后重试")
+                    raise _TransientCodexUsageError("Codex app-server 提前退出，请更新 Codex 后重试")
                 continue
             if line is None:
-                raise CodexUsageError("Codex app-server 未返回完整用量数据")
+                raise _TransientCodexUsageError("Codex app-server 未返回完整用量数据")
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
@@ -1485,7 +1502,7 @@ def _stdio_rpc_transport(
             responses[identifier] = result
         return responses
     except (BrokenPipeError, OSError) as error:
-        raise CodexUsageError(f"与 Codex app-server 通信失败：{error}") from error
+        raise _TransientCodexUsageError(f"与 Codex app-server 通信失败：{error}") from error
     finally:
         try:
             process.stdin.close()
