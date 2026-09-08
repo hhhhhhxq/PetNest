@@ -433,9 +433,11 @@ class PetNest:
         self._external_event_relay = _ExternalEventRelay(self.window)
         self._external_event_relay.event_received.connect(self._publish_external_event)
         self.work_activity = WorkActivityCoordinator(self.event_bus.publish)
+        classify_sessions = getattr(self.codex_log_watcher, "classify_thread_ids", None)
         self.codex_link = CodexLinkCoordinator(
             self.work_activity.handle_codex_event,
             self._handle_codex_snapshot,
+            classify_sessions=classify_sessions if callable(classify_sessions) else None,
         )
         self.window.codex_status_activated.connect(self._activate_codex_status)
         self.window.codex_status_bubble.dismissed.connect(self._dismiss_codex_status)
@@ -1392,7 +1394,10 @@ class PetNest:
             else:
                 self.window.clear_codex_status()
             return
-        if snapshot.unread_review_count > 0 and self.settings.codex_link_show_review_bubbles:
+        if (
+            (snapshot.state == "review" or snapshot.unread_review_count > 0)
+            and self.settings.codex_link_show_review_bubbles
+        ):
             self.window.show_codex_status(snapshot)
         else:
             self.window.clear_codex_status()

@@ -140,6 +140,10 @@ class CodexSessionLogWatcher:
         self._refresh_thread_index(force=True)
         candidates = self._candidate_files(self._date_candidate_files())
         now = self._monotonic_time()
+        if initial_unread is not None:
+            stable_since = now - self._unread_stable_seconds
+            for session_id in initial_unread:
+                self._pending_unread_since[session_id] = stable_since
         for candidate in candidates:
             path = candidate.path
             stat = candidate.stat
@@ -529,13 +533,15 @@ class CodexSessionLogWatcher:
         current = self._read_unread_ids()
         if current is None:
             return ()
+        now = self._monotonic_time()
         if not self._unread_baselined:
             self._unread_ids = current
             self._pending_unread_since.clear()
             self._confirmed_unread_ids.clear()
+            stable_since = now - self._unread_stable_seconds
+            for session_id in current:
+                self._pending_unread_since[session_id] = stable_since
             self._unread_baselined = True
-            return ()
-        now = self._monotonic_time()
         added_ids = current - self._unread_ids
         removed_ids = self._unread_ids - current
         for session_id in added_ids:
@@ -561,7 +567,7 @@ class CodexSessionLogWatcher:
             if now - self._pending_unread_since[session_id] < self._unread_stable_seconds:
                 continue
             stable_ids.add(session_id)
-        classification = self._classify_unread_ids(stable_ids)
+        classification = self.classify_thread_ids(stable_ids)
         for session_id in classification.child_ids:
             self._pending_unread_since.pop(session_id, None)
         for session_id in classification.top_level_ids:
@@ -578,7 +584,8 @@ class CodexSessionLogWatcher:
         events.sort(key=lambda event: str(event.payload.get("session_id", "")))
         return tuple(events)
 
-    def _classify_unread_ids(self, candidate_ids: set[str]) -> ThreadIdClassification:
+    def classify_thread_ids(self, candidate_ids: set[str]) -> ThreadIdClassification:
+        """Classify task IDs through the current read-only Codex thread index."""
         unknown = ThreadIdClassification(frozenset(), frozenset(), frozenset(candidate_ids))
         if not candidate_ids or self._thread_index is None:
             return unknown

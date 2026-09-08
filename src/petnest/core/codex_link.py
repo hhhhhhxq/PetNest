@@ -17,6 +17,8 @@ import sys
 from time import monotonic
 from typing import Any
 
+from petnest.core.codex_thread_index import ThreadIdClassification
+
 
 CODEX_HOOK_EVENTS = (
     "SessionStart",
@@ -56,6 +58,7 @@ class CodexHookStatus:
 
 
 HookTransport = Callable[[str, int, bytes], object]
+SessionClassifier = Callable[[set[str]], ThreadIdClassification]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +98,7 @@ class CodexLinkCoordinator:
         *,
         monotonic_time: Callable[[], float] = monotonic,
         completed_session_ttl: float = 5.0,
+        classify_sessions: SessionClassifier | None = None,
     ) -> None:
         self._publish = publish
         self._snapshot_changed = snapshot_changed
@@ -102,6 +106,7 @@ class CodexLinkCoordinator:
         self._active_turns: dict[str, str] = {}
         self._monotonic_time = monotonic_time
         self._completed_session_ttl = max(0.0, float(completed_session_ttl))
+        self._classify_sessions = classify_sessions
         self._completed_sessions: dict[str, float] = {}
         self._completed_session_tombstones: OrderedDict[str, None] = OrderedDict()
         self._max_completed_session_tombstones = 4096
@@ -137,14 +142,18 @@ class CodexLinkCoordinator:
             changed = session_id not in self._unread_sessions
             self._unread_sessions.add(session_id)
             review_found = False
+            active_found = False
             for key, task in tuple(self._tasks.items()):
-                if key[0] != session_id or task.state != "review":
+                if key[0] != session_id:
+                    continue
+                if task.state != "review":
+                    active_found = True
                     continue
                 review_found = True
                 if not task.unread_review:
                     changed = True
                     self._tasks[key] = _CodexTask("review", True, task.review_animation_pending)
-            if session_id in self._completed_sessions and not review_found:
+            if not review_found and not active_found:
                 changed = True
                 self._tasks[(session_id, "__unread__")] = _CodexTask("review", True, False)
             if changed:
@@ -232,11 +241,17 @@ class CodexLinkCoordinator:
             completion_key = (session_id, key[1])
             if not self._remember_completed_turn(completion_key):
                 return True
+            if self._is_child_session(session_id):
+                self._remember_completed_session_tombstone(session_id)
+                if self._discard_session(session_id):
+                    self._emit_snapshot()
+                return True
             self._completed_sessions[session_id] = self._monotonic_time()
             self._remember_completed_session_tombstone(session_id)
+            self._tasks.pop((session_id, "__unread__"), None)
             task = _CodexTask(
                 "review",
-                True,
+                session_id in self._unread_sessions,
                 True,
             )
         elif hook_name == "PermissionRequest":
@@ -353,6 +368,28 @@ class CodexLinkCoordinator:
         while len(self._completed_session_tombstones) > self._max_completed_session_tombstones:
             self._completed_session_tombstones.popitem(last=False)
 
+    def _is_child_session(self, session_id: str) -> bool:
+        if self._classify_sessions is None:
+            return False
+        try:
+            classification = self._classify_sessions({session_id})
+        except Exception:
+            return False
+        return session_id in classification.child_ids
+
+    def _discard_session(self, session_id: str) -> bool:
+        changed = session_id in self._unread_sessions or session_id in self._completed_sessions
+        self._unread_sessions.discard(session_id)
+        self._completed_sessions.pop(session_id, None)
+        for key in tuple(self._tasks):
+            if key[0] != session_id:
+                continue
+            changed = True
+            del self._tasks[key]
+        if self._active_turns.pop(session_id, None) is not None:
+            changed = True
+        return changed
+
     def _prune_completed_sessions(self) -> None:
         cutoff = self._monotonic_time() - self._completed_session_ttl
         for session_id, completed_at in tuple(self._completed_sessions.items()):
@@ -400,14 +437,25 @@ class CodexLinkCoordinator:
             "idle",
         )
         count = states.count(state) if state != "idle" else 0
-        unread = sum(task.unread_review for task in self._tasks.values())
+        unread = len(
+            {
+                key[0]
+                for key, task in self._tasks.items()
+                if task.state == "review" and task.unread_review
+            }
+        )
         message_state = "review" if unread and state in {"idle", "running"} else state
         message_count = unread if message_state == "review" and state != "review" else count
+        message = (
+            _completion_message(count)
+            if state == "review"
+            else _snapshot_message(message_state, message_count)
+        )
         return CodexLinkSnapshot(
             state,
             count,
             unread,
-            _snapshot_message(message_state, message_count),
+            message,
             self._target_session_id(message_state),
         )
 
@@ -708,6 +756,10 @@ def _snapshot_message(state: str, count: int) -> str:
     if state == "running":
         return "Codex 正在运行" if count == 1 else f"{count} 个 Codex 任务正在运行"
     return ""
+
+
+def _completion_message(count: int) -> str:
+    return "Codex 任务已完成" if count == 1 else f"{count} 个 Codex 任务已完成"
 
 
 def _default_command_prefix() -> tuple[str, ...]:

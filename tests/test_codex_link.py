@@ -13,6 +13,7 @@ from petnest.core.codex_link import (
     CodexLinkError,
     forward_codex_hook,
 )
+from petnest.core.codex_thread_index import ThreadIdClassification
 from petnest.models.event import PetEvent
 
 
@@ -215,6 +216,20 @@ def _log(event_name: str, session: str = "s1", turn: str = "t1", **payload: obje
     return PetEvent("codex.hook", source="codex-log", payload=values)
 
 
+def _classify_with_children(*child_ids: str):
+    children = set(child_ids)
+
+    def classify(candidate_ids: set[str]) -> ThreadIdClassification:
+        matched_children = candidate_ids & children
+        return ThreadIdClassification(
+            top_level_ids=frozenset(candidate_ids - matched_children),
+            child_ids=frozenset(matched_children),
+            unknown_ids=frozenset(),
+        )
+
+    return classify
+
+
 def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
     published: list[PetEvent] = []
     snapshots = []
@@ -231,8 +246,8 @@ def test_coordinator_maps_running_waiting_and_review_to_pet_events() -> None:
 
     assert coordinator.consume(_hook("Stop"))
     assert coordinator.snapshot.state == "review"
-    assert coordinator.snapshot.message == "Codex 任务已完成，等待查看"
-    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.message == "Codex 任务已完成"
+    assert coordinator.snapshot.unread_review_count == 0
     assert published[-1].event_name == "agent.success"
     assert snapshots[-1] == coordinator.snapshot
 
@@ -455,7 +470,7 @@ def test_delayed_duplicate_stop_after_animation_does_not_replay_review() -> None
     assert coordinator.consume(_hook("Stop", session="same", turn="turn-1"))
 
     assert coordinator.snapshot.state == "idle"
-    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.unread_review_count == 0
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
 
 
@@ -572,7 +587,7 @@ def test_marking_reviews_read_keeps_review_state_but_clears_unread_count() -> No
     assert coordinator.snapshot.unread_review_count == 0
 
 
-def test_foreground_completion_keeps_local_unread_badge_after_review_animation() -> None:
+def test_foreground_completion_returns_idle_after_review_animation_without_badge() -> None:
     published: list[PetEvent] = []
     coordinator = CodexLinkCoordinator(published.append)
     coordinator.consume(_log("Stop"))
@@ -580,9 +595,86 @@ def test_foreground_completion_keeps_local_unread_badge_after_review_animation()
     coordinator.finish_review_animation()
 
     assert coordinator.snapshot.state == "idle"
-    assert coordinator.snapshot.unread_review_count == 1
-    assert coordinator.snapshot.target_session_id == "s1"
+    assert coordinator.snapshot.unread_review_count == 0
+    assert coordinator.snapshot.target_session_id is None
     assert [event.event_name for event in published] == ["agent.success", "agent.idle"]
+
+
+def test_child_stop_clears_child_working_without_review_animation() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(
+        published.append,
+        classify_sessions=_classify_with_children("child"),
+    )
+    coordinator.consume(_log("UserPromptSubmit", session="child", turn="turn-1"))
+
+    assert coordinator.consume(_log("Stop", session="child", turn="turn-1"))
+
+    assert coordinator.snapshot.state == "idle"
+    assert coordinator.snapshot.unread_review_count == 0
+    assert [event.event_name for event in published] == ["agent.working", "agent.idle"]
+
+
+def test_child_attention_states_are_not_filtered() -> None:
+    coordinator = CodexLinkCoordinator(
+        lambda _event: None,
+        classify_sessions=_classify_with_children("child"),
+    )
+
+    coordinator.consume(_hook("PermissionRequest", session="child"))
+    assert coordinator.snapshot.state == "waiting"
+
+    coordinator.consume(_hook("PostToolUse", session="child", tool_failed=True))
+    assert coordinator.snapshot.state == "failed"
+
+
+def test_child_stop_clears_resolved_attention_without_success() -> None:
+    published: list[PetEvent] = []
+    coordinator = CodexLinkCoordinator(
+        published.append,
+        classify_sessions=_classify_with_children("child"),
+    )
+    coordinator.consume(_hook("PermissionRequest", session="child"))
+
+    coordinator.consume(_hook("Stop", session="child"))
+
+    assert coordinator.snapshot.state == "idle"
+    assert coordinator.snapshot.unread_review_count == 0
+    assert [event.event_name for event in published] == ["agent.waiting", "agent.idle"]
+
+
+def test_stop_classifier_error_allows_temporary_review_without_unread() -> None:
+    def fail_classification(_candidate_ids: set[str]) -> ThreadIdClassification:
+        raise RuntimeError("database is busy")
+
+    coordinator = CodexLinkCoordinator(
+        lambda _event: None,
+        classify_sessions=fail_classification,
+    )
+
+    coordinator.consume(_log("Stop", session="unknown"))
+
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.unread_review_count == 0
+
+
+def test_eight_completed_sessions_with_one_confirmed_unread_reports_one() -> None:
+    children = ("child-1", "child-2", "child-3")
+    coordinator = CodexLinkCoordinator(
+        lambda _event: None,
+        classify_sessions=_classify_with_children(*children),
+    )
+    for session in children:
+        coordinator.consume(_log("Stop", session=session))
+    for session in ("top-1", "top-2", "top-3", "top-4", "unread-top"):
+        coordinator.consume(_log("Stop", session=session))
+
+    coordinator.consume(_log("ThreadUnread", session="unread-top", turn="ignored"))
+    coordinator.finish_review_animation()
+
+    assert coordinator.snapshot.state == "idle"
+    assert coordinator.snapshot.unread_review_count == 1
+    assert coordinator.snapshot.target_session_id == "unread-top"
 
 
 def test_confirmed_unread_survives_animation_as_idle_badge_without_replaying_review() -> None:
@@ -605,6 +697,20 @@ def test_thread_unread_before_stop_is_applied_when_completion_arrives() -> None:
 
     coordinator.consume(_log("Stop", session="background", turn="turn-1"))
 
+    assert coordinator.snapshot.state == "review"
+    assert coordinator.snapshot.unread_review_count == 1
+
+
+def test_running_thread_unread_is_not_counted_until_stop() -> None:
+    coordinator = CodexLinkCoordinator(lambda _event: None)
+    coordinator.consume(_log("UserPromptSubmit", session="active", turn="turn-1"))
+
+    coordinator.consume(_log("ThreadUnread", session="active", turn="ignored"))
+
+    assert coordinator.snapshot.state == "running"
+    assert coordinator.snapshot.unread_review_count == 0
+
+    coordinator.consume(_log("Stop", session="active", turn="turn-1"))
     assert coordinator.snapshot.state == "review"
     assert coordinator.snapshot.unread_review_count == 1
 

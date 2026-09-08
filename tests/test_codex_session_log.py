@@ -1003,26 +1003,33 @@ def test_startup_unread_history_is_baselined_and_never_emitted(tmp_path: Path) -
     assert watcher.poll() == ()
 
 
-def test_late_first_read_of_global_state_only_establishes_baseline(tmp_path: Path) -> None:
+def test_late_first_read_of_global_state_restores_current_top_level_unread(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     state_path = tmp_path / ".codex-global-state.json"
     now = [0.0]
+    index = _FakeThreadIndex()
+    index.top_level_ids = {"current-unread"}
     watcher = CodexSessionLogWatcher(
         root,
         today=lambda: TODAY,
         global_state_path=state_path,
         monotonic_time=lambda: now[0],
         unread_stable_seconds=1.0,
+        thread_index_factory=lambda _home: index,
     )
     watcher.start()
 
-    _write_unread(state_path, "historical-unread")
-    assert watcher.poll() == ()
+    _write_unread(state_path, "current-unread")
+    assert [event.payload for event in watcher.poll()] == [
+        {"hook_event_name": "ThreadUnread", "session_id": "current-unread"}
+    ]
     now[0] = 2.0
     assert watcher.poll() == ()
 
     _write_unread(state_path)
-    assert watcher.poll() == ()
+    assert [event.payload for event in watcher.poll()] == [
+        {"hook_event_name": "ThreadRead", "session_id": "current-unread"}
+    ]
 
 
 def test_new_unread_thread_must_remain_stable_before_emitting(tmp_path: Path) -> None:
@@ -1098,6 +1105,28 @@ def test_child_agents_do_not_count_as_unread_but_top_level_task_does(tmp_path: P
     ]
 
 
+def test_startup_restores_current_top_level_unread_and_ignores_child(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    state_path = tmp_path / ".codex-global-state.json"
+    index = _FakeThreadIndex()
+    index.top_level_ids = {"top-unread"}
+    index.child_ids = {"child-unread"}
+    _write_unread(state_path, "top-unread", "child-unread")
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        global_state_path=state_path,
+        thread_index_factory=lambda _home: index,
+    )
+
+    watcher.start()
+    events = watcher.poll()
+
+    assert [event.payload for event in events] == [
+        {"hook_event_name": "ThreadUnread", "session_id": "top-unread"}
+    ]
+
+
 def test_unknown_unread_thread_is_retried_after_index_catches_up(tmp_path: Path) -> None:
     root = tmp_path / "sessions"
     state_path = tmp_path / ".codex-global-state.json"
@@ -1125,6 +1154,24 @@ def test_unknown_unread_thread_is_retried_after_index_catches_up(tmp_path: Path)
     assert [event.payload for event in watcher.poll()] == [
         {"hook_event_name": "ThreadUnread", "session_id": root_id}
     ]
+
+
+def test_public_thread_classification_reuses_current_index(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    index = _FakeThreadIndex()
+    index.top_level_ids = {"top"}
+    index.child_ids = {"child"}
+    watcher = CodexSessionLogWatcher(
+        root,
+        today=lambda: TODAY,
+        thread_index_factory=lambda _home: index,
+    )
+
+    classification = watcher.classify_thread_ids({"top", "child", "unknown"})
+
+    assert classification.top_level_ids == frozenset({"top"})
+    assert classification.child_ids == frozenset({"child"})
+    assert classification.unknown_ids == frozenset({"unknown"})
 
 
 def test_unread_classification_error_stays_pending_for_retry(tmp_path: Path) -> None:

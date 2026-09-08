@@ -32,6 +32,7 @@ from petnest.core.codex_discovery import (
 )
 from petnest.core.codex_plugin import CodexPluginStatus
 from petnest.core.codex_session_log import CodexLogSourceStatus, CodexSessionLogWatcher
+from petnest.core.codex_thread_index import ThreadIdClassification
 from petnest.core.remote_resource_cache import RemoteResourceCache
 from petnest.core.remote_resource_manifest import ResourceManifest
 from petnest.core.remote_resource_update import RemoteResourceApplyResult, RemoteResourceCheckResult
@@ -85,6 +86,7 @@ class _CodexLogWatcher:
         self.configured_home: Path | None = None
         self.root = Path("C:/unused-codex-home/sessions")
         self.global_state_path = self.root.parent / ".codex-global-state.json"
+        self.child_ids: set[str] = set()
 
     @property
     def is_running(self) -> bool:
@@ -109,6 +111,14 @@ class _CodexLogWatcher:
         if events:
             self.status = CodexLogSourceStatus("active", "已联动 · 本地日志回退")
         return events
+
+    def classify_thread_ids(self, candidate_ids: set[str]) -> ThreadIdClassification:
+        children = candidate_ids & self.child_ids
+        return ThreadIdClassification(
+            top_level_ids=frozenset(candidate_ids - children),
+            child_ids=frozenset(children),
+            unknown_ids=frozenset(),
+        )
 
 
 class _CodexPluginManager:
@@ -2533,7 +2543,7 @@ def test_codex_review_finishes_back_to_active_keyboard(
 
     assert application.work_activity.effective_event == "agent.working"
     assert application.window.current_action == application.package.bindings.get("agent.success", "review")
-    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.codex_link.snapshot.unread_review_count == 0
     application.shutdown()
 
 
@@ -3239,11 +3249,11 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     )
     application._poll_codex_logs()
     assert dialog.codex_link_runtime_label.text() == "任务已完成"
-    assert application.codex_link.snapshot.unread_review_count == 1
+    assert application.codex_link.snapshot.unread_review_count == 0
     if sys.platform == "darwin":
         assert application.window.codex_status_text is None
     else:
-        assert application.window.codex_status_text == "Codex 任务已完成，等待查看"
+        assert application.window.codex_status_text == "Codex 任务已完成"
 
     watcher.events.append(
         PetEvent(
@@ -3260,7 +3270,7 @@ def test_discovery_and_log_events_drive_plain_runtime_states(
     if sys.platform == "darwin":
         assert application.window.codex_status_text is None
         dialog.reject()
-    assert application.window.codex_status_text == "Codex 任务已完成，等待查看"
+    assert application.window.codex_status_text == "Codex 任务已完成"
 
     application._finish_codex_review_animation()
     assert application.codex_link.snapshot.state == "idle"
@@ -3515,6 +3525,13 @@ def test_clicking_codex_bubble_opens_exact_thread_and_marks_only_it_read(
                 payload={"hook_event_name": "Stop", "session_id": session_id, "turn_id": "t"},
             )
         )
+        application.codex_link.consume(
+            PetEvent(
+                "codex.hook",
+                source="codex-log",
+                payload={"hook_event_name": "ThreadUnread", "session_id": session_id},
+            )
+        )
 
     assert application.window.codex_status_bubble.isVisible()
     assert application.codex_link.snapshot.unread_review_count == 2
@@ -3546,6 +3563,13 @@ def test_failed_codex_deep_link_keeps_unread_bubble(
             "codex.hook",
             source="codex-log",
             payload={"hook_event_name": "Stop", "session_id": "session", "turn_id": "turn"},
+        )
+    )
+    application.codex_link.consume(
+        PetEvent(
+            "codex.hook",
+            source="codex-log",
+            payload={"hook_event_name": "ThreadUnread", "session_id": "session"},
         )
     )
 
