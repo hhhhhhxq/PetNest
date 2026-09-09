@@ -85,6 +85,57 @@ def test_idle_or_running_with_confirmed_unread_keeps_compact_badge_visible(qtbot
     assert bubble.text() == "Codex · 2 个待查看"
 
 
+def test_compact_badge_hugs_single_line_content(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=30)
+    qtbot.addWidget(bubble)
+
+    bubble.show_snapshot(
+        CodexLinkSnapshot("idle", 0, 1, "Codex 任务已完成，等待查看"),
+        QRect(100, 100, 80, 80),
+    )
+
+    margins = bubble.layout().contentsMargins()
+    assert (margins.left(), margins.right()) == (16, 16)
+    assert not bubble.message_label.wordWrap()
+    assert bubble.width() == bubble.sizeHint().width()
+    assert bubble.message_label.width() < 260
+
+
+def test_short_full_message_stays_on_one_line_after_compact_badge(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=30)
+    qtbot.addWidget(bubble)
+    anchor = QRect(100, 100, 80, 80)
+    bubble.show_snapshot(
+        CodexLinkSnapshot("idle", 0, 1, "Codex 任务已完成，等待查看"),
+        anchor,
+    )
+
+    bubble.show_snapshot(
+        CodexLinkSnapshot("waiting", 1, 0, "Codex 正在等待你处理"),
+        anchor,
+    )
+
+    margins = bubble.layout().contentsMargins()
+    assert not bubble.message_label.wordWrap()
+    assert bubble.message_label.width() < 260
+    assert (margins.left(), margins.right()) == (11, 7)
+
+
+def test_long_full_message_wraps_at_maximum_text_width(qtbot) -> None:
+    bubble = CodexStatusBubble(review_duration_ms=30)
+    qtbot.addWidget(bubble)
+    message = "Codex 任务已完成，等待查看。" * 20
+
+    bubble.show_snapshot(
+        CodexLinkSnapshot("waiting", 1, 0, message),
+        QRect(100, 100, 80, 80),
+    )
+
+    assert bubble.message_label.wordWrap()
+    assert bubble.message_label.width() == 260
+    assert bubble.message_label.height() > bubble.message_label.fontMetrics().height()
+
+
 def test_clicking_compact_message_label_activates_and_hides_bubble(qtbot) -> None:
     bubble = CodexStatusBubble(review_duration_ms=20)
     qtbot.addWidget(bubble)

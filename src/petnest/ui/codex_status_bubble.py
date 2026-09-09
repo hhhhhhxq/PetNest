@@ -9,6 +9,11 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 from petnest.core.codex_link import CodexLinkSnapshot
 
 
+_MAX_MESSAGE_WIDTH = 260
+_FULL_MARGINS = (11, 7, 7, 7)
+_COMPACT_MARGINS = (16, 7, 16, 7)
+
+
 class _BubbleMessageLabel(QLabel):
     clicked = Signal()
 
@@ -45,13 +50,14 @@ class CodexStatusBubble(QWidget):
             "QPushButton:hover { color: #7e5a4c; }"
         )
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(11, 7, 7, 7)
+        layout.setContentsMargins(*_FULL_MARGINS)
         layout.setSpacing(7)
+        self._content_layout = layout
         self.message_label = _BubbleMessageLabel(self)
         self.message_label.setWordWrap(True)
-        self.message_label.setMaximumWidth(260)
+        self.message_label.setMaximumWidth(_MAX_MESSAGE_WIDTH)
         self.message_label.clicked.connect(self._activate)
-        layout.addWidget(self.message_label, 1)
+        layout.addWidget(self.message_label)
         self.close_button = QPushButton("×", self)
         self.close_button.setFixedSize(20, 20)
         self.close_button.clicked.connect(self._dismiss)
@@ -97,7 +103,8 @@ class CodexStatusBubble(QWidget):
             else:
                 self.hide()
             return
-        self.message_label.setText(snapshot.message)
+        self._content_layout.setContentsMargins(*_FULL_MARGINS)
+        self._set_message(snapshot.message)
         self.close_button.show()
         self.adjustSize()
         self._place()
@@ -144,12 +151,22 @@ class CodexStatusBubble(QWidget):
 
     def _show_unread_badge(self) -> None:
         count = self._snapshot.unread_review_count
-        self.message_label.setText("Codex · 1 个待查看" if count == 1 else f"Codex · {count} 个待查看")
+        message = "Codex · 1 个待查看" if count == 1 else f"Codex · {count} 个待查看"
+        self._content_layout.setContentsMargins(*_COMPACT_MARGINS)
+        self._set_message(message)
         self.close_button.hide()
         self._is_compact = True
         self.adjustSize()
         self._place()
         self.show()
+
+    def _set_message(self, message: str) -> None:
+        self.message_label.ensurePolished()
+        natural_width = max(1, self.message_label.fontMetrics().horizontalAdvance(message))
+        width = min(natural_width, _MAX_MESSAGE_WIDTH)
+        self.message_label.setText(message)
+        self.message_label.setFixedWidth(width)
+        self.message_label.setWordWrap(natural_width > _MAX_MESSAGE_WIDTH)
 
     def _place(self) -> None:
         screen = QGuiApplication.screenAt(self._anchor.center()) or self.screen() or QGuiApplication.primaryScreen()
