@@ -602,6 +602,27 @@ def test_countdown_ignores_transparent_padding_below_visible_pet(qtbot: pytest.Q
     assert window.height() == 36  # 4 个可见像素 × 1.5 倍 + 30 像素卡片。
 
 
+def test_countdown_ignores_sparse_or_faint_alpha_noise_below_visible_pet(
+    qtbot: pytest.QtBot, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        frame = Image.new("RGBA", (10, 8), (0, 0, 0, 0))
+        frame.paste((255, 0, 0, 255), (0, 0, 10, 4))
+        frame.putpixel((5, 6), (255, 0, 0, 255))
+        for x in range(5):
+            frame.putpixel((x, 7), (255, 0, 0, 16))
+        frame.save(path)
+    window = PetWindow(package)
+    qtbot.addWidget(window)
+    window.set_countdown_appearance(gap=0, width=132, height=30)
+    window.set_countdown_text("下班啦")
+    window.show()
+
+    assert window._countdown_rect().top() == 6
+    assert window.height() == 36
+
+
 def test_countdown_auto_expands_for_text_and_applies_all_layout_settings(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:

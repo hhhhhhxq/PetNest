@@ -57,6 +57,26 @@ def _visible_frame_union(frames: tuple[Image.Image, ...], fallback_size: QSize) 
     return QRect(left, top, max(1, right - left), max(1, bottom - top))
 
 
+def _visible_alpha_bottom(
+    frame: Image.Image,
+    *,
+    alpha_threshold: int,
+    minimum_row_pixels: int = 5,
+) -> int:
+    """返回稳定的可见底边，忽略透明区里的零散 Alpha 噪点。"""
+    alpha = frame.getchannel("A")
+    width, height = alpha.size
+    required = min(max(1, minimum_row_pixels), width)
+    pixels = alpha.tobytes()
+    for y in range(height - 1, -1, -1):
+        start = y * width
+        if sum(value > alpha_threshold for value in pixels[start : start + width]) >= required:
+            return y + 1
+    thresholded = alpha.point(lambda value: 255 if value > alpha_threshold else 0)
+    bounds = thresholded.getbbox()
+    return bounds[3] if bounds is not None else 0
+
+
 def _prepare_translucent_frame(painter: QPainter, rect: QRect) -> None:
     """清除上一帧的透明窗口像素，再恢复正常 alpha 叠加。"""
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
@@ -1319,13 +1339,20 @@ class PetWindow(QWidget):
         )
 
     def _countdown_top(self) -> int:
-        """按当前动作全部帧的实际 alpha 底边定位，忽略素材透明留白。"""
+        """按当前动作全部帧的稳定可见底边定位，忽略稀疏 Alpha 噪点。"""
         if self._playing_action not in self._countdown_bottom_cache:
             visible_bottom = 0
             for frame in self.player.current_frames:
-                bounds = frame.getchannel("A").getbbox()
-                if bounds is not None:
-                    visible_bottom = max(visible_bottom, bounds[3])
+                visible_bottom = max(
+                    visible_bottom,
+                    _visible_alpha_bottom(
+                        frame,
+                        alpha_threshold=max(
+                            16,
+                            self.package.display.alpha_hit_test_threshold,
+                        ),
+                    ),
+                )
             if visible_bottom == 0:
                 visible_bottom = self.package.canvas.height
             self._countdown_bottom_cache[self._playing_action] = visible_bottom
