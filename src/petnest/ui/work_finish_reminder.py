@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from math import ceil
 from time import monotonic
 
+from PIL import Image
 from PySide6.QtCore import QObject, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QPaintEvent, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
@@ -22,6 +23,7 @@ class WorkFinishAnimationWindow(QWidget):
 
     WALK_SECONDS = 4.0
     WIDTH_RATIO = 0.92
+    HEIGHT_RATIO = 0.90
 
     def __init__(self, *, clock: Callable[[], float] = monotonic) -> None:
         super().__init__(None)
@@ -36,6 +38,8 @@ class WorkFinishAnimationWindow(QWidget):
         self._lie_durations: tuple[int, ...] = ()
         self._lie_loop_durations: tuple[int, ...] = ()
         self._entrance_direction = "right"
+        self._visible_bounds = QRect()
+        self._frame_scale = 1.0
         self.current_phase = "hidden"
         self.current_frame_index = 0
         self.target_frame_width = 0
@@ -76,15 +80,23 @@ class WorkFinishAnimationWindow(QWidget):
         self._lie_loop_durations = _durations(animation.lie_loop, len(self._lie_loop_frames))
         self._entrance_direction = animation.entrance_direction
         self.setGeometry(geometry)
-        self.target_frame_width = round(geometry.width() * self.WIDTH_RATIO)
-        self._started_at = self._clock()
-        self.current_phase = "walking"
-        self.current_frame_index = 0
         if not self._walk_frames and not self._lie_frames and not self._lie_loop_frames:
+            self.current_phase = "hidden"
+            self.current_frame_index = 0
+            self.target_frame_width = 0
+            self._visible_bounds = QRect()
+            self._frame_scale = 1.0
             self._paint_pending = False
             self.hide()
             self.timer.stop()
             return
+        self._visible_bounds = _visible_union((animation.walk, animation.lie_down, animation.lie_loop))
+        self._frame_scale = self._fit_scale()
+        first = self._walk_frames[0] if self._walk_frames else self._lie_frames[0] if self._lie_frames else self._lie_loop_frames[0]
+        self.target_frame_width = round(first.width() * self._frame_scale)
+        self._started_at = self._clock()
+        self.current_phase = "walking"
+        self.current_frame_index = 0
         self._refresh_frame()
         self.show()
         self.raise_()
@@ -137,22 +149,46 @@ class WorkFinishAnimationWindow(QWidget):
         pixmap = self._current_pixmap()
         if pixmap is None or pixmap.isNull() or self.target_frame_width <= 0:
             return QRect()
-        height = round(self.target_frame_width * pixmap.height() / pixmap.width())
-        centered_x = (self.width() - self.target_frame_width) // 2
+        width = round(pixmap.width() * self._frame_scale)
+        height = round(pixmap.height() * self._frame_scale)
+        centered_x = self._centered_canvas_x()
         if self.current_phase == "walking":
             elapsed = max(0.0, self._clock() - self._started_at)
             progress = min(1.0, elapsed / self.WALK_SECONDS)
             x = self._walking_x(progress)
         else:
             x = centered_x
-        return QRect(x, (self.height() - height) // 2, self.target_frame_width, height)
+        y = round(
+            (self.height() - self._visible_bounds.height() * self._frame_scale) / 2
+            - self._visible_bounds.top() * self._frame_scale
+        )
+        return QRect(x, y, width, height)
 
     def _walking_x(self, progress: float) -> int:
-        centered_x = (self.width() - self.target_frame_width) // 2
+        centered_x = self._centered_canvas_x()
         if self._entrance_direction == "none":
             return centered_x
-        start_x = -self.target_frame_width if self._entrance_direction == "left" else self.width()
+        if self._entrance_direction == "left":
+            start_x = -round(
+                (self._visible_bounds.left() + self._visible_bounds.width()) * self._frame_scale
+            )
+        else:
+            start_x = self.width() - round(self._visible_bounds.left() * self._frame_scale)
         return round(start_x + (centered_x - start_x) * progress)
+
+    def _fit_scale(self) -> float:
+        if self._visible_bounds.isEmpty():
+            return 1.0
+        return min(
+            self.width() * self.WIDTH_RATIO / self._visible_bounds.width(),
+            self.height() * self.HEIGHT_RATIO / self._visible_bounds.height(),
+        )
+
+    def _centered_canvas_x(self) -> int:
+        return round(
+            (self.width() - self._visible_bounds.width() * self._frame_scale) / 2
+            - self._visible_bounds.left() * self._frame_scale
+        )
 
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: ARG002 - Qt signature
         pixmap = self._current_pixmap()
@@ -327,6 +363,26 @@ def _pixmaps(definition: AnimationDefinition | None) -> tuple[QPixmap, ...]:
         return ()
     pixmaps = tuple(QPixmap(str(path)) for path in definition.frames)
     return tuple(pixmap for pixmap in pixmaps if not pixmap.isNull())
+
+
+def _visible_union(definitions: tuple[AnimationDefinition | None, ...]) -> QRect:
+    bounds: list[tuple[int, int, int, int]] = []
+    for definition in definitions:
+        if definition is None:
+            continue
+        for path in definition.frames:
+            with Image.open(path) as source:
+                alpha = source.convert("RGBA").getchannel("A")
+            visible = alpha.point(lambda value: 255 if value > 16 else 0).getbbox()
+            if visible is not None:
+                bounds.append(visible)
+    if not bounds:
+        return QRect()
+    left = min(bound[0] for bound in bounds)
+    top = min(bound[1] for bound in bounds)
+    right = max(bound[2] for bound in bounds)
+    bottom = max(bound[3] for bound in bounds)
+    return QRect(left, top, right - left, bottom - top)
 
 
 def _durations(definition: AnimationDefinition | None, frame_count: int) -> tuple[int, ...]:

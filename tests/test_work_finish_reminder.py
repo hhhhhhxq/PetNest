@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from PySide6.QtCore import QRect, Qt
 
 from petnest.core.work_finish_animation import resolve_work_finish_animation
@@ -96,7 +97,7 @@ def test_directional_drag_precedes_generic_drag_when_directional_walk_is_missing
     assert animation.walk.name == expected
 
 
-def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp_path: Path) -> None:
+def test_reminder_fits_full_frame_inside_both_screen_axes(qtbot, tmp_path: Path) -> None:
     geometry = QRect(100, 50, 1000, 800)
     reminder = WorkFinishReminder()
     qtbot.addWidget(reminder.animation_window)
@@ -110,7 +111,10 @@ def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp
     )
 
     assert reminder.animation_window.geometry() == geometry
-    assert reminder.animation_window.target_frame_width == 920
+    assert reminder.animation_window.target_frame_width == 900
+    assert reminder.animation_window.current_frame_rect().size().width() == 900
+    assert reminder.animation_window.current_frame_rect().size().height() == 720
+    assert reminder.animation_window.current_frame_rect().top() == 40
     assert reminder.animation_window.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
     assert reminder.animation_window.windowFlags() & Qt.WindowType.WindowTransparentForInput
     assert reminder.animation_window.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -118,6 +122,147 @@ def test_reminder_uses_full_screen_and_ninety_two_percent_frame_width(qtbot, tmp
     assert reminder.control_window.pos().y() == 74
     assert reminder.animation_window.isVisible()
     assert reminder.control_window.isVisible()
+    reminder.hide()
+
+
+def test_reminder_centers_alpha_visible_content_and_ignores_transparent_padding(qtbot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    for action in ("drag", "idle"):
+        for path in package.animations[action].frames:
+            frame = Image.new("RGBA", (100, 200), (0, 0, 0, 0))
+            frame.paste((255, 0, 0, 255), (30, 100, 70, 180))
+            frame.save(path)
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(
+        package,
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+        fallback_entrance_direction="none",
+    )
+
+    frame_rect = reminder.animation_window.current_frame_rect()
+    scale = frame_rect.width() / 100
+    visible_rect = QRect(
+        frame_rect.left() + round(30 * scale),
+        frame_rect.top() + round(100 * scale),
+        round(40 * scale),
+        round(80 * scale),
+    )
+    assert visible_rect == QRect(320, 40, 360, 720)
+    reminder.hide()
+
+
+def test_reminder_uses_width_limit_for_wide_visible_content(qtbot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    for action in ("drag", "idle"):
+        for path in package.animations[action].frames:
+            frame = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+            frame.paste((255, 0, 0, 255), (10, 30, 90, 70))
+            frame.save(path)
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(
+        package,
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+        fallback_entrance_direction="none",
+    )
+
+    frame_rect = reminder.animation_window.current_frame_rect()
+    scale = frame_rect.width() / 100
+    visible_rect = QRect(
+        frame_rect.left() + round(10 * scale),
+        frame_rect.top() + round(30 * scale),
+        round(80 * scale),
+        round(40 * scale),
+    )
+    assert visible_rect == QRect(40, 170, 920, 460)
+    reminder.hide()
+
+
+def test_visible_union_covers_different_action_bounds(qtbot, tmp_path: Path) -> None:
+    package = _package(tmp_path)
+    boxes = {"drag": (10, 10, 30, 50), "idle": (60, 40, 90, 90)}
+    for action, box in boxes.items():
+        for path in package.animations[action].frames:
+            frame = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+            frame.paste((255, 0, 0, 255), box)
+            frame.save(path)
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(
+        package,
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+        fallback_entrance_direction="none",
+    )
+
+    assert reminder.animation_window._visible_bounds == QRect(10, 10, 80, 80)
+    reminder.hide()
+
+
+@pytest.mark.parametrize("entrance_direction", ["left", "right"])
+def test_animation_starts_padded_visible_content_fully_offscreen(
+    qtbot, tmp_path: Path, entrance_direction: str
+) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        frame = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        frame.paste((255, 0, 0, 255), (30, 20, 70, 80))
+        frame.save(path)
+    package = _with_fullscreen_pair(package, entrance_direction)
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(
+        package,
+        QRect(0, 0, 1000, 800),
+        datetime(2026, 8, 14, 18, 0),
+    )
+
+    frame_rect = reminder.animation_window.current_frame_rect()
+    scale = frame_rect.width() / 100
+    visible_left = frame_rect.left() + round(30 * scale)
+    visible_right = frame_rect.left() + round(70 * scale)
+    if entrance_direction == "right":
+        assert visible_left >= 1000
+    else:
+        assert visible_right <= 0
+    reminder.hide()
+
+
+@pytest.mark.parametrize("direction", ["left", "right"])
+def test_padded_walk_starts_with_visible_content_offscreen(
+    qtbot, tmp_path: Path, direction: str
+) -> None:
+    package = _package(tmp_path)
+    for path in package.animations["idle"].frames:
+        frame = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        frame.paste((255, 0, 0, 255), (30, 20, 70, 80))
+        frame.save(path)
+    package = _with_fullscreen_pair(package, direction)
+    reminder = WorkFinishReminder(clock=lambda: 0.0)
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+
+    reminder.show_for(package, QRect(0, 0, 1000, 800), datetime(2026, 8, 14, 18, 0))
+
+    frame_rect = reminder.animation_window.current_frame_rect()
+    scale = frame_rect.width() / 100
+    visible_left = frame_rect.left() + round(30 * scale)
+    visible_right = frame_rect.left() + round(70 * scale)
+    if direction == "right":
+        assert visible_left >= 1000
+    else:
+        assert visible_right <= 0
     reminder.hide()
 
 
@@ -325,6 +470,23 @@ def test_missing_animation_still_shows_controls(qtbot, tmp_path: Path) -> None:
     assert not reminder.animation_window.isVisible()
     assert reminder.control_window.isVisible()
     assert "29:" in reminder.control_window.timeout_label.text()
+    reminder.hide()
+
+
+def test_reused_animation_window_clears_layout_state_when_animation_is_missing(qtbot, tmp_path: Path) -> None:
+    reminder = WorkFinishReminder()
+    qtbot.addWidget(reminder.animation_window)
+    qtbot.addWidget(reminder.control_window)
+    reminder.show_for(_package(tmp_path), QRect(0, 0, 1000, 800), datetime.now())
+
+    package = replace(_package(tmp_path, identifier="missing"), animations={})
+    reminder.show_for(package, QRect(0, 0, 1000, 800), datetime.now())
+
+    assert reminder.animation_window.current_phase == "hidden"
+    assert reminder.animation_window.current_frame_index == 0
+    assert reminder.animation_window.target_frame_width == 0
+    assert reminder.animation_window._visible_bounds.isEmpty()
+    assert reminder.animation_window._frame_scale == 1.0
     reminder.hide()
 
 
