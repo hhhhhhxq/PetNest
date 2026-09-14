@@ -1057,6 +1057,7 @@ class PetNest:
         """应用真实窗口状态；临时提醒隐藏时保持倒计时引擎继续运行。"""
         try:
             self.window.setVisible(visible)
+            self.window.set_bubbles_visible(visible)
             if not visible:
                 self.quick_notebook_window.hide()
                 self.quick_notebook_reminder.hide()

@@ -70,6 +70,8 @@ class CodexStatusBubble(QWidget):
         self._anchor = QRect()
         self._avoid = QRect()
         self._is_compact = False
+        self._pet_visible = True
+        self._content_visible = False
 
     @property
     def is_compact(self) -> bool:
@@ -77,6 +79,17 @@ class CodexStatusBubble(QWidget):
 
     def text(self) -> str:
         return self.message_label.text()
+
+    def set_pet_visible(self, visible: bool) -> None:
+        """随宠物隐藏或恢复气泡，保留内容、未读状态和折叠计时。"""
+        self._pet_visible = bool(visible)
+        if visible and self._content_visible:
+            self._place()
+        self.setVisible(self._pet_visible and self._content_visible)
+
+    def _set_content_visible(self, visible: bool) -> None:
+        self._content_visible = visible
+        self.setVisible(self._pet_visible and visible)
 
     def paintEvent(self, _event: QPaintEvent) -> None:  # noqa: N802 - Qt override
         """Windows 透明顶层窗口必须显式绘制，样式表背景可能被合成器忽略。"""
@@ -101,15 +114,16 @@ class CodexStatusBubble(QWidget):
             if snapshot.unread_review_count > 0:
                 self._show_unread_badge()
             else:
-                self.hide()
+                self._set_content_visible(False)
             return
         self._content_layout.setContentsMargins(*_FULL_MARGINS)
         self._set_message(snapshot.message)
         self.close_button.show()
         self.adjustSize()
         self._place()
-        self.show()
-        self.raise_()
+        self._set_content_visible(True)
+        if self.isVisible():
+            self.raise_()
         if snapshot.state == "review":
             self.dismiss_timer.start(self._review_duration_ms)
 
@@ -123,7 +137,7 @@ class CodexStatusBubble(QWidget):
         self.dismiss_timer.stop()
         self._snapshot = CodexLinkSnapshot()
         self._is_compact = False
-        self.hide()
+        self._set_content_visible(False)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -134,7 +148,7 @@ class CodexStatusBubble(QWidget):
 
     def _activate(self) -> None:
         self.dismiss_timer.stop()
-        self.hide()
+        self._set_content_visible(False)
         self.activated.emit()
 
     def _dismiss(self) -> None:
@@ -145,7 +159,7 @@ class CodexStatusBubble(QWidget):
         if self._snapshot.state != "review":
             return
         if self._snapshot.unread_review_count <= 0:
-            self.hide()
+            self._set_content_visible(False)
             return
         self._show_unread_badge()
 
@@ -158,7 +172,7 @@ class CodexStatusBubble(QWidget):
         self._is_compact = True
         self.adjustSize()
         self._place()
-        self.show()
+        self._set_content_visible(True)
 
     def _set_message(self, message: str) -> None:
         self.message_label.ensurePolished()

@@ -223,6 +223,8 @@ class PetWindow(QWidget):
         self._follow_scale_multiplier = 0.45
         self._follow_direction = "right"
         self._follow_facing_left = False
+        self._bubbles_visible = True
+        self._lan_firewall_notice_requested = False
         self.interaction_bubble = InteractionBubble(None)
         self.interaction_bubble.setWindowFlags(
             Qt.WindowType.Tool
@@ -244,6 +246,8 @@ class PetWindow(QWidget):
         self.codex_status_bubble = CodexStatusBubble(None)
         self.codex_status_bubble.activated.connect(self.codex_status_activated)
         self.lan_firewall_notice = LanFirewallNoticeBubble(None)
+        self.lan_firewall_notice.activated.connect(self.clear_lan_firewall_notice)
+        self.lan_firewall_notice.dismissed.connect(self.clear_lan_firewall_notice)
         self.lan_firewall_notice.activated.connect(self.lan_firewall_notice_activated)
         self.lan_firewall_notice.dismissed.connect(self.lan_firewall_notice_dismissed)
         self._active_effect_id: str | None = None
@@ -571,8 +575,9 @@ class PetWindow(QWidget):
             self.interaction_bubble.move(anchor)
         else:
             self.interaction_bubble.move(0, 0)
-        self.interaction_bubble.show()
-        self.interaction_bubble.raise_()
+        self.interaction_bubble.setVisible(self._bubbles_visible)
+        if self._bubbles_visible:
+            self.interaction_bubble.raise_()
         self._interaction_bubble_timer.start(max(500, int(duration_ms)))
 
     def clear_interaction_bubble(self) -> None:
@@ -588,10 +593,30 @@ class PetWindow(QWidget):
         self.codex_status_bubble.clear()
 
     def show_lan_firewall_notice(self) -> None:
-        self.lan_firewall_notice.show_notice(self._global_window_rect())
+        self._lan_firewall_notice_requested = True
+        if self._bubbles_visible:
+            self.lan_firewall_notice.show_notice(self._global_window_rect())
 
     def clear_lan_firewall_notice(self) -> None:
+        self._lan_firewall_notice_requested = False
         self.lan_firewall_notice.clear()
+
+    def set_bubbles_visible(self, visible: bool) -> None:
+        """让独立气泡随宠物开关显示，隐藏期间仍更新内容和过期状态。"""
+        self._bubbles_visible = bool(visible)
+        self.codex_status_bubble.reposition(self._global_window_rect())
+        self.codex_status_bubble.set_pet_visible(visible)
+        if visible and self._interaction_bubble_timer.isActive():
+            self.interaction_bubble.move(
+                self.mapToGlobal(QPoint(self.width() + 8, max(0, self.height() // 3)))
+            )
+            self.interaction_bubble.show()
+        else:
+            self.interaction_bubble.hide()
+        if visible and self._lan_firewall_notice_requested:
+            self.lan_firewall_notice.show_notice(self._global_window_rect())
+        else:
+            self.lan_firewall_notice.hide()
 
     def play_effect(self, effect: object, *, loop: bool = False) -> bool:
         """在宠物画布中播放本地动效；``layer`` 决定绘制顺序。"""
@@ -874,7 +899,12 @@ class PetWindow(QWidget):
         super().moveEvent(event)  # type: ignore[arg-type]
         self.position_changed.emit()
 
+    def showEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        super().showEvent(event)  # type: ignore[arg-type]
+        self.set_bubbles_visible(True)
+
     def hideEvent(self, event: object) -> None:  # noqa: N802 - Qt 覆盖名。
+        self.set_bubbles_visible(False)
         self._cancel_hold_play(restore=False)
         self._clear_interaction_item_ui()
         super().hideEvent(event)  # type: ignore[arg-type]
