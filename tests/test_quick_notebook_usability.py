@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
-from PySide6.QtCore import QDateTime, QRect, Qt
+from PySide6.QtCore import QDateTime, QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionComboBox
 
@@ -36,6 +36,9 @@ def test_save_failure_retains_edits_blocks_navigation_and_retries(notebook, monk
     assert window.retry_button.isVisible()
     assert window._dirty
     assert store.page(original).body == ""
+    window.note_editor.setPlainText("失败后继续编辑")
+    assert window.save_toast.isVisible()
+    assert window.save_hint.text() == "保存失败"
     window.show_page(other.id)
     window.select_type("todo")
     window.new_page()
@@ -43,14 +46,14 @@ def test_save_failure_retains_edits_blocks_navigation_and_retries(notebook, monk
     assert window.current_page_id == original
     assert window._active_type == "note"
     assert window.isVisible()
-    assert window.note_editor.toPlainText() == "不能丢的文字"
+    assert window.note_editor.toPlainText() == "失败后继续编辑"
     monkeypatch.setattr(store, "save", real_save)
     window.retry_button.click()
     assert not window._dirty
     assert window.save_hint.text() == "已保存到本机"
     loaded = QuickNotebookStore(store.path)
     loaded.load()
-    assert loaded.page(original).body == "不能丢的文字"
+    assert loaded.page(original).body == "失败后继续编辑"
 
 
 @pytest.mark.parametrize("operation", ["create", "delete", "clear", "restore"])
@@ -101,7 +104,8 @@ def test_categories_deduplicate_before_limit_and_never_silently_drop(notebook):
     assert window.tag_editor.text() == "工作、生活、项目、学习、其他"
     window.tag_editor.setText("工作,生活,项目,学习,其他,第六个")
     assert not window.flush_current_page()
-    assert "已有 6 个" in window.tag_hint.text()
+    assert "已有 6 个" in window.category_limit_hint.text()
+    assert not window.category_limit_hint.isHidden()
     assert "第六个" in window.tag_editor.text()
     assert len(store.page(window.current_page_id).tags) == 5
     window.tag_editor.setText("工作,第六个")
@@ -146,7 +150,7 @@ def test_editing_keeps_page_number_but_directory_shows_recent_first(notebook):
     assert window.directory_list.item(0).data(Qt.ItemDataRole.UserRole) == first
 
 
-def test_body_gets_more_space_with_categories_collapsed(notebook, qtbot):
+def test_category_panel_overlays_without_compressing_body(notebook, qtbot):
     window, _ = notebook
     window.show()
     qtbot.wait(20)
@@ -155,7 +159,13 @@ def test_body_gets_more_space_with_categories_collapsed(notebook, qtbot):
     assert collapsed_height >= 150
     window.category_toggle.click()
     qtbot.wait(20)
-    assert window.note_editor.height() < collapsed_height
+    assert window.note_editor.height() == collapsed_height
+    assert window.category_panel.isVisible()
+    panel_rect = QRect(
+        window.category_panel.mapTo(window.note_page, QPoint()),
+        window.category_panel.size(),
+    )
+    assert window.note_page.rect().contains(panel_rect)
     window.fit_to_available_geometry(QRect(0, 0, 360, 520))
     qtbot.wait(20)
     assert window.note_editor.height() >= 72
