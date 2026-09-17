@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from PySide6.QtCore import QPoint, QRect, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QMouseEvent, QPaintEvent, QPainter, QPen
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
@@ -41,6 +43,9 @@ class CodexStatusBubble(QWidget):
         super().__init__(parent, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        if sys.platform == "darwin":
+            # 后台提示也保持可见，不需要激活应用来显示 Qt.Tool 面板。
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setObjectName("codexStatusBubble")
@@ -122,8 +127,8 @@ class CodexStatusBubble(QWidget):
         self.adjustSize()
         self._place()
         self._set_content_visible(True)
-        if self.isVisible():
-            self.raise_()
+        # WindowStaysOnTopHint 已保证提示置顶；macOS 的 raise_() 还会
+        # 激活整个应用，即使窗口设置了不接受焦点，也会打断当前输入。
         if snapshot.state == "review":
             self.dismiss_timer.start(self._review_duration_ms)
 
