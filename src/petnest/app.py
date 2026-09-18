@@ -1110,7 +1110,8 @@ class PetNest:
             client_factory=self._codex_client_factory,
         )
         self._codex_usage_dialog = dialog
-        dialog.finished.connect(lambda _result: self._clear_codex_usage_dialog(dialog))
+        # Keep the hidden window and its report so reopening does not rescan logs.
+        dialog.destroyed.connect(lambda *_args: self._clear_codex_usage_dialog(dialog))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()

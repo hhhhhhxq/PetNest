@@ -7,9 +7,11 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
+from time import monotonic
 from typing import Callable
 
 from PySide6.QtCore import QSize, QTimer, Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -49,6 +51,7 @@ from petnest.ui.theme import dialog_stylesheet
 
 ClientFactory = Callable[[], CodexUsageClient]
 ReportCallback = Callable[[CodexUsageReport], object]
+REOPEN_REFRESH_SECONDS = 60.0
 
 
 class CodexUsageDialog(QDialog):
@@ -83,8 +86,10 @@ class CodexUsageDialog(QDialog):
         self._device_label = str(device_label).strip() or "当前电脑"
         self._on_connect_device = on_connect_device
         self._on_report = on_report
-        self._results: Queue[tuple[str, object]] = Queue()
+        self._results: Queue[tuple[str, object, str]] = Queue()
         self._worker: Thread | None = None
+        self._auto_refresh = auto_refresh
+        self._last_refresh_at: float | None = None
         self._live_report: CodexUsageReport | None = None
         self._cycle_snapshots: dict[str, CodexAccountSnapshot] = {}
         self._remote_cycles: dict[str, tuple[CodexDeviceUsageSnapshot, ...]] = {}
@@ -347,7 +352,7 @@ class CodexUsageDialog(QDialog):
         self._reload_account_selector()
         self._show_selected_cycle()
         if auto_refresh:
-            QTimer.singleShot(0, self.refresh_usage)
+            QTimer.singleShot(0, self._refresh_if_stale)
 
     @staticmethod
     def _card(title: str, description: str) -> tuple[QFrame, QVBoxLayout]:
@@ -373,7 +378,8 @@ class CodexUsageDialog(QDialog):
         return label
 
     def refresh_usage(self) -> None:
-        if self._worker is not None and self._worker.is_alive():
+        # A finished worker may still have an undelivered result in the queue.
+        if self._worker is not None:
             return
         self.refresh_button.setEnabled(False)
         self.loading_bar.show()
@@ -432,14 +438,22 @@ class CodexUsageDialog(QDialog):
     def _fetch_worker(self) -> None:
         try:
             report = self._client_factory().fetch_report()
+            # Saving can rescan whole session logs to archive expired cycles.
+            # Keep that work off the Qt thread, just like the live query.
+            try:
+                self._history.save_report(report)
+            except (OSError, ValueError) as error:
+                history_warning = f"；账号历史未保存：{error}"
+            else:
+                history_warning = ""
         except Exception as error:  # noqa: BLE001 - pass safe failure to the Qt thread.
-            self._results.put(("error", error))
+            self._results.put(("error", error, ""))
         else:
-            self._results.put(("report", report))
+            self._results.put(("report", report, history_warning))
 
     def _poll_result(self) -> None:
         try:
-            kind, payload = self._results.get_nowait()
+            kind, payload, history_warning = self._results.get_nowait()
         except Empty:
             return
         self._poll_timer.stop()
@@ -466,12 +480,7 @@ class CodexUsageDialog(QDialog):
             )
             return
         self._live_report = payload
-        try:
-            self._history.save_report(payload)
-        except (OSError, ValueError) as error:
-            history_warning = f"；账号历史未保存：{error}"
-        else:
-            history_warning = ""
+        self._last_refresh_at = monotonic()
         self._reload_account_selector(current_key=payload.account.key)
         self._show_report(payload)
         if self._on_report is not None:
@@ -1241,6 +1250,20 @@ class CodexUsageDialog(QDialog):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _refresh_if_stale(self) -> None:
+        if self._auto_refresh and (
+            self._last_refresh_at is None
+            or monotonic() - self._last_refresh_at >= REOPEN_REFRESH_SECONDS
+        ):
+            self.refresh_usage()
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        # Closing only hides this reusable window; a pending query stays alive.
+        if self._worker is not None:
+            self._poll_timer.start()
+        self._refresh_if_stale()
 
     def closeEvent(self, event: object) -> None:  # noqa: N802 - Qt override signature
         self._poll_timer.stop()

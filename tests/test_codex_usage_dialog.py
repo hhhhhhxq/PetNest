@@ -159,6 +159,152 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert not hasattr(dialog, "reset_action_button")
 
 
+def test_history_archiving_runs_off_the_ui_thread(qtbot, tmp_path, monkeypatch) -> None:
+    from threading import get_ident
+
+    report = _report(tmp_path)
+    class FakeClient:
+        def fetch_report(self):
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    ui_thread = get_ident()
+    saved_on = []
+    save_report = dialog._history.save_report
+
+    def record_save(value):
+        saved_on.append(get_ident())
+        return save_report(value)
+
+    monkeypatch.setattr(dialog._history, "save_report", record_save)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
+    assert saved_on and saved_on[0] != ui_thread
+    assert dialog.local_total_label.text() == "Token  1,500"
+
+
+def test_reopening_during_refresh_delivers_the_pending_result(qtbot, tmp_path) -> None:
+    from threading import Event
+
+    report = _report(tmp_path)
+    release = Event()
+    class FakeClient:
+        def fetch_report(self):
+            assert release.wait(3)
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.refresh_usage()
+    worker = dialog._worker
+    try:
+        dialog.close()
+        release.set()
+        dialog.show()
+        qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
+        assert dialog.local_total_label.text() == "Token  1,500"
+    finally:
+        release.set()
+        worker.join(timeout=3)
+
+
+def test_ui_remains_responsive_while_history_is_archived(qtbot, tmp_path, monkeypatch) -> None:
+    from threading import Event
+    from PySide6.QtCore import QTimer
+
+    report = _report(tmp_path)
+    started, release = Event(), Event()
+    responded = []
+    class FakeClient:
+        def fetch_report(self):
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    save_report = dialog._history.save_report
+    def slow_save(value):
+        started.set()
+        responded.append(release.wait(1))
+        return save_report(value)
+
+    monkeypatch.setattr(dialog._history, "save_report", slow_save)
+    dialog.refresh_usage()
+    worker = dialog._worker
+    try:
+        qtbot.waitUntil(started.is_set, timeout=2000)
+        QTimer.singleShot(0, release.set)
+        qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
+        assert responded == [True]
+    finally:
+        release.set()
+        worker.join(timeout=3)
+
+
+def test_completed_worker_is_drained_before_starting_another_refresh(qtbot, tmp_path) -> None:
+    report = _report(tmp_path)
+    calls = []
+    class FakeClient:
+        def fetch_report(self):
+            calls.append(True)
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.refresh_usage()
+    first = dialog._worker
+    first.join(timeout=2)
+    assert not first.is_alive()
+    dialog.refresh_usage()
+    assert dialog._worker is first
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
+    assert len(calls) == 1
+
+
+def test_reopening_reuses_recent_report_and_refreshes_when_stale(qtbot, tmp_path, monkeypatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr("petnest.ui.codex_usage_dialog.monotonic", lambda: now[0], raising=False)
+    report = _report(tmp_path)
+    calls = []
+    class FakeClient:
+        def fetch_report(self):
+            calls.append(True)
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(lambda: len(calls) == 1 and dialog.refresh_button.isEnabled(), timeout=2000)
+    dialog.close()
+    dialog.show()
+    qtbot.wait(150)
+    assert len(calls) == 1
+    assert dialog.local_total_label.text() == "Token  1,500"
+    dialog.close()
+    now[0] += 61
+    dialog.show()
+    qtbot.waitUntil(lambda: len(calls) == 2 and dialog.refresh_button.isEnabled(), timeout=2000)
+
+
+def test_history_save_failure_keeps_report_visible(qtbot, tmp_path, monkeypatch) -> None:
+    report = _report(tmp_path)
+    class FakeClient:
+        def fetch_report(self):
+            return report
+
+    dialog = CodexUsageDialog(tmp_path / "history.json", client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    def fail_save(_report):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(dialog._history, "save_report", fail_save)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
+    assert "disk unavailable" in dialog.status_label.text()
+    assert dialog.local_total_label.text() == "Token  1,500"
+
+
 def test_dialog_disables_reset_when_account_has_no_credit(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
     report = replace(

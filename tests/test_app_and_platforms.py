@@ -932,6 +932,36 @@ def test_settings_center_suppresses_always_on_top_codex_bubble(
     application.shutdown()
 
 
+def test_codex_usage_reopening_reuses_existing_window(qtbot, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QDialog
+
+    created = []
+    class UsageDialog(QDialog):
+        def __init__(self, _history_path, parent=None, **_kwargs):
+            super().__init__(parent)
+            created.append(self)
+
+    monkeypatch.setattr("petnest.app.CodexUsageDialog", UsageDialog)
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    application = PetNest(
+        pets_root=tmp_path / "pets",
+        settings_manager=SettingsManager(tmp_path / "settings.json"),
+        enable_tray=False,
+    )
+    qtbot.addWidget(application.window)
+    try:
+        application.show_codex_usage_dialog()
+        first = application._codex_usage_dialog
+        first.close()
+        application.show_codex_usage_dialog()
+        assert application._codex_usage_dialog is first
+        assert len(created) == 1
+    finally:
+        for dialog in created:
+            dialog.close()
+        application.shutdown()
+
+
 def test_unlocking_codex_usage_persists_and_shows_tray_action(
     qtbot: pytest.QtBot, tmp_path: Path
 ) -> None:
