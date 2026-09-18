@@ -811,7 +811,9 @@ class LanInteractionService(QObject):
             timeout = QTimer(socket)
             timeout.setSingleShot(True)
             timeout.setInterval(10_000)
-            timeout.timeout.connect(socket.abort)
+            # Avoid registering the inherited abort() method as a dynamic Qt slot.
+            # PySide can lose the wrapper lookup for sockets returned by Qt.
+            timeout.timeout.connect(lambda socket=socket: socket.abort())
             timeout.start()
             socket.readyRead.connect(lambda socket=socket: self._read_chat_stream(socket))
             socket.disconnected.connect(lambda socket=socket: self._cleanup_chat_socket(socket))

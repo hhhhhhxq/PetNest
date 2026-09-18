@@ -8,8 +8,8 @@ from time import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication
-from PySide6.QtNetwork import QHostAddress, QTcpServer
+from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtTest import QTest
 
 import pytest
@@ -902,6 +902,58 @@ def test_expiring_saved_peer_emits_offline_change_and_preserves_refresh_target(
     assert changed[0].saved is True
     assert changed[0].online is False
     assert changed[0].connection_state == "offline"
+
+
+def test_incoming_tcp_timeout_disconnects_without_qt_wrapper_warnings(qtbot, qtlog) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安", port=0)
+    # Only listen on loopback; this regression must not discover real LAN peers.
+    assert service._tcp_server.listen(QHostAddress.SpecialAddress.LocalHost, 0)
+    client = QTcpSocket()
+    try:
+        client.connectToHost(QHostAddress.SpecialAddress.LocalHost, service._tcp_server.serverPort())
+        qtbot.waitUntil(lambda: len(service._incoming_chat_buffers) == 1)
+        incoming = next(iter(service._incoming_chat_buffers))
+        timer = incoming.findChild(QTimer)
+        assert timer is not None
+        timer.start(20)
+        qtbot.waitUntil(lambda: not service._incoming_chat_buffers, timeout=1000)
+        qtbot.waitUntil(lambda: client.state() == QAbstractSocket.SocketState.UnconnectedState)
+        assert not [record.message for record in qtlog.records if "No Wrapper found" in record.message]
+    finally:
+        client.abort()
+        service._tcp_server.close()
+        for socket in tuple(service._incoming_chat_buffers):
+            service._cleanup_chat_socket(socket)
+        service.deleteLater()
+
+
+def test_disconnected_tcp_clients_cancel_their_timeout_callbacks(qtbot, qtlog) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安", port=0)
+    assert service._tcp_server.listen(QHostAddress.SpecialAddress.LocalHost, 0)
+    clients = []
+    try:
+        for _ in range(5):
+            client = QTcpSocket()
+            clients.append(client)
+            client.connectToHost(QHostAddress.SpecialAddress.LocalHost, service._tcp_server.serverPort())
+            qtbot.waitUntil(lambda: len(service._incoming_chat_buffers) == 1)
+            incoming = next(iter(service._incoming_chat_buffers))
+            timer = incoming.findChild(QTimer)
+            assert timer is not None
+            timer.start(50)
+            client.abort()
+            qtbot.waitUntil(lambda: not service._incoming_chat_buffers)
+        # Let the old timers' deadlines pass; disconnected sockets must not be called.
+        qtbot.wait(100)
+        assert not [record.message for record in qtlog.records if "No Wrapper found" in record.message]
+        assert not service._incoming_chat_buffers
+    finally:
+        for client in clients:
+            client.abort()
+        service._tcp_server.close()
+        for socket in tuple(service._incoming_chat_buffers):
+            service._cleanup_chat_socket(socket)
+        service.deleteLater()
 
 
 def test_service_binds_an_ephemeral_port_and_stops_cleanly(qtbot) -> None:
