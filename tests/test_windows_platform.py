@@ -2,10 +2,10 @@
 
 from subprocess import CompletedProcess
 
+import pytest
+
 from petnest.platforms.base import StartupRegistrationResult
 from petnest.platforms.windows import (
-    WECHAT_PROCESS_NAMES,
-    WECHAT_TERMINATION_LOCAL_IP,
     WindowsPlatformAdapter,
     _elapsed_milliseconds,
     terminate_wechat_processes,
@@ -36,46 +36,19 @@ def test_windows_adapter_delegates_startup_registration() -> None:
     assert backend.calls == [True]
 
 
-def test_windows_login_start_force_terminates_legacy_and_current_wechat(
-    tmp_path, monkeypatch
-) -> None:
-    windows_root = tmp_path / "Windows"
-    monkeypatch.setenv("SystemRoot", str(windows_root))
-    commands: list[list[str]] = []
+@pytest.mark.parametrize("platform_name", ["win32", "darwin", "linux", None])
+@pytest.mark.parametrize("addresses", [None, set(), {"192.168.101.15"}])
+def test_disabled_compatibility_entry_never_runs_commands(platform_name, addresses, monkeypatch) -> None:
+    def fail_if_called(*_args, **_kwargs) -> CompletedProcess[str]:
+        raise AssertionError("停用的兼容入口不应执行任何外部命令")
 
-    def run(arguments: list[str]) -> CompletedProcess[str]:
-        commands.append(arguments)
-        return CompletedProcess(arguments, 0, stdout="SUCCESS", stderr="")
-
-    terminated = terminate_wechat_processes(
-        platform_name="win32",
-        runner=run,
-        local_ipv4_addresses={WECHAT_TERMINATION_LOCAL_IP},
-    )
-
-    assert terminated == WECHAT_PROCESS_NAMES
-    assert commands == [
-        [str(windows_root / "System32" / "taskkill.exe"), "/F", "/T", "/IM", "WeChat.exe"],
-        [str(windows_root / "System32" / "taskkill.exe"), "/F", "/T", "/IM", "Weixin.exe"],
-    ]
-
-
-def test_wechat_termination_is_inert_outside_windows() -> None:
-    def fail_if_called(_arguments: list[str]) -> CompletedProcess[str]:
-        raise AssertionError("非 Windows 平台不应调用 taskkill")
-
-    assert terminate_wechat_processes(platform_name="darwin", runner=fail_if_called) == ()
-
-
-def test_wechat_termination_is_inert_on_other_windows_ip() -> None:
-    def fail_if_called(_arguments: list[str]) -> CompletedProcess[str]:
-        raise AssertionError("其他 Windows IP 不应调用 taskkill")
-
+    monkeypatch.setattr("petnest.platforms.windows.subprocess.run", fail_if_called)
     assert (
         terminate_wechat_processes(
-            platform_name="win32",
+            platform_name=platform_name,
             runner=fail_if_called,
-            local_ipv4_addresses={"192.168.101.15"},
+            local_ipv4_addresses=addresses,
         )
         == ()
     )
+    assert terminate_wechat_processes(platform_name=platform_name, local_ipv4_addresses=addresses) == ()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import subprocess
 from pathlib import Path
@@ -44,7 +45,8 @@ def test_source_plist_uses_absolute_venv_and_no_shell_or_keepalive(source_item):
     assert definition["RunAtLoad"] is True
     assert definition["LimitLoadToSessionType"] == "Aqua"
     assert "KeepAlive" not in definition
-    assert item.plist_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert item.plist_path.stat().st_mode & 0o777 == 0o600
     assert Path(definition["StandardErrorPath"]).parent.is_dir()
     assert calls[0][0] == ["/bin/launchctl", "enable", f"gui/501/{SOURCE_STARTUP_LABEL}"]
     assert calls[0][1]["timeout"] == 10
@@ -112,7 +114,12 @@ def test_venv_symlink_is_not_resolved_to_global_python(source_item):
     original_path = item.python_executable
     actual = item.project_root / "global-python"
     item.python_executable.rename(actual)
-    original_path.symlink_to(actual)
+    try:
+        original_path.symlink_to(actual)
+    except OSError as error:
+        if os.name == "nt" and error.winerror == 1314:
+            pytest.skip("Creating symlinks requires privileges on this Windows host")
+        raise
     assert item.configure(True).success
     assert plistlib.loads(item.plist_path.read_bytes())["ProgramArguments"][0] == str(original_path)
 

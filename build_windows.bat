@@ -5,6 +5,8 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 call .venv\Scripts\activate.bat
+rem Do not collect incompatible DLLs from unrelated tools on the caller's PATH.
+set "PATH=%VIRTUAL_ENV%\Scripts;%SystemRoot%\System32;%SystemRoot%;%SystemRoot%\System32\Wbem"
 set "RESOURCE_DATA=--add-data assets;assets --add-data pets\sample_pet;pets\sample_pet"
 if exist "effects" set "RESOURCE_DATA=%RESOURCE_DATA% --add-data effects;effects"
 if defined PETNEST_FIREBASE_CONFIG if not exist "%PETNEST_FIREBASE_CONFIG%" (

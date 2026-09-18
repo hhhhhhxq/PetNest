@@ -325,8 +325,12 @@ def test_combo_popup_stays_light_and_keyboard_selectable_in_dark_theme(notebook,
             window.select_type("reminder")
             window.reminder_editor.add_item("测试提醒")
             combo = window.reminder_editor._rows[0].repeat
+        # 首次显示和页面切换会排队执行布局；用户只能在窗口就绪后打开列表。
+        window.activateWindow()
+        qtbot.waitUntil(window.isActiveWindow)
+        QApplication.processEvents()
         combo.showPopup()
-        qtbot.wait(20)
+        qtbot.waitUntil(combo.view().isVisible)
         view = combo.view()
         assert view.isVisible()
         option = QStyleOptionComboBox()

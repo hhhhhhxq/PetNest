@@ -917,24 +917,26 @@ def test_service_binds_an_ephemeral_port_and_stops_cleanly(qtbot) -> None:
     assert not service.is_running
 
 
-def test_service_keeps_udp_interactions_when_tcp_chat_port_is_occupied(qtbot) -> None:
+def test_service_keeps_udp_interactions_when_tcp_chat_port_is_occupied(qtbot, monkeypatch) -> None:
     app = QCoreApplication.instance() or QCoreApplication([])
     del app
-    occupied = QTcpServer()
-    assert occupied.listen(QHostAddress.SpecialAddress.AnyIPv4, 0)
     service = LanInteractionService(
         device_id="local",
         display_name="本机",
         pet_name="平安",
-        port=occupied.serverPort(),
+        port=0,
     )
-
-    assert service.start()
-    assert service.is_running
-    assert not service.chat_is_available
-
-    service.stop()
-    occupied.close()
+    # TCP 分配的端口可能位于 Windows 的 UDP 保留区；只注入 TCP 失败，
+    # 仍使用真实 UDP 绑定来验证聊天不可用时互动服务保持运行。
+    monkeypatch.setattr(service._tcp_server, "listen", lambda *_args: False)
+    monkeypatch.setattr(service._tcp_server, "errorString", lambda: "Address already in use")
+    try:
+        assert service.start()
+        assert service.is_running
+        assert service.port > 0
+        assert not service.chat_is_available
+    finally:
+        service.stop()
 
 
 def test_service_registers_a_remote_presence_with_ip_and_port(qtbot) -> None:
@@ -1043,7 +1045,7 @@ def test_service_manual_probe_registers_a_peer_over_direct_ip(qtbot) -> None:
     sender.manual_probe_succeeded.connect(added.append)
 
     assert sender.probe_peer("127.0.0.1", receiver.port)
-    QTest.qWait(80)
+    qtbot.waitUntil(lambda: bool(added), timeout=2000)
 
     assert added[0].device_id == "receiver"
     assert added[0].ip_address == "127.0.0.1"
