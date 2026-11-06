@@ -65,6 +65,7 @@ class PetTrayIcon(QSystemTrayIcon):
         codex_usage_unlocked: bool = False,
         on_lan_interactions: Callable[[], object] | None = None,
         on_toggle_always_on_top: Callable[[bool], object] | None = None,
+        on_toggle_click_through: Callable[[bool], object] | None = None,
         on_toggle_mouse_follow: Callable[[], object] | None = None,
         on_visibility_changed: Callable[[bool], object] | None = None,
         on_toggle_pause: Callable[[bool], object] | None = None,
@@ -98,6 +99,12 @@ class PetTrayIcon(QSystemTrayIcon):
         self.toggle_pause_action = QAction("暂停动画", self.menu)
         self.toggle_always_on_top_action = QAction("始终置顶", self.menu)
         self.toggle_always_on_top_action.setCheckable(True)
+        self.toggle_click_through_action = QAction("幽灵模式", self.menu)
+        self.toggle_click_through_action.setCheckable(True)
+        if on_toggle_click_through is not None:
+            self.toggle_click_through_action.triggered.connect(on_toggle_click_through)
+        else:
+            self.toggle_click_through_action.triggered.connect(window.set_click_through)
         self.toggle_mouse_follow_action = QAction("跟随鼠标", self.menu)
         self.toggle_mouse_follow_action.setCheckable(True)
         self.quit_action = QAction("退出 PetNest", self.menu)
@@ -125,7 +132,13 @@ class PetTrayIcon(QSystemTrayIcon):
         self.settings_action.triggered.connect(self._settings)
         self.codex_usage_action.triggered.connect(self._codex_usage)
         self.lan_interactions_action.triggered.connect(self._lan_interactions)
-        self.menu.addActions((self.toggle_visibility_action, self.toggle_pause_action, self.toggle_always_on_top_action, self.toggle_mouse_follow_action))
+        self.menu.addActions((
+            self.toggle_visibility_action,
+            self.toggle_pause_action,
+            self.toggle_always_on_top_action,
+            self.toggle_click_through_action,
+            self.toggle_mouse_follow_action,
+        ))
         self.menu.insertAction(self.toggle_visibility_action, self.application_title_action)
         self.menu.insertAction(self.toggle_visibility_action, self.current_pet_action)
         self.menu.insertSeparator(self.toggle_visibility_action)

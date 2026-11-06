@@ -43,6 +43,7 @@ class Settings:
     screen_id: str | None = None
     scale: float = 1.0
     always_on_top: bool = True
+    click_through_enabled: bool = False
     quick_notebook_enabled: bool = False
     animation_paused: bool = False
     mouse_interaction_enabled: bool = True
@@ -119,6 +120,7 @@ class Settings:
             values.get("lan_firewall_dismissed_public_networks")
         )
         for name, default in (
+            ("click_through_enabled", False),
             ("quick_notebook_enabled", False),
             ("keyboard_working_enabled", False),
             ("codex_link_enabled", True),

@@ -747,10 +747,14 @@ class SettingsCenterDialog(QDialog):
         scale_layout.addLayout(scale_range_row)
         self.always_on_top_input = ToggleSwitch("始终置顶", card)
         self.always_on_top_input.setChecked(self._settings.always_on_top)
+        self.click_through_input = ToggleSwitch("幽灵模式", card)
+        self.click_through_input.setChecked(self._settings.click_through_enabled)
+        self.click_through_input.setToolTip("宠物半透明显示，点击会穿过宠物落到下方窗口。可从托盘关闭。")
         self.mouse_interaction_input = ToggleSwitch("启用鼠标交互", card)
         self.mouse_interaction_input.setChecked(self._settings.mouse_interaction_enabled)
         form.addRow("桌宠大小", scale_row)
         form.addRow("窗口层级", self.always_on_top_input)
+        form.addRow("点击穿透", self.click_through_input)
         card_layout.addLayout(form)
         preview = QFrame(page)
         preview.setObjectName("previewCard")
@@ -1887,6 +1891,7 @@ class SettingsCenterDialog(QDialog):
             self._settings,
             scale=self.scale_input.value() / 100.0,
             always_on_top=self.always_on_top_input.isChecked(),
+            click_through_enabled=self.click_through_input.isChecked(),
             quick_notebook_enabled=self.quick_notebook_input.isChecked(),
             run_at_startup=(
                 self.auto_start_input.isChecked()

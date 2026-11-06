@@ -45,6 +45,7 @@ from petnest.models.pet_package import InteractionItemDefinition
 from petnest.models.settings import Settings
 from petnest.platforms.base import StartupRegistrationResult
 from petnest.platforms.unsupported import UnsupportedPlatformAdapter
+from petnest.ui.settings_dialog import SettingsDialog
 from tools.create_sample_pet import create_sample_pet
 
 
@@ -3836,6 +3837,31 @@ def test_pet_context_menu_updates_scale_pause_and_always_on_top(
     assert settings_manager.load().scale == 1.1
     assert settings_manager.load().animation_paused is True
     assert settings_manager.load().always_on_top is False
+
+
+def test_click_through_setting_and_tray_stay_in_sync(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    create_sample_pet(tmp_path / "pets" / "sample_pet")
+    settings_manager = SettingsManager(tmp_path / "settings.json")
+    settings_manager.save(Settings(click_through_enabled=True))
+    application = PetNest(pets_root=tmp_path / "pets", settings_manager=settings_manager)
+    qtbot.addWidget(application.window)
+    assert application.tray is not None
+    action = application.tray.toggle_click_through_action
+    assert action.isChecked()
+    assert application.window.windowFlags() & Qt.WindowType.WindowTransparentForInput
+
+    action.trigger()
+    assert not settings_manager.load().click_through_enabled
+    assert application.window.windowOpacity() == 1.0
+
+    dialog = SettingsDialog(application.settings)
+    qtbot.addWidget(dialog)
+    dialog.click_through_input.setChecked(True)
+    application.apply_settings(dialog.updated_settings())
+
+    assert action.isChecked()
+    assert settings_manager.load().click_through_enabled
+    assert application.window.windowFlags() & Qt.WindowType.WindowTransparentForInput
 
 
 def test_pet_context_menu_exposes_toolbox_only_for_resolved_items(

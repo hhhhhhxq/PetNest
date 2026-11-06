@@ -618,6 +618,7 @@ class PetNest:
                 codex_usage_unlocked=self.settings.codex_usage_unlocked,
                 on_lan_interactions=self.show_lan_interaction_dialog,
                 on_toggle_always_on_top=self._toggle_context_always_on_top,
+                on_toggle_click_through=self._toggle_click_through,
                 on_toggle_mouse_follow=self._toggle_mouse_follow,
                 on_visibility_changed=self._set_pet_visibility,
                 on_toggle_pause=self._toggle_tray_pause,
@@ -628,6 +629,7 @@ class PetNest:
         )
         if self.tray is not None:
             self.tray.set_always_on_top_enabled(self.settings.always_on_top)
+            self.tray.toggle_click_through_action.setChecked(self.settings.click_through_enabled)
         self.menu_bar: QMenuBar | None = None
         if sys.platform == "darwin" and self.tray is not None:
             # 桌宠没有普通主窗口；显式提供原生全局菜单，避免所有功能只能
@@ -955,6 +957,7 @@ class PetNest:
         self.window.set_paused(settings.animation_paused)
         self.window.set_always_on_top(settings.always_on_top)
         self.window.set_mouse_interaction_enabled(settings.mouse_interaction_enabled)
+        self.window.set_click_through(settings.click_through_enabled)
         self.settings = settings
         if not settings.codex_link_enabled:
             self.codex_link.clear()
@@ -986,6 +989,7 @@ class PetNest:
             self._handle_codex_snapshot(self.codex_link.snapshot)
         if self.tray is not None:
             self.tray.set_always_on_top_enabled(settings.always_on_top)
+            self.tray.toggle_click_through_action.setChecked(settings.click_through_enabled)
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
@@ -1084,6 +1088,13 @@ class PetNest:
 
     def _toggle_context_always_on_top(self, enabled: bool) -> None:
         self.apply_settings(replace(self.settings, always_on_top=enabled))
+
+    def _toggle_click_through(self, enabled: bool) -> None:
+        self.window.set_click_through(enabled)
+        self.settings = replace(self.settings, click_through_enabled=enabled)
+        if self._settings_center_dialog is not None:
+            self._settings_center_dialog.click_through_input.setChecked(enabled)
+        self.settings_manager.save(self.settings)
 
     def _toggle_mouse_follow(self) -> None:
         self.apply_settings(replace(self.settings, mouse_follow_enabled=not self.settings.mouse_follow_enabled))
@@ -2766,6 +2777,7 @@ class PetNest:
         self.window.set_paused(self.settings.animation_paused)
         self.window.set_always_on_top(self.settings.always_on_top)
         self.window.set_mouse_interaction_enabled(self.settings.mouse_interaction_enabled)
+        self.window.set_click_through(self.settings.click_through_enabled)
         self.window.set_quick_notebook_enabled(self.settings.quick_notebook_enabled)
 
     def _configure_work_countdown(self) -> None:

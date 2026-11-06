@@ -235,6 +235,40 @@ def test_toggling_always_on_top_keeps_visible_window_position(qtbot: pytest.QtBo
     assert window.pos() == expected
 
 
+def test_click_through_mode_combines_with_mouse_follow(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+    window = _window(tmp_path)
+    qtbot.addWidget(window)
+    window.show()
+    window.move(120, 140)
+    flag = Qt.WindowType.WindowTransparentForInput
+    attribute = Qt.WidgetAttribute.WA_TransparentForMouseEvents
+
+    window.set_click_through(True)
+    qtbot.wait(10)
+
+    assert window.isVisible()
+    assert window.pos() == QPoint(120, 140)
+    assert window.windowFlags() & flag
+    assert window.testAttribute(attribute)
+    assert window.windowOpacity() == pytest.approx(0.5, abs=0.01)
+
+    window.set_follow_mode(True, scale_multiplier=0.45)
+    window.set_click_through(False)
+    assert window.windowFlags() & flag
+    assert window.windowOpacity() == 1.0
+
+    window.set_click_through(True)
+    window.set_follow_mode(False, scale_multiplier=0.45)
+    assert window.windowFlags() & flag
+
+    window.hide()
+    window.set_click_through(False)
+    assert not window.isVisible()
+    assert not window.windowFlags() & flag
+    assert not window.testAttribute(attribute)
+    assert window.windowOpacity() == 1.0
+
+
 def test_remote_interaction_bubble_can_be_shown_and_cleared(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     window = _window(tmp_path)
     qtbot.addWidget(window)

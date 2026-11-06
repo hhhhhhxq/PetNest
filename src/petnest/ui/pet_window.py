@@ -209,6 +209,7 @@ class PetWindow(QWidget):
         self._drag_context_action: str | None = None
         self._countdown_pressed = False
         self._mouse_interaction_enabled = True
+        self._click_through_enabled = False
         self._countdown_text: str | None = None
         self._countdown_gap = 0
         self._countdown_width = 132
@@ -393,7 +394,7 @@ class PetWindow(QWidget):
             self._normal_scale = None
             if was_following:
                 self._play_current_action()
-        self._set_follow_input_transparent(enabled)
+        self._sync_input_transparency()
         self._set_current_frame()
         target = self._normal_position if not enabled and self._normal_position is not None else self.pos()
         self.move(self.clamp_position(target))
@@ -421,12 +422,33 @@ class PetWindow(QWidget):
         display = self.package.display
         return min(display.max_scale, max(display.min_scale, normal_scale * self._follow_scale_multiplier))
 
-    def _set_follow_input_transparent(self, enabled: bool) -> None:
+    def set_click_through(self, enabled: bool) -> None:
+        """切换桌宠的半透明显示和窗口级点击穿透。"""
+        if enabled == self._click_through_enabled:
+            return
+        self._click_through_enabled = enabled
+        if enabled:
+            self._cancel_hold_play(restore=True)
+            self._clear_interaction_item_ui()
+        self._sync_input_transparency()
+        self.setWindowOpacity(0.5 if enabled else 1.0)
+
+    @property
+    def _input_is_transparent(self) -> bool:
+        return self._click_through_enabled or self._follow_mode_enabled
+
+    def _sync_input_transparency(self) -> None:
+        enabled = self._input_is_transparent
+        flag = Qt.WindowType.WindowTransparentForInput
+        if bool(self.windowFlags() & flag) == enabled:
+            return
         was_visible = self.isVisible()
+        position = self.pos()
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
-        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
+        self.setWindowFlag(flag, enabled)
         if was_visible:
             self.show()
+            self.move(position)
 
     def clamp_position(self, position: QPoint) -> QPoint:
         """将窗口位置限制在显示器可用区域内，始终保留可拖回的可见部分。
@@ -1010,7 +1032,7 @@ class PetWindow(QWidget):
         return (
             self.interaction_items_available
             and self._mouse_interaction_enabled
-            and not self._follow_mode_enabled
+            and not self._input_is_transparent
             and self.isVisible()
         )
 
@@ -1018,7 +1040,7 @@ class PetWindow(QWidget):
         return (
             (self.interaction_items_available or self.interaction_toolbox.notebook_enabled)
             and self._mouse_interaction_enabled
-            and not self._follow_mode_enabled
+            and not self._input_is_transparent
             and self.isVisible()
         )
 
