@@ -21,7 +21,7 @@ pyinstaller --noconfirm --clean --onefile --console --name PetNestUpdater --path
 pyinstaller --noconfirm --clean --onedir --windowed --name PetNest \
   --osx-bundle-identifier com.petnest.app \
   --hidden-import ServiceManagement \
-  --icon assets/icons/petnest.png \
+  --icon assets/icons/petnest-app.png \
   --paths src $RESOURCE_DATA src/petnest_launcher.py
 cp dist/PetNestUpdater dist/PetNest.app/Contents/MacOS/PetNestUpdater
 chmod +x dist/PetNest.app/Contents/MacOS/PetNestUpdater
