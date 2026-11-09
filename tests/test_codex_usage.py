@@ -233,6 +233,27 @@ def test_windows_discovery_prefers_user_codex_binary_over_protected_path(
     assert discover_codex_executable() == user_binary
 
 
+@pytest.mark.parametrize("app_name", ["ChatGPT.app", "Codex.app"])
+def test_macos_discovery_finds_nested_desktop_cli_without_path(
+    tmp_path: Path,
+    monkeypatch,
+    app_name: str,
+) -> None:
+    binary = (
+        tmp_path / "Applications" / app_name
+        / "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+    )
+    binary.parent.mkdir(parents=True)
+    binary.touch(mode=0o755)
+    monkeypatch.setattr(codex_usage_module.sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("PETNEST_CODEX_EXECUTABLE", raising=False)
+    monkeypatch.delenv("CODEX_BIN", raising=False)
+    monkeypatch.setattr(codex_usage_module.shutil, "which", lambda _name: None)
+
+    assert binary in codex_usage_module.discover_codex_executables()
+
+
 def _write_model_context(
     path: Path,
     *,

@@ -596,14 +596,15 @@ def discover_codex_executables() -> tuple[Path, ...]:
         if value:
             candidates.append(Path(value).expanduser())
     if sys.platform == "darwin":
-        candidates.extend(
-            (
-                Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
-                Path("/Applications/Codex.app/Contents/Resources/codex"),
-                Path.home() / "Applications/ChatGPT.app/Contents/Resources/codex",
-                Path.home() / "Applications/Codex.app/Contents/Resources/codex",
-            )
-        )
+        for root in (Path("/Applications"), Path.home() / "Applications"):
+            for app_name in ("ChatGPT.app", "Codex.app"):
+                resources = root / app_name / "Contents/Resources"
+                candidates.extend(
+                    (
+                        resources / "codex",
+                        resources / "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                    )
+                )
     elif sys.platform == "win32":
         local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
         user_codex_root = local_app_data / "OpenAI/Codex/bin"
