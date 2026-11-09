@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 import logging
+import sys
 
 from PySide6.QtCore import QObject, QPoint, QRect, QSignalBlocker, QSize, QTime, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication
@@ -245,6 +246,8 @@ class ClockInCard(QFrame):
             Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        if sys.platform == "darwin":
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setStyleSheet(
             f"""
             QFrame#clockInCard {{
