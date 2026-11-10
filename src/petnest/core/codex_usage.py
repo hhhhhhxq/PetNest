@@ -193,6 +193,7 @@ class CodexUsageReport:
     fetched_at: datetime
     codex_home: Path
     rate_limit_reset_credits: CodexRateLimitResetAvailability | None = None
+    account_tokens_warning: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,6 +581,7 @@ class CodexUsageClient:
             fetched_at=fetched_at,
             codex_home=codex_home,
             rate_limit_reset_credits=_parse_rate_limit_reset_availability(responses[3]),
+            account_tokens_warning=responses[4].get("_usage_warning"),
         )
 
 
@@ -1492,9 +1494,15 @@ def _stdio_rpc_transport(
             error = payload.get("error")
             if isinstance(error, dict):
                 message = error.get("message")
-                if identifier in {3, 4}:
+                method = next((item.get("method") for item in messages if item.get("id") == identifier), None)
+                if method == "account/usage/read":
+                    responses[identifier] = {
+                        "_usage_warning": "账号累计 Token 暂时无法读取，可稍后刷新；剩余额度和本机统计不受影响。"
+                    }
+                    continue
+                if method == "account/rateLimits/read":
                     raise CodexUsageError(
-                        "当前 Codex 版本或账号不支持用量读取，请更新 ChatGPT/Codex 后重试"
+                        "账号额度读取失败，请稍后重试或检查 Codex 登录状态"
                     )
                 raise CodexUsageError(str(message or "Codex 请求失败"))
             result = payload.get("result")
@@ -1878,13 +1886,24 @@ def _local_token_event(
     last = info.get("last_token_usage") if isinstance(info, dict) else None
     if not isinstance(last, dict):
         return None
+    # Responses usage: cache counters are input subsets, reasoning is an
+    # output subset. Codex rollouts traditionally flatten these details.
+    # https://developers.openai.com/api/docs/guides/prompt-caching
+    # https://developers.openai.com/api/docs/guides/reasoning
+    input_details = last.get("input_tokens_details")
+    output_details = last.get("output_tokens_details")
+    input_details = input_details if isinstance(input_details, dict) else {}
+    output_details = output_details if isinstance(output_details, dict) else {}
+    input_tokens = _nonnegative_integer(last.get("input_tokens"))
+    output_tokens = _nonnegative_integer(last.get("output_tokens"))
+    reported_total = _integer(last.get("total_tokens"))
     usage = CodexTokenUsage(
-        input_tokens=_nonnegative_integer(last.get("input_tokens")),
-        cached_input_tokens=_nonnegative_integer(last.get("cached_input_tokens")),
-        cache_write_input_tokens=_nonnegative_integer(last.get("cache_write_input_tokens")),
-        output_tokens=_nonnegative_integer(last.get("output_tokens")),
-        reasoning_output_tokens=_nonnegative_integer(last.get("reasoning_output_tokens")),
-        total_tokens=_nonnegative_integer(last.get("total_tokens")),
+        input_tokens=input_tokens,
+        cached_input_tokens=_nonnegative_integer(last.get("cached_input_tokens", input_details.get("cached_tokens"))),
+        cache_write_input_tokens=_nonnegative_integer(last.get("cache_write_input_tokens", input_details.get("cache_write_tokens"))),
+        output_tokens=output_tokens,
+        reasoning_output_tokens=_nonnegative_integer(last.get("reasoning_output_tokens", output_details.get("reasoning_tokens"))),
+        total_tokens=(reported_total if reported_total is not None and reported_total >= 0 else input_tokens + output_tokens),
         requests=1,
     )
     cumulative = info.get("total_token_usage") if isinstance(info, dict) else None

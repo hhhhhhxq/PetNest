@@ -288,7 +288,7 @@ class CodexUsageDialog(QDialog):
         self.device_ranking_title = QLabel("同账号设备用量排名（预估）", local_card)
         self.device_ranking_title.setStyleSheet("font-weight: 700; color: #4B4641;")
         self.device_ranking_hint = QLabel(
-            "设备额度占用优先按模型加权值分摊账号实际已用额度；加权不完整时回退 Token 比例。"
+            "设备额度占用仅按已同步 Token 比例分摊账号已用百分比，不代表实际费用或单机扣额。"
             "未同步设备和无匹配日志的占用仍无法判断。",
             local_card,
         )
@@ -639,6 +639,9 @@ class CodexUsageDialog(QDialog):
             if report.daily_usage
             else "最近记录  —"
         )
+        if report.account_tokens_warning:
+            self.account_recent_label.setText(report.account_tokens_warning)
+        self.account_recent_label.setWordWrap(True)
         self.account_streak_label.setText(
             f"连续使用  {summary.current_streak_days} 天"
             if summary.current_streak_days is not None
@@ -655,6 +658,12 @@ class CodexUsageDialog(QDialog):
             "输入 / 输出 / 缓存  "
             f"{_number(tokens.input_tokens)} / {_number(tokens.output_tokens)} / "
             f"{_number(tokens.cached_input_tokens)}"
+        )
+        self.local_breakdown_label.setToolTip(
+            "缓存 Token 已包含在输入中，推理 Token 已包含在输出中，不重复累加。\n"
+            f"缓存写入：{_number(tokens.cache_write_input_tokens)}；"
+            f"推理输出：{_number(tokens.reasoning_output_tokens)}。\n"
+            "总量优先采用日志报告值，缺失时使用输入 + 输出。"
         )
         self.local_requests_label.setText(f"模型请求  {_number(tokens.requests)}")
         self.local_weighted_label.setText(_weighted_usage_label(local.weighted_credits, local.weighted_complete))
@@ -714,8 +723,27 @@ class CodexUsageDialog(QDialog):
         )
         self._clear_quota_rows()
         reset = _parse_snapshot_time(snapshot.resets_at)
+        remote_quota = None
+        if reset is not None:
+            local_updated = _parse_snapshot_time(snapshot.updated_at)
+            candidates = self._device_history.load(
+                account_key=snapshot.account_key,
+                window_resets_at=int(reset.timestamp()),
+                exclude_device_id=self._device_id or None,
+            )
+            for candidate in candidates:
+                updated = _parse_snapshot_time(candidate.updated_at)
+                if candidate.account_used_percent is not None and updated is not None and (
+                    local_updated is None or updated > local_updated
+                ) and (remote_quota is None or updated > _parse_snapshot_time(remote_quota.updated_at)):
+                    remote_quota = candidate
+        used_percent = remote_quota.account_used_percent if remote_quota else snapshot.used_percent
+        if remote_quota is not None:
+            self.current_account_label.setText(
+                f"局域网额度 · {snapshot.account_label} · 本机 Token 为历史记录"
+            )
         window = CodexRateWindow(
-            used_percent=snapshot.used_percent,
+            used_percent=used_percent,
             window_duration_minutes=snapshot.window_duration_minutes,
             resets_at=reset,
         )
@@ -726,6 +754,10 @@ class CodexUsageDialog(QDialog):
         )
         self.account_recent_label.setText(f"最后更新  {_format_snapshot_date(snapshot.updated_at)}")
         self.account_streak_label.setText("切换回该账号后可刷新最新数据")
+        if remote_quota is not None:
+            self.account_streak_label.setText(
+                f"额度同步于 {_format_snapshot_date(remote_quota.updated_at)} · {remote_quota.device_label}"
+            )
         self.local_total_label.setText(
             f"Token  {_number(snapshot.local_tokens)}"
             if _has_device_usage(
@@ -792,7 +824,7 @@ class CodexUsageDialog(QDialog):
             local_files_skipped=snapshot.local_files_skipped,
             local_weighted_credits=snapshot.local_weighted_credits,
             local_weighted_complete=snapshot.local_weighted_complete,
-            account_used_percent=snapshot.used_percent,
+            account_used_percent=used_percent,
         )
 
     def _show_remote_cycle(
@@ -1042,14 +1074,19 @@ class CodexUsageDialog(QDialog):
         self.quota_attribution_label.setText(
             _quota_attribution_label(account_used_percent, known_total, incomplete)
         )
-        weighted_available = bool(known_entries) and all(
-            item[10] is not None and item[11] for item in known_entries
-        )
+        # Legacy Credit weights are not verified subscription quota rates.
+        # Never use them, including values received from older peers.
+        weighted_available = False
         known_weighted = (
             sum(float(item[10] or 0) for item in known_entries)
             if weighted_available
             else 0.0
         )
+        if weighted_available and known_weighted > 0:
+            entries.sort(key=lambda item: (
+                not _has_device_usage(item[7], item[1], item[2]),
+                -float(item[10] or 0), -item[1], item[0].casefold(),
+            ))
         for rank, (
             label,
             tokens,
@@ -1099,8 +1136,7 @@ class CodexUsageDialog(QDialog):
             )
             line = (
                 f"{medal} {label}  {token_summary} · {quota_suffix}\n"
-                f"    加权 {_weighted_number(weighted, weighted_complete)} · "
-                f"Token 占比 {token_share} · 加权占比 {weighted_share}\n"
+                f"    Token 占比 {token_share} · 按 Token 比例分摊，非实际扣费\n"
                 f"    {_number(requests)} 次模型请求 · {model_suffix} · "
                 f"速度 {_speed_usage_label(fast_uses, standard_uses)}\n"
                 f"    推理强度 {_reasoning_usage_label(reasoning_usage)}"
@@ -1399,6 +1435,8 @@ def _quota_attribution_label(
 
 
 def _weighted_number(value: float | None, complete: bool) -> str:
+    if not complete and (value is None or value == 0):
+        return "不可用（模型权重或明细不完整）"
     if value is None:
         return "—"
     rounded = Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
@@ -1407,8 +1445,7 @@ def _weighted_number(value: float | None, complete: bool) -> str:
 
 
 def _weighted_usage_label(value: float | None, complete: bool) -> str:
-    rendered = _weighted_number(value, complete)
-    return f"加权 {rendered}"
+    return "模型费用 —（暂无可核实的套餐扣费规则）"
 
 
 def _share_percent(value: float, total: float) -> str:

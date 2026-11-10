@@ -119,6 +119,21 @@ def _report(tmp_path: Path) -> CodexUsageReport:
     )
 
 
+def test_account_token_warning_does_not_hide_quota_or_local_tokens(qtbot, tmp_path) -> None:
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
+    qtbot.addWidget(dialog)
+    report = _report(tmp_path)
+    warning = "账号累计 Token 暂时无法读取"
+    dialog._show_report(replace(report, account_tokens=AccountTokenSummary(), daily_usage=(), account_tokens_warning=warning))
+    assert dialog.account_lifetime_label.text() == "累计  —"
+    assert dialog.account_recent_label.text() == warning
+    assert dialog.local_total_label.text() == "Token  1,500"
+    assert dialog.findChildren(QLabel, "quotaRemainingLabel")[0].text() == "剩余 96%"
+    dialog._show_report(report)
+    assert warning not in dialog.account_recent_label.text()
+    assert dialog.account_lifetime_label.text() == "累计  9,000,000"
+
+
 def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
 
@@ -145,7 +160,7 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert "pe*****@example.com" in dialog.current_account_label.text()
     assert dialog.account_lifetime_label.text() == "累计  9,000,000"
     assert dialog.local_total_label.text() == "Token  1,500"
-    assert dialog.local_weighted_label.text() == "加权 0.2413 Credit"
+    assert "暂无可核实" in dialog.local_weighted_label.text()
     assert "待归属 250 Token" in dialog.local_attribution_label.text()
     assert "标签异常 1,500 Token" in dialog.local_attribution_label.text()
     assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
@@ -365,6 +380,24 @@ def test_claim_pending_button_persists_current_account_claim(
     assert refreshed == [True]
 
 
+def test_historical_account_uses_newer_remote_quota(qtbot, tmp_path):
+    report = replace(_report(tmp_path), fetched_at=datetime.now(UTC) - timedelta(hours=1))
+    path = tmp_path / "history.json"
+    history = CodexUsageHistoryStore(path)
+    history.save_report(report)
+    snapshot = history.load_cycles(report.account.key)[0]
+    remote = CodexDeviceUsageSnapshot.from_report(report, device_id="remote", device_label="Office")
+    store = CodexDeviceUsageStore(codex_device_usage_path(path))
+    store.save(replace(remote, account_used_percent=87, updated_at=datetime.now(UTC).isoformat()))
+    dialog = CodexUsageDialog(path, auto_refresh=False, device_id="local")
+    qtbot.addWidget(dialog)
+    dialog._show_snapshot(snapshot)
+    assert dialog.findChildren(QLabel, "quotaRemainingLabel")[0].text() == "剩余 13%"
+    assert "局域网额度" in dialog.current_account_label.text()
+    assert dialog.local_total_label.text() == "Token  1,500"
+    assert history.load_cycles(report.account.key)[0].used_percent == 4
+
+
 def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
     history_path = tmp_path / "history.json"
@@ -421,10 +454,10 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     assert "3 次模型请求" in ranking[0]
     assert "Home Mac（本机）" in ranking[1]
     assert dialog.device_ranking_title.text() == "同账号设备用量排名（预估）"
-    assert "加权 0.7500 Credit" in ranking[0]
-    assert "加权占比 75.7%" in ranking[0]
+    assert "Credit" not in ranking[0]
+    assert "非实际扣费" in ranking[0]
     assert "Token 占比 57.1%" in ranking[0]
-    assert "约 3% 额度" in ranking[0]
+    assert "约 2.3% 额度" in ranking[0]
     assert "常用 gpt-5.5（3 次）" in ranking[0]
     assert "速度 极快 25% · 标准 75%" in ranking[0]
     assert "速度 极快 75% · 标准 25%" in ranking[1]
@@ -445,7 +478,7 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     dialog.reload_synced_usage(report.account.key)
     refreshed = dialog.device_ranking_list.item(0).text()
     assert "3,000 Token" in refreshed
-    assert "约 3.3% 额度" in refreshed
+    assert "约 2.7% 额度" in refreshed
 
 
 def test_incomplete_weighted_usage_explains_unavailable_share(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -471,9 +504,9 @@ def test_incomplete_weighted_usage_explains_unavailable_share(qtbot: pytest.QtBo
     qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
 
     ranking = dialog.device_ranking_list.item(0).text()
-    assert dialog.local_weighted_label.text() == "加权 0.2413 Credit（仅已知部分）"
-    assert "加权 0.2413 Credit（仅已知部分）" in ranking
-    assert "加权占比 不可用（明细不完整）" in ranking
+    assert "暂无可核实" in dialog.local_weighted_label.text()
+    assert "Credit" not in ranking
+    assert "非实际扣费" in ranking
 
 
 def test_zero_weighted_total_explains_unavailable_share(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -499,8 +532,8 @@ def test_zero_weighted_total_explains_unavailable_share(qtbot: pytest.QtBot, tmp
     qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
 
     ranking = dialog.device_ranking_list.item(0).text()
-    assert "加权 0.0000 Credit" in ranking
-    assert "加权占比 不可用（加权值为 0）" in ranking
+    assert "Credit" not in ranking
+    assert "非实际扣费" in ranking
 
 
 def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot, tmp_path: Path) -> None:

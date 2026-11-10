@@ -176,7 +176,7 @@ class CodexUsageSyncCoordinator(QObject):
         for request_id in expired:
             self._pending.pop(request_id, None)
         if expired:
-            self.status_changed.emit("对方未返回相同 Codex 账号和额度周期的用量")
+            self.status_changed.emit("等待对方用量回复超时；可能读取较慢、读取失败或网络不通")
         while True:
             try:
                 action, context, result = self._results.get_nowait()
@@ -210,7 +210,7 @@ class CodexUsageSyncCoordinator(QObject):
             request_id = uuid.uuid4().hex
             self._pending[request_id] = _PendingRequest(
                 peer_id=peer_id,
-                deadline=monotonic() + 6,
+                deadline=monotonic() + 120,
             )
             if not self.service.send_codex_usage_sync(
                 target_device_id=peer_id,

@@ -71,3 +71,19 @@ def test_macos_quit_action_owns_the_native_quit_role(qtbot, tmp_path: Path, monk
 
     assert tray.quit_action.menuRole() is QAction.MenuRole.QuitRole
     assert tray.quit_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Quit)
+
+
+def test_macos_keeps_native_tray_menu(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "darwin")
+    window = PetWindow(_package(tmp_path))
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window)
+    assert tray.contextMenu() is tray.menu
+
+
+def test_windows_keeps_native_tray_menu(qtbot, tmp_path, monkeypatch):
+    monkeypatch.setattr("petnest.ui.tray_icon.sys.platform", "win32")
+    window = PetWindow(_package(tmp_path))
+    qtbot.addWidget(window)
+    tray = PetTrayIcon(window)
+    assert tray.contextMenu() is tray.menu

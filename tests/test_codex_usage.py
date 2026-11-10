@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
+from io import StringIO
 import os
 from pathlib import Path
 from typing import Any
@@ -426,6 +427,59 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     assert report.local_usage.scan_status == "matched"
     assert report.local_usage.files_scanned == 1
     assert report.local_usage.observed_quota_change == 2.5
+
+
+@pytest.mark.parametrize("failed_id", [3, 4])
+def test_optional_usage_error_keeps_quota_available(tmp_path, monkeypatch, failed_id) -> None:
+    responses, _ = _responses(tmp_path)
+    messages = [
+        {"id": failed_id, "error": {"code": -32603, "message": "network request failed"}},
+        *({"id": key, "result": value} for key, value in responses.items() if key != failed_id),
+    ]
+
+    class FakeProcess:
+        stdin = StringIO()
+        stdout = StringIO("\n".join(json.dumps(item) for item in messages) + "\n")
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(codex_usage_module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    client = CodexUsageClient(Path("/fake/codex"))
+    if failed_id == 3:
+        with pytest.raises(CodexUsageError, match="账号额度读取失败"):
+            client.fetch_report()
+    else:
+        report = client.fetch_report()
+        assert report.primary_limit.primary.remaining_percent == 96
+        assert report.account_tokens.lifetime_tokens is None
+        assert report.daily_usage == ()
+        assert report.account_tokens_warning
+        assert report.local_usage is not None
+
+
+@pytest.mark.parametrize("reported_total", [None, 1261, 1300, 0])
+def test_token_usage_nested_details_do_not_double_count(reported_total) -> None:
+    now = datetime.now(UTC)
+    last = {
+        "input_tokens": 75,
+        "input_tokens_details": {"cached_tokens": 40, "cache_write_tokens": 20},
+        "output_tokens": 1186,
+        "output_tokens_details": {"reasoning_tokens": 1024},
+    }
+    if reported_total is not None:
+        last["total_tokens"] = reported_total
+    raw = {"timestamp": now.isoformat(), "type": "event_msg", "payload": {
+        "type": "token_count", "info": {"last_token_usage": last}
+    }}
+    event = codex_usage_module._local_token_event(raw, now)
+    assert event is not None
+    assert event.usage.total_tokens == (1261 if reported_total is None else reported_total)
+    assert event.usage.cached_input_tokens == 40
+    assert event.usage.cache_write_input_tokens == 20
+    assert event.usage.reasoning_output_tokens == 1024
+    last["cached_input_tokens"] = 0
+    assert codex_usage_module._local_token_event(raw, now).usage.cached_input_tokens == 0
 
 
 def test_client_distinguishes_no_local_session_files_from_zero_usage(tmp_path: Path) -> None:
