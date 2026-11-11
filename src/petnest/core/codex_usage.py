@@ -1249,6 +1249,23 @@ class CodexDeviceUsageSnapshot:
         )
 
 
+def is_codex_unstarted_device_cycle(snapshot: CodexDeviceUsageSnapshot) -> bool:
+    """Recognize an empty window whose reset moves forward with each observation."""
+    updated = _timestamp(snapshot.updated_at)
+    duration = snapshot.window_duration_minutes
+    if (
+        updated is None
+        or duration is None
+        or snapshot.account_used_percent != 0
+        or snapshot.total_tokens != 0
+        or snapshot.requests != 0
+        or snapshot.pending_tokens != 0
+        or snapshot.anomaly_tokens != 0
+    ):
+        return False
+    return abs(snapshot.window_resets_at - updated.timestamp() - duration * 60) <= 15
+
+
 class CodexDeviceUsageStore:
     """Persist the latest direct-LAN contribution per account and device."""
 
@@ -1279,10 +1296,29 @@ class CodexDeviceUsageStore:
     def save(self, snapshot: CodexDeviceUsageSnapshot) -> None:
         if not _valid_device_snapshot(snapshot):
             raise ValueError("Codex 设备用量快照无效")
+        previous = self._load_all()
+        replace_idle: CodexDeviceUsageSnapshot | None = None
+        if is_codex_unstarted_device_cycle(snapshot):
+            idle = [
+                item for item in previous
+                if item.account_key == snapshot.account_key
+                and item.device_id == snapshot.device_id
+                and item.window_duration_minutes == snapshot.window_duration_minutes
+                and is_codex_unstarted_device_cycle(item)
+            ]
+            if idle:
+                replace_idle = max(
+                    idle,
+                    key=lambda item: _timestamp(item.updated_at) or datetime.min.replace(tzinfo=UTC),
+                )
+                latest_at = _timestamp(replace_idle.updated_at)
+                incoming_at = _timestamp(snapshot.updated_at)
+                if latest_at is not None and incoming_at is not None and incoming_at < latest_at:
+                    return
         existing = [
             item
-            for item in self._load_all()
-            if not (
+            for item in previous
+            if item is not replace_idle and not (
                 item.account_key == snapshot.account_key
                 and item.device_id == snapshot.device_id
                 and abs(item.window_resets_at - snapshot.window_resets_at) <= 10
@@ -2498,6 +2534,7 @@ __all__ = [
     "discover_codex_executables",
     "estimate_codex_device_weight",
     "estimate_codex_standard_api_usd",
+    "is_codex_unstarted_device_cycle",
     "locate_codex_home",
     "scan_local_codex_usage",
     "codex_account_observation_path",

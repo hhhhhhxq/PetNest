@@ -55,6 +55,7 @@ from petnest.core.codex_usage import (
     codex_model_api_rates,
     estimate_codex_device_weight,
     estimate_codex_standard_api_usd,
+    is_codex_unstarted_device_cycle,
 )
 from petnest.ui.theme import dialog_stylesheet
 
@@ -116,6 +117,7 @@ class CodexUsageDialog(QDialog):
         self._live_report: CodexUsageReport | None = None
         self._cycle_snapshots: dict[str, CodexAccountSnapshot] = {}
         self._remote_cycles: dict[str, tuple[CodexDeviceUsageSnapshot, ...]] = {}
+        self._cycle_user_selected = False
         self._model_detail_devices: tuple[_ModelDetailDevice, ...] = ()
         self._model_details_weighted = False
         self._model_details_dialog: CodexModelDetailsDialog | None = None
@@ -184,11 +186,13 @@ class CodexUsageDialog(QDialog):
         account_layout.addWidget(cycle_label)
         self.cycle_selector = QComboBox(account_card)
         self.cycle_selector.setMinimumWidth(235)
-        self.cycle_selector.currentIndexChanged.connect(self._show_selected_cycle)
+        self.cycle_selector.currentIndexChanged.connect(self._cycle_selection_changed)
         account_layout.addWidget(self.cycle_selector)
         account_layout.addStretch(1)
         self.current_account_label = QLabel("正在识别…", account_card)
         self.current_account_label.setObjectName("mutedLabel")
+        self.current_account_label.setWordWrap(True)
+        self.current_account_label.setMaximumWidth(170)
         account_layout.addWidget(self.current_account_label)
         root.addWidget(account_card)
 
@@ -515,8 +519,9 @@ class CodexUsageDialog(QDialog):
             return
         self._live_report = payload
         self._last_refresh_at = monotonic()
+        self._cycle_user_selected = False
         self._reload_account_selector(current_key=payload.account.key)
-        self._show_report(payload)
+        self._show_selected_cycle()
         if self._on_report is not None:
             try:
                 self._on_report(payload)
@@ -524,7 +529,7 @@ class CodexUsageDialog(QDialog):
                 pass
         fetched = payload.fetched_at.astimezone()
         self.status_label.setText(
-            f"已更新 · {fetched:%Y-%m-%d %H:%M:%S} · {payload.account.label}{history_warning}"
+            f"当前登录账号已更新 · {fetched:%Y-%m-%d %H:%M:%S} · {payload.account.label}{history_warning}"
         )
         self.status_label.setStyleSheet("")
 
@@ -533,6 +538,7 @@ class CodexUsageDialog(QDialog):
         *,
         current_key: str | None = None,
         selected_key: str | None = None,
+        selected_cycle: str | None = None,
     ) -> None:
         snapshots = self._history.load()
         local_keys = {item.account_key for item in snapshots}
@@ -546,8 +552,11 @@ class CodexUsageDialog(QDialog):
         for snapshot in snapshots:
             current = snapshot.account_key == current_key
             suffix = "（当前）" if current else ""
+            account = self._live_report.account if current and self._live_report is not None else None
+            label = account.label if account is not None else snapshot.account_label
+            plan = account.plan_type if account is not None else snapshot.plan_type
             self.account_selector.addItem(
-                f"{snapshot.account_label} · {_plan_label(snapshot.plan_type)}{suffix}",
+                f"{label} · {_plan_label(plan)}{suffix}",
                 snapshot.account_key,
             )
         for account_key, snapshot in sorted(
@@ -559,7 +568,21 @@ class CodexUsageDialog(QDialog):
                 continue
             label = snapshot.account_label or f"局域网账号 {account_key[:6]}…"
             plan = f" · {_plan_label(snapshot.plan_type)}" if snapshot.plan_type else ""
-            self.account_selector.addItem(f"{label}{plan}（局域网）", account_key)
+            if account_key == current_key and self._live_report is not None:
+                label = self._live_report.account.label
+                plan = f" · {_plan_label(self._live_report.account.plan_type)}"
+            suffix = "（当前）" if account_key == current_key else "（局域网）"
+            self.account_selector.addItem(f"{label}{plan}{suffix}", account_key)
+        if (
+            self._live_report is not None
+            and self._live_report.account.key == current_key
+            and self.account_selector.findData(current_key) < 0
+        ):
+            account = self._live_report.account
+            self.account_selector.addItem(
+                f"{account.label} · {_plan_label(account.plan_type)}（当前）",
+                account.key,
+            )
         if self.account_selector.count() == 0:
             self.account_selector.addItem("尚无账号记录", None)
         preferred_key = selected_key or current_key
@@ -573,25 +596,34 @@ class CodexUsageDialog(QDialog):
         self._reload_cycle_selector(
             selected_key if isinstance(selected_key, str) else None,
             prefer_live=current_key is not None,
+            selected_cycle=selected_cycle,
         )
 
     def _show_selected_account(self) -> None:
         key = self.account_selector.currentData()
         if not isinstance(key, str):
             return
+        self._cycle_user_selected = False
         self._reload_cycle_selector(
             key,
             prefer_live=self._live_report is not None and key == self._live_report.account.key,
         )
         self._show_selected_cycle()
 
-    def _reload_cycle_selector(self, account_key: str | None, *, prefer_live: bool) -> None:
+    def _reload_cycle_selector(
+        self,
+        account_key: str | None,
+        *,
+        prefer_live: bool,
+        selected_cycle: str | None = None,
+    ) -> None:
         self.cycle_selector.blockSignals(True)
         self.cycle_selector.clear()
         self._cycle_snapshots = {}
         self._remote_cycles = {}
         live_reset: str | None = None
         known_reset_epochs: set[int] = set()
+        cycles: list[tuple[float, float, str, str]] = []
         if (
             account_key is not None
             and self._live_report is not None
@@ -606,40 +638,77 @@ class CodexUsageDialog(QDialog):
                 "__live__",
             )
         if account_key is not None:
-            for index, snapshot in enumerate(self._history.load_cycles(account_key)):
-                if live_reset is not None and snapshot.resets_at == live_reset:
-                    continue
+            for snapshot in self._history.load_cycles(account_key):
                 reset = _parse_snapshot_time(snapshot.resets_at)
+                reset_epoch = int(reset.timestamp()) if reset is not None else 0
+                if live_reset is not None and any(abs(reset_epoch - known) <= 10 for known in known_reset_epochs):
+                    continue
                 if reset is not None:
-                    known_reset_epochs.add(int(reset.timestamp()))
-                identifier = f"snapshot:{index}:{snapshot.resets_at or snapshot.updated_at}"
+                    known_reset_epochs.add(reset_epoch)
+                identifier = f"snapshot:{snapshot.resets_at or snapshot.updated_at}"
                 self._cycle_snapshots[identifier] = snapshot
-                self.cycle_selector.addItem(_snapshot_cycle_label(snapshot), identifier)
-            remote_by_reset: dict[int, list[CodexDeviceUsageSnapshot]] = {}
+                updated = _parse_snapshot_time(snapshot.updated_at)
+                cycles.append((reset_epoch, updated.timestamp() if updated else 0, _snapshot_cycle_label(snapshot), identifier))
+
+            remote_groups: list[list[CodexDeviceUsageSnapshot]] = []
+            seen_idle_devices: set[tuple[str, int | None]] = set()
             for snapshot in self._device_history.load(
                 account_key=account_key,
                 exclude_device_id=self._device_id or None,
             ):
-                remote_by_reset.setdefault(snapshot.window_resets_at, []).append(snapshot)
-            for reset_epoch, devices in sorted(remote_by_reset.items(), reverse=True):
-                if any(abs(reset_epoch - known) <= 10 for known in known_reset_epochs):
+                idle_key = (snapshot.device_id, snapshot.window_duration_minutes)
+                if is_codex_unstarted_device_cycle(snapshot):
+                    if idle_key in seen_idle_devices:
+                        continue
+                    seen_idle_devices.add(idle_key)
+                if any(abs(snapshot.window_resets_at - known) <= 10 for known in known_reset_epochs):
                     continue
-                identifier = f"remote:{reset_epoch}"
+                group = next(
+                    (items for items in remote_groups
+                     if abs(items[0].window_resets_at - snapshot.window_resets_at) <= 10),
+                    None,
+                )
+                if group is None:
+                    remote_groups.append([snapshot])
+                elif not any(item.device_id == snapshot.device_id for item in group):
+                    group.append(snapshot)
+            for devices in remote_groups:
                 ordered = tuple(sorted(devices, key=lambda item: item.updated_at, reverse=True))
+                reset_epoch = ordered[0].window_resets_at
+                identifier = f"remote:{reset_epoch}"
                 self._remote_cycles[identifier] = ordered
                 reset = datetime.fromtimestamp(reset_epoch, UTC)
-                self.cycle_selector.addItem(
-                    f"局域网 · {_cycle_range(reset, ordered[0].window_duration_minutes)} · 最后同步",
-                    identifier,
-                )
+                updated = _parse_snapshot_time(ordered[0].updated_at)
+                label = f"局域网 · {_cycle_range(reset, ordered[0].window_duration_minutes)} · 最后同步"
+                cycles.append((reset_epoch, updated.timestamp() if updated else 0, label, identifier))
+            for _, _, label, identifier in sorted(cycles, reverse=True):
+                self.cycle_selector.addItem(label, identifier)
         if self.cycle_selector.count() == 0:
             self.cycle_selector.addItem("尚无周期记录", None)
+        elif selected_cycle is not None and self.cycle_selector.findData(selected_cycle) >= 0:
+            self.cycle_selector.setCurrentIndex(self.cycle_selector.findData(selected_cycle))
         elif prefer_live:
             live_index = self.cycle_selector.findData("__live__")
             if live_index >= 0:
-                self.cycle_selector.setCurrentIndex(live_index)
+                selected_index = live_index
+                live_time = _parse_snapshot_time(live_reset)
+                if live_time is not None and self._live_report is not None:
+                    newer = [
+                        cycle for cycle in cycles
+                        if cycle[0] > live_time.timestamp() + 10
+                        and cycle[1] > self._live_report.fetched_at.timestamp()
+                    ]
+                    if newer:
+                        selected_index = self.cycle_selector.findData(max(newer)[3])
+                self.cycle_selector.setCurrentIndex(selected_index)
+        if selected_cycle is not None and self.cycle_selector.findData(selected_cycle) < 0:
+            self._cycle_user_selected = False
         self.cycle_selector.setEnabled(self.cycle_selector.currentData() is not None)
         self.cycle_selector.blockSignals(False)
+
+    def _cycle_selection_changed(self) -> None:
+        self._cycle_user_selected = True
+        self._show_selected_cycle()
 
     def _show_selected_cycle(self) -> None:
         identifier = self.cycle_selector.currentData()
@@ -883,8 +952,7 @@ class CodexUsageDialog(QDialog):
         self.claim_pending_button.setEnabled(False)
         latest = max(devices, key=lambda item: item.updated_at)
         label = latest.account_label or f"局域网账号 {latest.account_key[:6]}…"
-        plan = f" · {_plan_label(latest.plan_type)}" if latest.plan_type else ""
-        self.current_account_label.setText(f"局域网同步 · {label}{plan} · 本机未登录")
+        self.current_account_label.setText(f"局域网同步 · {label}")
         self._clear_quota_rows()
         reset = datetime.fromtimestamp(latest.window_resets_at, UTC)
         self._set_reset_credit_status(
@@ -901,7 +969,7 @@ class CodexUsageDialog(QDialog):
                     window_duration_minutes=latest.window_duration_minutes,
                     resets_at=reset,
                 ),
-                historical=True,
+                historical=reset <= datetime.now(UTC),
             )
         self.account_lifetime_label.setText("累计  —")
         self.account_recent_label.setText(f"最后同步  {_format_snapshot_date(latest.updated_at)}")
@@ -949,10 +1017,12 @@ class CodexUsageDialog(QDialog):
 
     def reload_synced_usage(self, account_key: str | None = None) -> None:
         selected = self.account_selector.currentData()
+        cycle = self.cycle_selector.currentData() if self._cycle_user_selected else None
         current_key = self._live_report.account.key if self._live_report is not None else None
         self._reload_account_selector(
             current_key=current_key,
             selected_key=selected if isinstance(selected, str) else account_key,
+            selected_cycle=cycle if isinstance(cycle, str) else None,
         )
         if self._live_report is None:
             self._show_selected_cycle()
@@ -1415,6 +1485,7 @@ class CodexUsageDialog(QDialog):
             item = self.quota_rows.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def _refresh_if_stale(self) -> None:

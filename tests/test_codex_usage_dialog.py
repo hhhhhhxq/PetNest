@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
+import json
 import os
 from pathlib import Path
 
@@ -133,6 +134,25 @@ def test_account_token_warning_does_not_hide_quota_or_local_tokens(qtbot, tmp_pa
     dialog._show_report(report)
     assert warning not in dialog.account_recent_label.text()
     assert dialog.account_lifetime_label.text() == "累计  9,000,000"
+
+
+def test_replacing_quota_rows_hides_previous_values_immediately(qtbot, tmp_path) -> None:
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    report = _report(tmp_path)
+    dialog._show_report(report)
+    previous = dialog.quota_rows.itemAt(0).widget()
+    assert previous is not None
+    qtbot.waitUntil(lambda: not previous.isHidden(), timeout=2_000)
+
+    new_limit = replace(report.primary_limit, primary=replace(report.primary_limit.primary, used_percent=20))
+    dialog._show_report(replace(report, rate_limits=(new_limit,), primary_limit=new_limit))
+
+    assert previous.isHidden()
+    current = dialog.quota_rows.itemAt(0).widget()
+    assert current is not None
+    assert current.findChild(QLabel, "quotaRemainingLabel").text() == "剩余 80%"
 
 
 def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -319,6 +339,36 @@ def test_history_save_failure_keeps_report_visible(qtbot, tmp_path, monkeypatch)
     qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2000)
     assert "disk unavailable" in dialog.status_label.text()
     assert dialog.local_total_label.text() == "Token  1,500"
+
+
+def test_history_save_failure_still_selects_the_current_account(qtbot, tmp_path, monkeypatch) -> None:
+    current = _report(tmp_path)
+    previous = replace(
+        current,
+        account=CodexAccount("b" * 24, "ol*****@example.com", "pro"),
+        fetched_at=current.fetched_at - timedelta(days=1),
+    )
+    history_path = tmp_path / "history.json"
+    CodexUsageHistoryStore(history_path).save_report(previous)
+
+    class FakeClient:
+        def fetch_report(self):
+            return current
+
+    dialog = CodexUsageDialog(history_path, client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+
+    def fail_save(_report):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(dialog._history, "save_report", fail_save)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
+
+    assert dialog.account_selector.currentData() == current.account.key
+    assert dialog.cycle_selector.currentData() == "__live__"
+    assert current.account.label in dialog.current_account_label.text()
+    assert "disk unavailable" in dialog.status_label.text()
 
 
 def test_dialog_disables_reset_when_account_has_no_credit(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -767,7 +817,8 @@ def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot,
     assert dialog.account_selector.currentData() == "c" * 24
     assert "ne*****@example.com" in dialog.account_selector.currentText()
     assert "局域网" in dialog.account_selector.currentText()
-    assert "本机未登录" in dialog.current_account_label.text()
+    assert "局域网同步" in dialog.current_account_label.text()
+    assert "本机未登录" in dialog.local_scan_label.text()
     remaining = next(
         item
         for item in dialog.findChildren(QLabel, "quotaRemainingLabel")
@@ -779,6 +830,169 @@ def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot,
     assert "约 12% 额度" in ranking
     assert "常用 gpt-5.5（5 次）" in ranking
     assert "速度 极快 50% · 标准 50%" in ranking
+
+
+def test_newer_peer_cycle_precedes_local_history_and_remains_selectable(qtbot, tmp_path) -> None:
+    now = datetime.now(UTC)
+    report = _report(tmp_path)
+    old_limit = replace(report.primary_limit, primary=CodexRateWindow(78, 10_080, now - timedelta(hours=1)))
+    old = replace(
+        report,
+        rate_limits=(old_limit,),
+        primary_limit=old_limit,
+        fetched_at=now - timedelta(days=1),
+    )
+    history_path = tmp_path / "history.json"
+    CodexUsageHistoryStore(history_path).save_report(old)
+    peer = CodexDeviceUsageSnapshot(
+        account_key=old.account.key, device_id="office-pc", device_label="Office PC",
+        window_resets_at=int((now + timedelta(days=7)).timestamp()),
+        window_duration_minutes=10_080, updated_at=now.isoformat(),
+        input_tokens=0, cached_input_tokens=0, cache_write_input_tokens=0,
+        output_tokens=0, reasoning_output_tokens=0, total_tokens=0, requests=0,
+        account_label=old.account.label, plan_type="pro", account_used_percent=0,
+    )
+    earlier = replace(
+        peer,
+        window_resets_at=peer.window_resets_at - 60,
+        updated_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+    # Previously saved empty placeholders must not create duplicate cycles.
+    codex_device_usage_path(history_path).write_text(json.dumps({
+        "schema_version": 6,
+        "devices": {"old": asdict(earlier), "new": asdict(peer)},
+    }))
+
+    dialog = CodexUsageDialog(history_path, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.resize(920, 730)
+    dialog.show()
+    qtbot.waitUntil(
+        lambda: dialog.content_scroll.widget().width() <= dialog.content_scroll.viewport().width(),
+        timeout=2_000,
+    )
+    assert dialog.cycle_selector.currentData() == f"remote:{peer.window_resets_at}"
+    assert dialog.cycle_selector.count() == 2
+    assert "局域网同步" in dialog.current_account_label.text()
+    assert dialog.findChildren(QLabel, "quotaRemainingLabel")[-1].text() == "剩余 100%"
+    quota_row = dialog.quota_rows.itemAt(0).widget()
+    assert quota_row is not None
+    assert all("历史快照" not in label.text() for label in quota_row.findChildren(QLabel))
+
+    dialog.cycle_selector.setCurrentIndex(1)
+    assert "历史快照" in dialog.current_account_label.text()
+    dialog.reload_synced_usage(old.account.key)
+    assert "往期" in dialog.cycle_selector.currentText()
+    assert "历史快照" in dialog.current_account_label.text()
+
+
+def test_remote_account_follows_latest_cycle_until_user_chooses_history(qtbot, tmp_path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    current = _report(tmp_path)
+    other = replace(
+        current,
+        account=CodexAccount("b" * 24, "ot*****@example.com", "pro"),
+        fetched_at=now - timedelta(days=1),
+    )
+    history_path = tmp_path / "history.json"
+    CodexUsageHistoryStore(history_path).save_report(other)
+    store = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+    peer = CodexDeviceUsageSnapshot(
+        account_key=other.account.key, device_id="office", device_label="Office",
+        window_resets_at=int((now + timedelta(days=7)).timestamp()),
+        window_duration_minutes=10_080, updated_at=now.isoformat(),
+        input_tokens=0, cached_input_tokens=0, cache_write_input_tokens=0,
+        output_tokens=0, reasoning_output_tokens=0, total_tokens=0, requests=0,
+        account_label=other.account.label, plan_type="pro", account_used_percent=0,
+    )
+    store.save(peer)
+
+    class FakeClient:
+        def fetch_report(self):
+            return current
+
+    dialog = CodexUsageDialog(history_path, client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
+    assert dialog.account_selector.currentData() == current.account.key
+    dialog.account_selector.setCurrentIndex(dialog.account_selector.findData(other.account.key))
+    assert dialog.cycle_selector.currentData() == f"remote:{peer.window_resets_at}"
+    assert other.account.label in dialog.current_account_label.text()
+    assert "当前登录账号已更新" in dialog.status_label.text()
+    assert current.account.label in dialog.status_label.text()
+
+    updated = replace(
+        peer,
+        window_resets_at=peer.window_resets_at + 60,
+        updated_at=(now + timedelta(minutes=1)).isoformat(),
+    )
+    store.save(updated)
+    dialog.reload_synced_usage(other.account.key)
+    assert dialog.cycle_selector.currentData() == f"remote:{updated.window_resets_at}"
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
+    assert dialog.account_selector.currentData() == current.account.key
+    assert dialog.cycle_selector.currentData() == "__live__"
+
+
+def test_remote_devices_with_small_reset_differences_share_one_cycle(qtbot, tmp_path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = int((now + timedelta(days=6)).timestamp())
+    history_path = tmp_path / "history.json"
+    store = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+    first = CodexDeviceUsageSnapshot(
+        account_key="c" * 24, device_id="first", device_label="First",
+        window_resets_at=reset, window_duration_minutes=10_080, updated_at=now.isoformat(),
+        input_tokens=100, cached_input_tokens=0, cache_write_input_tokens=0,
+        output_tokens=0, reasoning_output_tokens=0, total_tokens=100, requests=1,
+        account_label="ne*****@example.com", plan_type="pro", account_used_percent=10,
+    )
+    store.save(first)
+    store.save(replace(
+        first, device_id="second", device_label="Second", window_resets_at=reset + 5,
+        updated_at=(now + timedelta(seconds=1)).isoformat(), input_tokens=200, total_tokens=200,
+    ))
+
+    dialog = CodexUsageDialog(history_path, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    assert dialog.cycle_selector.count() == 1
+    assert "已同步 2 台设备" in dialog.synced_devices_label.text()
+    assert "300 Token" in dialog.all_devices_total_label.text()
+
+
+def test_newer_peer_cycle_replaces_an_expired_live_cycle(qtbot, tmp_path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    report = _report(tmp_path)
+    old_limit = replace(report.primary_limit, primary=CodexRateWindow(78, 10_080, now - timedelta(hours=1)))
+    stale = replace(
+        report,
+        rate_limits=(old_limit,),
+        primary_limit=old_limit,
+        fetched_at=now - timedelta(hours=2),
+    )
+    history_path = tmp_path / "history.json"
+    peer = CodexDeviceUsageSnapshot(
+        account_key=stale.account.key, device_id="office", device_label="Office",
+        window_resets_at=int((now + timedelta(days=7)).timestamp()),
+        window_duration_minutes=10_080, updated_at=now.isoformat(),
+        input_tokens=0, cached_input_tokens=0, cache_write_input_tokens=0,
+        output_tokens=0, reasoning_output_tokens=0, total_tokens=0, requests=0,
+        account_label=stale.account.label, plan_type="pro", account_used_percent=0,
+    )
+    CodexDeviceUsageStore(codex_device_usage_path(history_path)).save(peer)
+
+    class FakeClient:
+        def fetch_report(self):
+            return stale
+
+    dialog = CodexUsageDialog(history_path, client_factory=FakeClient, auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
+    assert dialog.account_selector.currentData() == stale.account.key
+    assert dialog.cycle_selector.currentData() == f"remote:{peer.window_resets_at}"
+    assert "局域网同步" in dialog.current_account_label.text()
 
 
 def test_remote_zero_snapshot_shows_scan_reason_instead_of_confirmed_zero(

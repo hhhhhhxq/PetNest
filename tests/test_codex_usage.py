@@ -1366,6 +1366,40 @@ def test_device_store_separates_accounts_windows_and_replaces_each_device(tmp_pa
     assert len(store.load()) == 3
 
 
+def test_device_store_reuses_floating_empty_cycle_without_losing_real_history(tmp_path: Path) -> None:
+    store = CodexDeviceUsageStore(tmp_path / "devices.json")
+    now = datetime.now(UTC).replace(microsecond=0)
+    earlier = now - timedelta(minutes=1)
+    idle = CodexDeviceUsageSnapshot(
+        account_key="a" * 24, device_id="laptop", device_label="Laptop",
+        window_resets_at=int((earlier + timedelta(days=7)).timestamp()),
+        window_duration_minutes=10_080, updated_at=earlier.isoformat(),
+        input_tokens=0, cached_input_tokens=0, cache_write_input_tokens=0,
+        output_tokens=0, reasoning_output_tokens=0, total_tokens=0, requests=0,
+        account_used_percent=0,
+    )
+    active = replace(
+        idle,
+        window_resets_at=int((now - timedelta(days=1)).timestamp()),
+        updated_at=(now - timedelta(days=2)).isoformat(),
+        input_tokens=100, total_tokens=100, requests=1, account_used_percent=8,
+    )
+    latest = replace(
+        idle,
+        window_resets_at=int((now + timedelta(days=7)).timestamp()),
+        updated_at=now.isoformat(),
+    )
+    store.save(active)
+    store.save(idle)
+    store.save(latest)
+    store.save(idle)  # A delayed sync must not replace the newer observation.
+
+    rows = store.load(account_key=idle.account_key)
+    assert len(rows) == 2
+    assert rows[0].window_resets_at == latest.window_resets_at
+    assert any(item.total_tokens == 100 and item.account_used_percent == 8 for item in rows)
+
+
 def test_history_treats_small_reset_jitter_as_one_cycle(tmp_path: Path) -> None:
     responses, _reset = _responses(tmp_path)
     report = CodexUsageClient(Path("/fake/codex"), transport=lambda *_args: responses).fetch_report()
