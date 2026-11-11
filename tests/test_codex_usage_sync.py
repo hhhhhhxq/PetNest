@@ -12,6 +12,7 @@ from PySide6.QtCore import QCoreApplication
 import pytest
 
 from petnest.core.codex_usage import (
+    CODEX_USAGE_WEIGHT_VERSION,
     AccountTokenSummary,
     CodexAccount,
     CodexDeviceUsageSnapshot,
@@ -95,6 +96,7 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         scan_status="matched",
         weighted_credits=1.25,
         weighted_complete=True,
+        weight_version=CODEX_USAGE_WEIGHT_VERSION,
         pending_tokens=250,
         anomaly_tokens=1_000,
     )
@@ -112,6 +114,18 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
 
     assert decoded.request_id == "request-1"
     assert decoded.snapshot == snapshot
+
+    del packet["usage"]["weight_version"]
+    legacy = LanPacketCodec.decode_codex_usage_sync(
+        LanPacketCodec.encode(packet), local_device_id="receiver"
+    )
+    assert legacy.snapshot.weight_version is None
+    packet["usage"]["weight_version"] = True
+    with pytest.raises(LanProtocolError, match="加权版本"):
+        LanPacketCodec.decode_codex_usage_sync(
+            LanPacketCodec.encode(packet), local_device_id="receiver"
+        )
+    packet["usage"]["weight_version"] = CODEX_USAGE_WEIGHT_VERSION
 
     packet["usage"]["total_tokens"] = -1
     with pytest.raises(LanProtocolError, match="Token"):

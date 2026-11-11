@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QMessageBox, QProgressBar
 
 from petnest.core.codex_usage import (
+    CODEX_USAGE_WEIGHT_VERSION,
     AccountTokenSummary,
     CodexAccount,
     CodexDeviceUsageSnapshot,
@@ -160,7 +161,7 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert "pe*****@example.com" in dialog.current_account_label.text()
     assert dialog.account_lifetime_label.text() == "累计  9,000,000"
     assert dialog.local_total_label.text() == "Token  1,500"
-    assert "暂无可核实" in dialog.local_weighted_label.text()
+    assert dialog.local_weighted_label.text() == "加权 0.2413（参考权重）"
     assert "待归属 250 Token" in dialog.local_attribution_label.text()
     assert "标签异常 1,500 Token" in dialog.local_attribution_label.text()
     assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
@@ -427,6 +428,7 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
         standard_uses=3,
         weighted_credits=0.75,
         weighted_complete=True,
+        weight_version=CODEX_USAGE_WEIGHT_VERSION,
     )
     store.save(remote)
 
@@ -455,9 +457,9 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     assert "Home Mac（本机）" in ranking[1]
     assert dialog.device_ranking_title.text() == "同账号设备用量排名（预估）"
     assert "Credit" not in ranking[0]
-    assert "非实际扣费" in ranking[0]
+    assert "加权占比 75.7%" in ranking[0]
     assert "Token 占比 57.1%" in ranking[0]
-    assert "约 2.3% 额度" in ranking[0]
+    assert "约 3% 额度" in ranking[0]
     assert "常用 gpt-5.5（3 次）" in ranking[0]
     assert "速度 极快 25% · 标准 75%" in ranking[0]
     assert "速度 极快 75% · 标准 25%" in ranking[1]
@@ -478,10 +480,10 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     dialog.reload_synced_usage(report.account.key)
     refreshed = dialog.device_ranking_list.item(0).text()
     assert "3,000 Token" in refreshed
-    assert "约 2.7% 额度" in refreshed
+    assert "约 3.3% 额度" in refreshed
 
 
-def test_incomplete_weighted_usage_explains_unavailable_share(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_incomplete_weight_is_recalculated_from_available_models(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
     report = replace(
         report,
@@ -504,12 +506,203 @@ def test_incomplete_weighted_usage_explains_unavailable_share(qtbot: pytest.QtBo
     qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
 
     ranking = dialog.device_ranking_list.item(0).text()
-    assert "暂无可核实" in dialog.local_weighted_label.text()
+    assert dialog.local_weighted_label.text() == "加权 0.2413（参考权重）（仅已知部分）"
     assert "Credit" not in ranking
-    assert "非实际扣费" in ranking
+    assert ranking.startswith("👑")
+    assert "加权占比 100%（近似）" in ranking
+    assert "约 4% 额度" in ranking
 
 
-def test_zero_weighted_total_explains_unavailable_share(qtbot: pytest.QtBot, tmp_path: Path) -> None:
+def test_ranking_recalculates_legacy_model_data_without_using_stale_weights(
+    qtbot: pytest.QtBot, tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    report = replace(
+        report,
+        local_usage=replace(
+            report.local_usage,
+            tokens=CodexTokenUsage(input_tokens=1_000_000, total_tokens=1_000_000, requests=1),
+            model_usage=(CodexModelUsage("gpt-6.1-terra", uses=1, total_tokens=1_000_000),),
+            weighted_credits=25,
+        ),
+    )
+    reset = report.primary_limit.primary.resets_at
+    assert reset is not None
+    history_path = tmp_path / "history.json"
+    store = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+    remote = CodexDeviceUsageSnapshot(
+        account_key=report.account.key,
+        device_id="remote",
+        device_label="Astra PC",
+        window_resets_at=int(reset.timestamp()),
+        window_duration_minutes=10_080,
+        updated_at=datetime.now(UTC).isoformat(),
+        input_tokens=500_000,
+        cached_input_tokens=0,
+        cache_write_input_tokens=0,
+        output_tokens=0,
+        reasoning_output_tokens=0,
+        total_tokens=500_000,
+        requests=1,
+        model_usage=(CodexModelUsage("gpt-6-astra", uses=1, total_tokens=500_000),),
+        weighted_credits=125,
+        weighted_complete=True,
+        weight_version=CODEX_USAGE_WEIGHT_VERSION,
+    )
+    store.save(remote)
+
+    class FakeClient:
+        def fetch_report(self) -> CodexUsageReport:
+            return report
+
+    dialog = CodexUsageDialog(
+        history_path,
+        client_factory=FakeClient,  # type: ignore[arg-type]
+        auto_refresh=False,
+        device_id="local",
+        device_label="Terra PC",
+    )
+    qtbot.addWidget(dialog)
+    dialog.refresh_usage()
+    qtbot.waitUntil(lambda: dialog.refresh_button.isEnabled(), timeout=2_000)
+
+    first = dialog.device_ranking_list.item(0).text()
+    second = dialog.device_ranking_list.item(1).text()
+    assert first.startswith("👑 Astra PC")
+    assert "Token 占比 33.3%" in first
+    assert "加权占比 83.3%" in first
+    assert "约 3.3% 额度" in first
+    assert second.startswith("🥈 Terra PC")
+    assert "Token 占比 66.7%" in second
+
+    # Ignore the old numerical weight, but reconstruct it from token data.
+    store.save(replace(remote, weight_version=None, weighted_credits=1))
+    dialog.reload_synced_usage(report.account.key)
+    lines = [dialog.device_ranking_list.item(index).text() for index in range(2)]
+    assert dialog.device_ranking_title.text() == "同账号设备用量排名（预估）"
+    assert lines[0].startswith("👑 Astra PC")
+    assert "加权占比 83.3%（近似）" in lines[0]
+    assert "约 3.3% 额度" in lines[0]
+
+    # An unpriced auto-review label must not hide the priced model's tokens
+    # or disable ranking when enough device data is available to estimate.
+    store.save(
+        replace(
+            remote,
+            weight_version=None,
+            model_usage=(
+                CodexModelUsage("codex-auto-review", uses=99, total_tokens=100_000, input_tokens=100_000),
+                CodexModelUsage("gpt-6-astra", uses=1, total_tokens=400_000, input_tokens=400_000),
+            ),
+        )
+    )
+    dialog.reload_synced_usage(report.account.key)
+    estimated = dialog.device_ranking_list.item(0).text()
+    assert estimated.startswith("👑 Astra PC")
+    assert "加权占比 83.3%（近似）" in estimated
+
+
+def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
+    qtbot: pytest.QtBot, tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    report = replace(
+        report,
+        local_usage=replace(
+            report.local_usage,
+            tokens=CodexTokenUsage(
+                input_tokens=1_000_000, cached_input_tokens=300_000,
+                output_tokens=200_000, total_tokens=1_200_000, requests=1,
+            ),
+            model_usage=(CodexModelUsage(
+                "gpt-6.1-sol", uses=1, total_tokens=1_200_000,
+                input_tokens=1_000_000, cached_input_tokens=300_000,
+                output_tokens=200_000, weighted_credits=25,
+            ),),
+            weighted_credits=25,
+            weighted_complete=True,
+        ),
+    )
+    reset = report.primary_limit.primary.resets_at
+    assert reset is not None
+    history_path = tmp_path / "history.json"
+    store = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+    remote = CodexDeviceUsageSnapshot(
+        account_key=report.account.key, device_id="remote", device_label="Office PC",
+        window_resets_at=int(reset.timestamp()), window_duration_minutes=10_080,
+        updated_at=datetime.now(UTC).isoformat(), input_tokens=1_000_000,
+        cached_input_tokens=500_000, cache_write_input_tokens=0, output_tokens=100_000,
+        reasoning_output_tokens=0, total_tokens=1_100_000, requests=11,
+        model_usage=(
+            CodexModelUsage("gpt-6-astra", uses=10, total_tokens=850_000,
+                            input_tokens=800_000, cached_input_tokens=300_000, output_tokens=50_000),
+            CodexModelUsage("codex-auto-review", uses=1, total_tokens=250_000,
+                            input_tokens=200_000, cached_input_tokens=200_000, output_tokens=50_000),
+        ),
+        fast_uses=1, standard_uses=1,
+    )
+    store.save(remote)
+    dialog = CodexUsageDialog(history_path, auto_refresh=False, device_id="local", device_label="Home")
+    qtbot.addWidget(dialog)
+    dialog._show_report(report)
+    assert dialog.model_details_button.isEnabled()
+    dialog.model_details_button.click()
+    details = dialog._model_details_dialog
+    assert details is not None
+    qtbot.addWidget(details)
+    tree = details.model_tree
+    assert tree.topLevelItemCount() == 2
+    office = tree.topLevelItem(0)
+    home = tree.topLevelItem(1)
+    assert office.text(0).startswith("👑 Office PC")
+    assert office.text(6) == "约 $7.80（部分）"
+    assert office.childCount() == 2
+    assert office.child(0).text(0) == "gpt-6-astra"
+    assert office.child(0).text(1) == "850,000"
+    assert office.child(0).text(2) == "500,000"
+    assert office.child(0).text(3) == "300,000"
+    assert office.child(0).text(4) == "50,000"
+    assert office.child(0).text(6) == "约 $7.80"
+    assert office.child(1).text(0) == "codex-auto-review"
+    assert office.child(1).text(6) == "无单价"
+    assert home.child(0).text(6) == "约 $3.43"
+    assert "仅已知模型" in details.summary_label.text()
+
+    # A capped or older peer snapshot can omit model rows. The open detail
+    # window updates and shows the unlisted tokens instead of hiding them.
+    store.save(replace(remote, input_tokens=1_100_000, total_tokens=1_200_000))
+    dialog._show_report(report)
+    office = tree.topLevelItem(0)
+    assert office.childCount() == 3
+    assert office.child(2).text(0) == "其他 / 未记录模型"
+    assert office.child(2).text(1) == "100,000"
+    assert office.child(2).text(6) == "—"
+
+
+def test_unknown_only_model_falls_back_to_labelled_token_ranking(
+    qtbot: pytest.QtBot, tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    report = replace(
+        report,
+        local_usage=replace(
+            report.local_usage,
+            weighted_complete=False,
+            model_usage=(CodexModelUsage("codex-auto-review", uses=1, total_tokens=1_500),),
+        ),
+    )
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False)
+    qtbot.addWidget(dialog)
+    dialog._show_report(report)
+
+    row = dialog.device_ranking_list.item(0).text()
+    assert dialog.device_ranking_title.text() == "同账号设备 Token 排名（权重不足）"
+    assert row.startswith("👑")
+    assert "加权占比 不可用（模型明细不足）" in row
+    assert "预估额度 —" in row
+
+
+def test_zero_weight_is_recalculated_when_token_detail_is_available(qtbot: pytest.QtBot, tmp_path: Path) -> None:
     report = _report(tmp_path)
     report = replace(
         report,
@@ -533,7 +726,7 @@ def test_zero_weighted_total_explains_unavailable_share(qtbot: pytest.QtBot, tmp
 
     ranking = dialog.device_ranking_list.item(0).text()
     assert "Credit" not in ranking
-    assert "非实际扣费" in ranking
+    assert "加权占比 100%（近似）" in ranking
 
 
 def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot, tmp_path: Path) -> None:
@@ -682,10 +875,12 @@ def test_device_ranking_switches_with_multiple_accounts(qtbot: pytest.QtBot, tmp
     dialog.account_selector.setCurrentIndex(second_index)
 
     ranking = [dialog.device_ranking_list.item(index).text() for index in range(dialog.device_ranking_list.count())]
-    assert "Office PC" in ranking[0]
+    assert ranking[0].startswith("👑 Office PC")
     assert "6,000 Token" in ranking[0]
     assert "Home Mac（本机）" in ranking[1]
     assert "4,000 Token" in ranking[1]
+    assert dialog.device_ranking_title.text() == "同账号设备 Token 排名（权重不足）"
+    assert all("预估额度 —" in item for item in ranking)
 
 
 def test_dialog_moves_expired_tokens_into_a_selectable_cycle_history(qtbot: pytest.QtBot, tmp_path: Path) -> None:

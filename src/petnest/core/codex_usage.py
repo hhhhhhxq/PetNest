@@ -24,6 +24,11 @@ from typing import Any, Callable, Iterable, TextIO
 import uuid
 
 
+# Changes to the weighting rules must increment this so old LAN snapshots
+# cannot be compared with newly calculated estimates.
+CODEX_USAGE_WEIGHT_VERSION = 1
+
+
 class CodexUsageError(RuntimeError):
     """A safe, user-facing Codex usage lookup failure."""
 
@@ -822,9 +827,9 @@ def scan_local_codex_usage(
                     )
                     if not current_model_use_counted:
                         counters["uses"] = int(counters["uses"]) + 1
-                        if current_turn_speed in {"fast", "priority"}:
+                        if current_turn_speed in {"fast", "priority", "ultrafast"}:
                             fast_uses += 1
-                        else:
+                        elif current_turn_speed == "default":
                             standard_uses += 1
                         reasoning_totals[current_turn_reasoning_effort] = (
                             reasoning_totals.get(current_turn_reasoning_effort, 0) + 1
@@ -859,7 +864,7 @@ def scan_local_codex_usage(
         for model, values in sorted(
             model_totals.items(),
             key=lambda item: (-int(item[1]["uses"]), -int(item[1]["total"]), item[0].casefold()),
-        )[:20]
+        )
     )
     reasoning_usage = tuple(
         CodexReasoningUsage(effort=effort, uses=uses)
@@ -873,7 +878,7 @@ def scan_local_codex_usage(
         model_usage=models,
         reasoning_usage=reasoning_usage,
         weighted_credits=weighted_total,
-        weighted_complete=weighted_complete,
+        weighted_complete=weighted_complete and skipped == 0,
         pending_tokens=pending,
         anomaly_tokens=anomalies,
         duplicate_events=duplicates,
@@ -913,6 +918,7 @@ class CodexAccountSnapshot:
     local_scan_status: str = "unknown"
     local_weighted_credits: float | None = None
     local_weighted_complete: bool = True
+    local_weight_version: int | None = None
     local_pending_tokens: int = 0
     local_anomaly_tokens: int = 0
     finalized: bool = False
@@ -948,6 +954,7 @@ class CodexAccountSnapshot:
             local_scan_status=report.local_usage.scan_status,
             local_weighted_credits=report.local_usage.weighted_credits,
             local_weighted_complete=report.local_usage.weighted_complete,
+            local_weight_version=CODEX_USAGE_WEIGHT_VERSION,
             local_pending_tokens=report.local_usage.pending_tokens.total_tokens,
             local_anomaly_tokens=report.local_usage.anomaly_tokens.total_tokens,
             finalized=False,
@@ -1121,6 +1128,7 @@ class CodexUsageHistoryStore:
                     local_scan_status=local_usage.scan_status,
                     local_weighted_credits=local_usage.weighted_credits,
                     local_weighted_complete=local_usage.weighted_complete,
+                    local_weight_version=CODEX_USAGE_WEIGHT_VERSION,
                     local_pending_tokens=local_usage.pending_tokens.total_tokens,
                     local_anomaly_tokens=local_usage.anomaly_tokens.total_tokens,
                     finalized=True,
@@ -1173,6 +1181,7 @@ class CodexDeviceUsageSnapshot:
     scan_status: str = "unknown"
     weighted_credits: float | None = None
     weighted_complete: bool = True
+    weight_version: int | None = None
     pending_tokens: int = 0
     anomaly_tokens: int = 0
 
@@ -1220,7 +1229,9 @@ class CodexDeviceUsageSnapshot:
             reasoning_output_tokens=tokens.reasoning_output_tokens,
             total_tokens=tokens.total_tokens,
             requests=tokens.requests,
-            model_usage=report.local_usage.model_usage,
+            # The LAN protocol accepts at most 20 models. The local report and
+            # account history retain all models independently of this cap.
+            model_usage=report.local_usage.model_usage[:20],
             reasoning_usage=report.local_usage.reasoning_usage,
             account_label=report.account.label,
             plan_type=report.account.plan_type,
@@ -1232,6 +1243,7 @@ class CodexDeviceUsageSnapshot:
             scan_status=report.local_usage.scan_status,
             weighted_credits=report.local_usage.weighted_credits,
             weighted_complete=report.local_usage.weighted_complete,
+            weight_version=CODEX_USAGE_WEIGHT_VERSION,
             pending_tokens=report.local_usage.pending_tokens.total_tokens,
             anomaly_tokens=report.local_usage.anomaly_tokens.total_tokens,
         )
@@ -1422,8 +1434,17 @@ def _valid_device_snapshot(snapshot: CodexDeviceUsageSnapshot) -> bool:
             )
         )
         and isinstance(snapshot.weighted_complete, bool)
+        and (
+            snapshot.weight_version is None
+            or (
+                isinstance(snapshot.weight_version, int)
+                and not isinstance(snapshot.weight_version, bool)
+                and 0 < snapshot.weight_version <= 1_000_000
+            )
+        )
         and snapshot.scan_status
         in {"unknown", "matched", "no_matching_events", "unreadable_files", "no_session_files"}
+        and len(snapshot.model_usage) <= 20
         and snapshot.model_usage == _parse_model_usage(snapshot.model_usage)
         and snapshot.reasoning_usage == _parse_reasoning_usage(snapshot.reasoning_usage)
     )
@@ -1836,7 +1857,14 @@ def _local_thread_settings(
     if timestamp is None or timestamp > end or not isinstance(settings, dict):
         return None
     service_tier = settings.get("service_tier")
-    speed = str(service_tier) if service_tier in {"fast", "priority", "default"} else None
+    if "service_tier" not in settings:
+        speed = None
+    elif service_tier is None:
+        speed = "default"
+    elif isinstance(service_tier, str) and service_tier in {"fast", "priority", "default", "ultrafast"}:
+        speed = str(service_tier)
+    else:
+        speed = "unknown"
     reasoning_effort = _reasoning_effort_from_settings(settings)
     return (speed, reasoning_effort) if speed is not None or reasoning_effort is not None else None
 
@@ -2028,11 +2056,17 @@ def _inside_account_interval(
     return False
 
 
-# Relative Codex credit rates per 1M tokens. They are intentionally kept as a
-# local estimate: the server's account percentage remains the authoritative
-# quota value and is only apportioned between devices using these weights.
+# Standard Codex credit rates per 1M tokens used as relative weights, not as
+# an assertion of actual subscription charges. The fast multipliers below
+# approximate included subscription usage, whose exact model weights are not
+# published. https://learn.chatgpt.com/docs/pricing (2026-11-10)
 _MODEL_CREDIT_RATES: dict[str, tuple[float, float, float]] = {
-    "gpt-5.6-sol": (125.0, 12.5, 750.0),
+    "gpt-6-astra": (250.0, 25.0, 1250.0),
+    "gpt-6.1-sol": (50.0, 2.5, 250.0),
+    "gpt-6.1-terra": (25.0, 1.25, 125.0),
+    "gpt-6-sol": (50.0, 5.0, 250.0),
+    "gpt-6-luna": (2.5, 0.25, 12.5),
+    "gpt-5.6-sol": (100.0, 10.0, 500.0),
     "gpt-5.6-terra": (50.0, 5.0, 300.0),
     "gpt-5.6-luna": (5.0, 0.5, 30.0),
     "gpt-5.5": (125.0, 12.5, 750.0),
@@ -2041,10 +2075,53 @@ _MODEL_CREDIT_RATES: dict[str, tuple[float, float, float]] = {
     "gpt-5.3-codex": (43.75, 4.375, 350.0),
 }
 
+# Standard, short-context API prices per million input, cached input and
+# output tokens. These are a comparison, not a ChatGPT subscription bill.
+# https://developers.openai.com/api/docs/pricing (2026-11-10)
+_MODEL_API_USD_RATES: dict[str, tuple[float, float, float]] = {
+    "gpt-6-astra": (10.0, 1.0, 50.0),
+    "gpt-6.1-sol": (2.0, 0.10, 10.0),
+    "gpt-6.1-terra": (1.0, 0.05, 5.0),
+    "gpt-6-sol": (2.0, 0.20, 10.0),
+    "gpt-6-luna": (0.10, 0.01, 0.50),
+    "gpt-5.6-sol": (4.0, 0.40, 20.0),
+    "gpt-5.6-terra": (2.0, 0.20, 12.0),
+    "gpt-5.6-luna": (0.20, 0.02, 1.20),
+    "gpt-5.5": (5.0, 0.50, 30.0),
+    "gpt-5.4": (2.50, 0.25, 15.0),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+    "gpt-5.3-codex": (1.75, 0.175, 14.0),
+}
+
+
+def codex_model_api_rates(model: str) -> tuple[float, float, float] | None:
+    """Standard short-context USD rates per 1M tokens for a known model."""
+    return _MODEL_API_USD_RATES.get(model.strip().casefold())
+
+
+def estimate_codex_standard_api_usd(model: CodexModelUsage) -> float | None:
+    """Estimate known model tokens at standard API rates, without surcharges."""
+    rates = codex_model_api_rates(model.model)
+    if rates is None or model.cached_input_tokens > model.input_tokens:
+        return None
+    if model.total_tokens != model.input_tokens + model.output_tokens:
+        return None
+    input_rate, cached_rate, output_rate = rates
+    return (
+        (model.input_tokens - model.cached_input_tokens) * input_rate
+        + model.cached_input_tokens * cached_rate
+        + model.output_tokens * output_rate
+    ) / 1_000_000
+
 
 def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float | None:
-    rates = _MODEL_CREDIT_RATES.get(model.strip().casefold())
+    normalized = model.strip().casefold()
+    rates = _MODEL_CREDIT_RATES.get(normalized)
     if rates is None:
+        return None
+    if speed not in {"default", "fast", "priority", "ultrafast"}:
+        return None
+    if speed == "ultrafast" and normalized not in {"gpt-6-astra", "gpt-6.1-sol"}:
         return None
     if usage.total_tokens > 0 and not any(
         (usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
@@ -2058,16 +2135,165 @@ def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float |
         + usage.output_tokens * output_rate
     ) / 1_000_000
     if speed in {"fast", "priority"}:
-        normalized = model.strip().casefold()
         factors = {
+            "gpt-6-astra": 2.5,
+            "gpt-6.1-sol": 2.5,
+            "gpt-6.1-terra": 2.5,
+            "gpt-6-sol": 2.5,
+            "gpt-6-luna": 2.5,
             "gpt-5.6-sol": 2.5,
             "gpt-5.6-terra": 2.5,
             "gpt-5.6-luna": 2.5,
             "gpt-5.5": 2.5,
             "gpt-5.4": 2.0,
         }
-        weighted *= factors.get(normalized, 1.0)
+        factor = factors.get(normalized)
+        if factor is None:
+            return None
+        weighted *= factor
+    elif speed == "ultrafast":
+        weighted *= 8.0
     return weighted
+
+
+@dataclass(frozen=True, slots=True)
+class CodexWeightEstimate:
+    """Comparable weight and whether it required assumptions about the logs."""
+
+    value: float | None
+    approximate: bool
+
+
+def _reconstructed_model_weight(
+    item: CodexModelUsage, tokens: CodexTokenUsage, fast_fraction: float,
+) -> float | None:
+    if item.total_tokens <= 0:
+        return None
+    if item.input_tokens or item.output_tokens or item.cached_input_tokens:
+        usage = CodexTokenUsage(
+            input_tokens=item.input_tokens,
+            cached_input_tokens=item.cached_input_tokens,
+            output_tokens=item.output_tokens,
+            total_tokens=item.total_tokens,
+        )
+    elif tokens.input_tokens or tokens.output_tokens or tokens.cached_input_tokens:
+        fraction = item.total_tokens / tokens.total_tokens
+        usage = CodexTokenUsage(
+            input_tokens=round(tokens.input_tokens * fraction),
+            cached_input_tokens=round(tokens.cached_input_tokens * fraction),
+            output_tokens=round(tokens.output_tokens * fraction),
+            total_tokens=item.total_tokens,
+        )
+    else:
+        return None
+    standard = _weighted_credits(item.model, usage, "default")
+    if standard is None or standard <= 0:
+        return None
+    fast = _weighted_credits(item.model, usage, "fast")
+    return standard + ((fast if fast is not None else standard) - standard) * fast_fraction
+
+
+def estimate_codex_device_weight(
+    tokens: CodexTokenUsage,
+    models: tuple[CodexModelUsage, ...],
+    *,
+    fast_uses: int,
+    standard_uses: int,
+    weighted_credits: float | None,
+    weighted_complete: bool,
+    weight_version: int | None,
+) -> CodexWeightEstimate:
+    """Recalculate older snapshots from their per-model token breakdown.
+
+    Older snapshots record speed counts for the device as a whole, not per
+    model. Apply that mix to each known model. Unpriced or missing models are
+    estimated using this device's average known-model weight per token.
+    """
+    if (
+        weight_version == CODEX_USAGE_WEIGHT_VERSION
+        and weighted_complete
+        and weighted_credits is not None
+        and weighted_credits > 0
+    ):
+        return CodexWeightEstimate(weighted_credits, False)
+    if tokens.total_tokens <= 0:
+        return CodexWeightEstimate(None, True)
+
+    speed_total = max(0, fast_uses) + max(0, standard_uses)
+    fast_fraction = max(0, fast_uses) / speed_total if speed_total else 0.0
+    known_tokens = 0
+    known_weight = 0.0
+    for item in models:
+        weight = _reconstructed_model_weight(item, tokens, fast_fraction)
+        if weight is None:
+            continue
+        known_weight += weight
+        known_tokens += item.total_tokens
+
+    if known_tokens <= 0 or known_weight <= 0:
+        return CodexWeightEstimate(None, True)
+    # This also accounts for unpriced models and model rows omitted from a
+    # capped snapshot, without treating their usage as free.
+    return CodexWeightEstimate(known_weight * tokens.total_tokens / known_tokens, True)
+
+
+@dataclass(frozen=True, slots=True)
+class CodexWeightBreakdown:
+    """Model contributions aligned with model rows and any unlisted remainder."""
+
+    per_model: tuple[float | None, ...]
+    other_weight: float | None
+    approximate: bool
+
+
+def breakdown_codex_device_weight(
+    tokens: CodexTokenUsage,
+    models: tuple[CodexModelUsage, ...],
+    *,
+    fast_uses: int,
+    standard_uses: int,
+    weighted_credits: float | None,
+    weighted_complete: bool,
+    weight_version: int | None,
+) -> CodexWeightBreakdown:
+    """Explain the same weight used by the device ranking."""
+    estimate = estimate_codex_device_weight(
+        tokens, models, fast_uses=fast_uses, standard_uses=standard_uses,
+        weighted_credits=weighted_credits, weighted_complete=weighted_complete,
+        weight_version=weight_version,
+    )
+    if estimate.value is None:
+        return CodexWeightBreakdown(tuple(None for _ in models), None, True)
+
+    if not estimate.approximate and all(
+        item.weighted_credits is not None or item.total_tokens == 0 for item in models
+    ):
+        values = tuple(float(item.weighted_credits or 0) for item in models)
+        remainder = estimate.value - sum(values)
+        if remainder >= -1e-7:
+            return CodexWeightBreakdown(values, max(0.0, remainder), False)
+
+    if tokens.total_tokens <= 0:
+        return CodexWeightBreakdown(tuple(None for _ in models), estimate.value, True)
+    speed_total = max(0, fast_uses) + max(0, standard_uses)
+    fast_fraction = max(0, fast_uses) / speed_total if speed_total else 0.0
+    known = tuple(_reconstructed_model_weight(item, tokens, fast_fraction) for item in models)
+    known_tokens = sum(item.total_tokens for item, weight in zip(models, known) if weight is not None)
+    known_weight = sum(weight for weight in known if weight is not None)
+    if known_tokens <= 0 or known_weight <= 0:
+        return CodexWeightBreakdown(tuple(None for _ in models), estimate.value, True)
+    average = known_weight / known_tokens
+    values = tuple(
+        weight if weight is not None else item.total_tokens * average
+        for item, weight in zip(models, known)
+    )
+    other_tokens = max(0, tokens.total_tokens - sum(item.total_tokens for item in models))
+    other_weight = other_tokens * average
+    parts_total = sum(values) + other_weight
+    if parts_total <= 0:
+        return CodexWeightBreakdown(tuple(None for _ in models), estimate.value, True)
+    scale = estimate.value / parts_total
+    return CodexWeightBreakdown(tuple(value * scale for value in values), other_weight * scale, True)
 
 
 def _valid_model_name(value: object) -> bool:
@@ -2084,7 +2310,7 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
         return ()
     parsed: list[CodexModelUsage] = []
     seen: set[str] = set()
-    for raw in value[:20]:
+    for raw in value:
         if isinstance(raw, CodexModelUsage):
             item = raw
         elif isinstance(raw, dict):
@@ -2262,10 +2488,16 @@ __all__ = [
     "CodexUsageError",
     "CodexUsageHistoryStore",
     "CodexUsageReport",
+    "CodexWeightBreakdown",
+    "CodexWeightEstimate",
     "DailyTokenUsage",
     "LocalCodexUsage",
+    "breakdown_codex_device_weight",
+    "codex_model_api_rates",
     "discover_codex_executable",
     "discover_codex_executables",
+    "estimate_codex_device_weight",
+    "estimate_codex_standard_api_usd",
     "locate_codex_home",
     "scan_local_codex_usage",
     "codex_account_observation_path",

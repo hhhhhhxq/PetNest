@@ -14,6 +14,7 @@ import pytest
 
 import petnest.core.codex_usage as codex_usage_module
 from petnest.core.codex_usage import (
+    AccountTokenSummary,
     CodexAccount,
     CodexAccountObservationStore,
     CodexManualAttributionStore,
@@ -27,8 +28,13 @@ from petnest.core.codex_usage import (
     CodexUsageClient,
     CodexUsageError,
     CodexUsageHistoryStore,
+    CodexUsageReport,
     LocalCodexUsage,
+    CODEX_USAGE_WEIGHT_VERSION,
+    breakdown_codex_device_weight,
     discover_codex_executable,
+    estimate_codex_device_weight,
+    estimate_codex_standard_api_usd,
     locate_codex_home,
     scan_local_codex_usage,
 )
@@ -415,7 +421,7 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
             input_tokens=1_400,
             cached_input_tokens=300,
             output_tokens=300,
-            weighted_credits=0.55375,
+            weighted_credits=pytest.approx(0.398),
         ),
     )
     assert report.local_usage.fast_uses == 1
@@ -625,7 +631,7 @@ def test_explicit_model_accepts_codex_sub_limit_and_is_weighted(tmp_path: Path) 
     assert usage.fast_uses == 1
     assert usage.reasoning_usage == (CodexReasoningUsage("unknown", uses=1),)
     assert usage.weighted_complete
-    assert usage.weighted_credits == 0.603125
+    assert usage.weighted_credits == pytest.approx(0.4325)
     assert usage.model_usage == (
         CodexModelUsage(
             "gpt-5.6-sol",
@@ -634,9 +640,236 @@ def test_explicit_model_accepts_codex_sub_limit_and_is_weighted(tmp_path: Path) 
             input_tokens=1_000,
             cached_input_tokens=300,
             output_tokens=200,
-            weighted_credits=0.603125,
+            weighted_credits=pytest.approx(0.4325),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "speed", "expected"),
+    [
+        ("gpt-6.1-terra", "default", 0.03275),
+        ("gpt-6-astra", "default", 0.33),
+        ("gpt-6.1-sol", "default", 0.0655),
+        ("gpt-6.1-terra", "fast", 0.081875),
+        ("gpt-6-astra", "fast", 0.825),
+        ("gpt-6-astra", "ultrafast", 2.64),
+    ],
+)
+def test_model_price_and_speed_weight_actual_token_breakdown(
+    tmp_path: Path, model: str, speed: str, expected: float,
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "sessions/2026/11/10/rollout-22222222-2222-2222-2222-222222222222.jsonl"
+    _write_speed_setting(session, timestamp=now - timedelta(minutes=2), service_tier=speed)
+    _write_model_context(
+        session, timestamp=now - timedelta(minutes=1), model=model, reasoning_effort="max"
+    )
+    _write_token_event(
+        session,
+        timestamp=now - timedelta(seconds=30),
+        reset=reset,
+        used_percent=1,
+        total_tokens=1_100,
+        input_tokens=1_000,
+        cached_input_tokens=200,
+        output_tokens=100,
+    )
+
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+
+    assert usage.weighted_complete
+    assert usage.weighted_credits == pytest.approx(expected)
+    assert usage.reasoning_usage == (CodexReasoningUsage("max", 1),)
+    assert usage.fast_uses == (0 if speed == "default" else 1)
+
+
+def test_cached_input_has_a_different_astra_to_terra_price_ratio() -> None:
+    cached = CodexTokenUsage(input_tokens=1_000_000, cached_input_tokens=1_000_000, total_tokens=1_000_000)
+    uncached = CodexTokenUsage(input_tokens=1_000_000, total_tokens=1_000_000)
+
+    terra_cached = codex_usage_module._weighted_credits("gpt-6.1-terra", cached, "default")
+    astra_cached = codex_usage_module._weighted_credits("gpt-6-astra", cached, "default")
+    terra_input = codex_usage_module._weighted_credits("gpt-6.1-terra", uncached, "default")
+    astra_input = codex_usage_module._weighted_credits("gpt-6-astra", uncached, "default")
+
+    assert (terra_cached, astra_cached) == (1.25, 25)
+    assert (terra_input, astra_input) == (25, 250)
+
+
+def test_standard_api_dollar_estimate_distinguishes_cached_input_and_output() -> None:
+    sol = CodexModelUsage(
+        "gpt-6.1-sol", total_tokens=1_200_000, input_tokens=1_000_000,
+        cached_input_tokens=300_000, output_tokens=200_000,
+    )
+    astra = replace(sol, model="gpt-6-astra")
+
+    assert estimate_codex_standard_api_usd(sol) == pytest.approx(3.43)
+    assert estimate_codex_standard_api_usd(astra) == pytest.approx(17.3)
+    assert estimate_codex_standard_api_usd(replace(sol, model="codex-auto-review")) is None
+    assert estimate_codex_standard_api_usd(replace(sol, input_tokens=0)) is None
+    assert estimate_codex_standard_api_usd(replace(sol, total_tokens=1_300_000)) is None
+
+
+def test_legacy_weight_uses_model_breakdown_speed_mix_and_unknown_model_share() -> None:
+    tokens = CodexTokenUsage(input_tokens=1_000_000, total_tokens=1_000_000)
+    models = (
+        CodexModelUsage("gpt-6.1-sol", uses=1, total_tokens=900_000, input_tokens=900_000),
+        CodexModelUsage("codex-auto-review", uses=20, total_tokens=100_000, input_tokens=100_000),
+    )
+
+    estimate = estimate_codex_device_weight(
+        tokens,
+        models,
+        fast_uses=1,
+        standard_uses=1,
+        weighted_credits=9999,
+        weighted_complete=True,
+        weight_version=None,
+    )
+
+    # 50 credits per million standard input tokens, 50% fast at 2.5x.
+    # The unpriced share uses the known model's average per-token weight.
+    assert estimate.value == pytest.approx(87.5)
+    assert estimate.approximate
+    breakdown = breakdown_codex_device_weight(
+        tokens, models, fast_uses=1, standard_uses=1,
+        weighted_credits=9999, weighted_complete=True, weight_version=None,
+    )
+    assert breakdown.per_model == pytest.approx((78.75, 8.75))
+    assert breakdown.other_weight == 0
+    assert breakdown.approximate
+
+
+def test_current_complete_weight_is_used_without_reconstruction() -> None:
+    estimate = estimate_codex_device_weight(
+        CodexTokenUsage(total_tokens=1_000),
+        (),
+        fast_uses=0,
+        standard_uses=0,
+        weighted_credits=12.5,
+        weighted_complete=True,
+        weight_version=CODEX_USAGE_WEIGHT_VERSION,
+    )
+
+    assert estimate.value == 12.5
+    assert not estimate.approximate
+
+
+def test_weight_breakdown_preserves_current_model_weights_and_unlisted_remainder() -> None:
+    models = (CodexModelUsage("gpt-6.1-sol", total_tokens=900, weighted_credits=10),)
+    breakdown = breakdown_codex_device_weight(
+        CodexTokenUsage(total_tokens=1_000), models,
+        fast_uses=0, standard_uses=1, weighted_credits=12.5,
+        weighted_complete=True, weight_version=CODEX_USAGE_WEIGHT_VERSION,
+    )
+
+    assert breakdown.per_model == (10,)
+    assert breakdown.other_weight == 2.5
+    assert not breakdown.approximate
+
+
+def test_no_priced_model_cannot_be_reconstructed() -> None:
+    estimate = estimate_codex_device_weight(
+        CodexTokenUsage(input_tokens=1_000, total_tokens=1_000),
+        (CodexModelUsage("codex-auto-review", total_tokens=1_000, input_tokens=1_000),),
+        fast_uses=0,
+        standard_uses=1,
+        weighted_credits=None,
+        weighted_complete=False,
+        weight_version=None,
+    )
+
+    assert estimate.value is None
+
+
+def test_unreadable_session_marks_weight_as_incomplete(tmp_path: Path, monkeypatch) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "rollout-44444444-4444-4444-4444-444444444444.jsonl"
+    missing = tmp_path / "unreadable.jsonl"
+    _write_model_context(session, timestamp=now - timedelta(minutes=1), model="gpt-6.1-terra")
+    _write_token_event(
+        session,
+        timestamp=now - timedelta(seconds=30),
+        reset=reset,
+        used_percent=1,
+        total_tokens=1_000,
+        input_tokens=1_000,
+    )
+    monkeypatch.setattr(codex_usage_module, "_session_files", lambda *_args: (session, missing))
+
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+
+    assert usage.tokens.total_tokens == 1_000
+    assert usage.files_skipped == 1
+    assert not usage.weighted_complete
+
+
+def test_local_model_details_are_not_truncated_by_the_lan_limit(tmp_path: Path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "sessions/2026/11/10/rollout-77777777-7777-7777-7777-777777777777.jsonl"
+    for index in range(25):
+        when = now - timedelta(minutes=2) + timedelta(seconds=index * 2)
+        _write_model_context(session, timestamp=when, model=f"model-{index:02}", turn_id=f"turn-{index}")
+        _write_token_event(
+            session, timestamp=when + timedelta(seconds=1), reset=reset,
+            used_percent=1, total_tokens=1_000, input_tokens=1_000,
+        )
+    limit = _weekly_limit(reset)
+    usage = scan_local_codex_usage(tmp_path, limit, now=now)
+    assert len(usage.model_usage) == 25
+
+    report = CodexUsageReport(
+        account=CodexAccount("a" * 24, "te*****@example.com", "pro"),
+        rate_limits=(limit,), primary_limit=limit, account_tokens=AccountTokenSummary(),
+        daily_usage=(), local_usage=usage, fetched_at=now, codex_home=tmp_path,
+    )
+    history = CodexUsageHistoryStore(tmp_path / "history.json")
+    history.save_report(report)
+    assert len(history.load()[0].local_model_usage) == 25
+
+    device = CodexDeviceUsageSnapshot.from_report(report, device_id="local", device_label="Local")
+    assert len(device.model_usage) == 20
+    device_store = CodexDeviceUsageStore(tmp_path / "devices.json")
+    device_store.save(device)
+    assert len(device_store.load()[0].model_usage) == 20
+
+
+@pytest.mark.parametrize(
+    ("model", "speed"),
+    [
+        ("gpt-6.1-terra", "future-speed"),
+        ("unknown-model", "default"),
+        ("gpt-5.3-codex", "fast"),
+    ],
+)
+def test_unsupported_model_and_speed_do_not_receive_a_guessed_weight(
+    tmp_path: Path, model: str, speed: str,
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "sessions/2026/11/10/rollout-33333333-3333-3333-3333-333333333333.jsonl"
+    _write_speed_setting(session, timestamp=now - timedelta(minutes=2), service_tier=speed)
+    _write_model_context(session, timestamp=now - timedelta(minutes=1), model=model)
+    _write_token_event(
+        session,
+        timestamp=now - timedelta(seconds=30),
+        reset=reset,
+        used_percent=1,
+        total_tokens=1_100,
+        input_tokens=1_000,
+        output_tokens=100,
+    )
+
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+
+    assert not usage.weighted_complete
+    assert usage.model_usage[0].weighted_credits is None
+    assert usage.fast_uses == (1 if speed == "fast" else 0)
+    assert usage.standard_uses == (1 if speed == "default" else 0)
 
 
 def test_explicit_model_keeps_foreign_limit_label_as_anomaly(tmp_path: Path) -> None:

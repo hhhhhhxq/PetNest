@@ -194,6 +194,7 @@ class LanPacketCodec:
             "scan_status": _sync_scan_status(snapshot.scan_status),
             "weighted_credits": _sync_nonnegative_number(snapshot.weighted_credits),
             "weighted_complete": snapshot.weighted_complete,
+            "weight_version": _sync_weight_version(snapshot.weight_version),
             "pending_tokens": _sync_counter(snapshot.pending_tokens),
             "anomaly_tokens": _sync_counter(snapshot.anomaly_tokens),
             "models": [
@@ -451,6 +452,7 @@ class LanPacketCodec:
             scan_status=_sync_scan_status(usage.get("scan_status")),
             weighted_credits=_sync_nonnegative_number(usage.get("weighted_credits")),
             weighted_complete=_sync_bool(usage.get("weighted_complete", False)),
+            weight_version=_sync_weight_version(usage.get("weight_version")),
             pending_tokens=_sync_counter(usage.get("pending_tokens", 0)),
             anomaly_tokens=_sync_counter(usage.get("anomaly_tokens", 0)),
         )
@@ -683,6 +685,14 @@ def _sync_nonnegative_number(value: object) -> float | None:
 def _sync_bool(value: object) -> bool:
     if not isinstance(value, bool):
         raise LanProtocolError("Codex 加权状态无效")
+    return value
+
+
+def _sync_weight_version(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= 1_000_000:
+        raise LanProtocolError("Codex 加权版本无效")
     return value
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -11,13 +12,14 @@ from time import monotonic
 from typing import Callable
 
 from PySide6.QtCore import QSize, QTimer, Qt
-from PySide6.QtGui import QShowEvent
+from PySide6.QtGui import QColor, QPalette, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -27,11 +29,14 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from petnest.core.codex_usage import (
+    CODEX_USAGE_WEIGHT_VERSION,
     CodexAccountSnapshot,
     CodexDeviceUsageStore,
     CodexModelUsage,
@@ -43,8 +48,13 @@ from petnest.core.codex_usage import (
     CodexUsageClient,
     CodexUsageHistoryStore,
     CodexUsageReport,
+    CodexWeightEstimate,
+    breakdown_codex_device_weight,
     codex_device_usage_path,
     codex_manual_attribution_path,
+    codex_model_api_rates,
+    estimate_codex_device_weight,
+    estimate_codex_standard_api_usd,
 )
 from petnest.ui.theme import dialog_stylesheet
 
@@ -52,6 +62,19 @@ from petnest.ui.theme import dialog_stylesheet
 ClientFactory = Callable[[], CodexUsageClient]
 ReportCallback = Callable[[CodexUsageReport], object]
 REOPEN_REFRESH_SECONDS = 60.0
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelDetailDevice:
+    label: str
+    tokens: CodexTokenUsage
+    models: tuple[CodexModelUsage, ...]
+    fast_uses: int
+    standard_uses: int
+    weighted_credits: float | None
+    weighted_complete: bool
+    weight_version: int | None
+    estimate: CodexWeightEstimate
 
 
 class CodexUsageDialog(QDialog):
@@ -93,6 +116,9 @@ class CodexUsageDialog(QDialog):
         self._live_report: CodexUsageReport | None = None
         self._cycle_snapshots: dict[str, CodexAccountSnapshot] = {}
         self._remote_cycles: dict[str, tuple[CodexDeviceUsageSnapshot, ...]] = {}
+        self._model_detail_devices: tuple[_ModelDetailDevice, ...] = ()
+        self._model_details_weighted = False
+        self._model_details_dialog: CodexModelDetailsDialog | None = None
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(100)
         self._poll_timer.timeout.connect(self._poll_result)
@@ -243,7 +269,9 @@ class CodexUsageDialog(QDialog):
         self.local_requests_label.setObjectName("mutedLabel")
         self.local_weighted_label = QLabel("加权  —", local_card)
         self.local_weighted_label.setObjectName("mutedLabel")
-        self.local_weighted_label.setToolTip("按实际模型、输入/缓存/输出 Token 和速度模式折算，仅用于设备间比较。")
+        self.local_weighted_label.setToolTip(
+            "参考 Codex 标准 Credit 价格及订阅速度倍率估算，仅用于设备间比较，不代表实际扣费或额度。"
+        )
         self.local_attribution_label = QLabel("待归属 / 标签异常  —", local_card)
         self.local_attribution_label.setObjectName("mutedLabel")
         self.local_attribution_label.setWordWrap(True)
@@ -258,7 +286,7 @@ class CodexUsageDialog(QDialog):
         self.local_speed_label.setObjectName("mutedLabel")
         self.local_speed_label.setToolTip(
             "按本额度周期内实际产生 Token 的模型回合统计：极快对应 fast/priority，"
-            "标准对应 default。"
+            "标准对应 default，极快包含 ultrafast。"
         )
         self.local_reasoning_label = QLabel("推理强度  —", local_card)
         self.local_reasoning_label.setObjectName("mutedLabel")
@@ -287,9 +315,15 @@ class CodexUsageDialog(QDialog):
         self.quota_attribution_label.setWordWrap(True)
         self.device_ranking_title = QLabel("同账号设备用量排名（预估）", local_card)
         self.device_ranking_title.setStyleSheet("font-weight: 700; color: #4B4641;")
+        self.model_details_button = QPushButton("模型 Token / 费用…", local_card)
+        self.model_details_button.setEnabled(False)
+        self.model_details_button.clicked.connect(self._show_model_details)
+        ranking_header = QHBoxLayout()
+        ranking_header.addWidget(self.device_ranking_title, 1)
+        ranking_header.addWidget(self.model_details_button)
         self.device_ranking_hint = QLabel(
-            "设备额度占用仅按已同步 Token 比例分摊账号已用百分比，不代表实际费用或单机扣额。"
-            "未同步设备和无匹配日志的占用仍无法判断。",
+            "按已同步设备的模型权重估算额度；旧版速度和未知模型按已有明细近似。"
+            "结果不代表实际扣费；未同步设备和缺失日志无法计入。",
             local_card,
         )
         self.device_ranking_hint.setObjectName("mutedLabel")
@@ -324,7 +358,7 @@ class CodexUsageDialog(QDialog):
         local_layout.addWidget(self.synced_devices_label)
         local_layout.addWidget(self.all_devices_total_label)
         local_layout.addWidget(self.quota_attribution_label)
-        local_layout.addWidget(self.device_ranking_title)
+        local_layout.addLayout(ranking_header)
         local_layout.addWidget(self.device_ranking_hint)
         local_layout.addWidget(self.device_ranking_list)
         metrics.addWidget(local_card, 0, 1)
@@ -333,8 +367,8 @@ class CodexUsageDialog(QDialog):
         root.addLayout(metrics)
 
         note = QLabel(
-            "说明：设备额度占用按已同步 Token 比例动态估算；由于输入、缓存、输出和模型权重不同，"
-            "它不是 Codex 官方的单机精确归因。局域网只交换各账号的脱敏汇总，不传输会话内容和凭据。",
+            "说明：设备额度占用按已同步的模型和 Token 明细估算，不是 Codex 官方的单机精确归因。"
+            "局域网只交换各账号的脱敏汇总，不传输会话内容和凭据。",
             self,
         )
         note.setObjectName("mutedLabel")
@@ -620,6 +654,11 @@ class CodexUsageDialog(QDialog):
             devices = self._remote_cycles.get(identifier)
             if devices:
                 self._show_remote_cycle(devices)
+                return
+        self._model_detail_devices = ()
+        self.model_details_button.setEnabled(False)
+        if self._model_details_dialog is not None:
+            self._model_details_dialog.set_devices((), weighted_available=False)
 
     def _show_report(self, report: CodexUsageReport) -> None:
         self.current_account_label.setText(
@@ -707,6 +746,7 @@ class CodexUsageDialog(QDialog):
             local_files_skipped=local.files_skipped,
             local_weighted_credits=local.weighted_credits,
             local_weighted_complete=local.weighted_complete,
+            local_weight_version=CODEX_USAGE_WEIGHT_VERSION,
             account_used_percent=(window.used_percent if window is not None else None),
         )
 
@@ -774,7 +814,14 @@ class CodexUsageDialog(QDialog):
         )
         self.local_requests_label.setText(f"模型请求  {_number(snapshot.local_requests)}")
         self.local_weighted_label.setText(
-            _weighted_usage_label(snapshot.local_weighted_credits, snapshot.local_weighted_complete)
+            _weighted_usage_label(
+                (
+                    snapshot.local_weighted_credits
+                    if snapshot.local_weight_version == CODEX_USAGE_WEIGHT_VERSION
+                    else None
+                ),
+                snapshot.local_weighted_complete,
+            )
         )
         self.local_attribution_label.setText(
             f"待归属 {_number(snapshot.local_pending_tokens)} Token · "
@@ -824,6 +871,7 @@ class CodexUsageDialog(QDialog):
             local_files_skipped=snapshot.local_files_skipped,
             local_weighted_credits=snapshot.local_weighted_credits,
             local_weighted_complete=snapshot.local_weighted_complete,
+            local_weight_version=snapshot.local_weight_version,
             account_used_percent=used_percent,
         )
 
@@ -893,6 +941,7 @@ class CodexUsageDialog(QDialog):
             local_files_skipped=0,
             local_weighted_credits=None,
             local_weighted_complete=False,
+            local_weight_version=None,
             devices=devices,
             account_used_percent=used_percent,
             include_local=False,
@@ -931,12 +980,17 @@ class CodexUsageDialog(QDialog):
         local_files_skipped: int,
         local_weighted_credits: float | None,
         local_weighted_complete: bool,
+        local_weight_version: int | None,
         account_used_percent: float | None,
     ) -> None:
         if reset_epoch is None:
             self.synced_devices_label.setText("局域网同步  当前额度周期未知")
             self.all_devices_total_label.setText("多电脑合计  —")
             self.quota_attribution_label.setText("额度归属  当前额度周期未知")
+            self._model_detail_devices = ()
+            self.model_details_button.setEnabled(False)
+            if self._model_details_dialog is not None:
+                self._model_details_dialog.set_devices((), weighted_available=False)
             self._set_device_ranking_lines(("当前额度周期未知，无法生成排名",))
             return
         devices = self._device_history.load(
@@ -967,6 +1021,7 @@ class CodexUsageDialog(QDialog):
                 local_files_skipped=local_files_skipped,
                 local_weighted_credits=local_weighted_credits,
                 local_weighted_complete=local_weighted_complete,
+                local_weight_version=local_weight_version,
                 devices=(),
                 account_used_percent=account_used_percent,
             )
@@ -1002,6 +1057,7 @@ class CodexUsageDialog(QDialog):
             local_files_skipped=local_files_skipped,
             local_weighted_credits=local_weighted_credits,
             local_weighted_complete=local_weighted_complete,
+            local_weight_version=local_weight_version,
             devices=devices,
             account_used_percent=account_used_percent,
         )
@@ -1019,6 +1075,7 @@ class CodexUsageDialog(QDialog):
         local_files_skipped: int,
         local_weighted_credits: float | None,
         local_weighted_complete: bool,
+        local_weight_version: int | None,
         devices: tuple[CodexDeviceUsageSnapshot, ...],
         account_used_percent: float | None,
         include_local: bool = True,
@@ -1039,6 +1096,8 @@ class CodexUsageDialog(QDialog):
                     local_files_skipped,
                     local_weighted_credits,
                     local_weighted_complete,
+                    local_weight_version,
+                    local_tokens,
                 )
             )
         entries.extend(
@@ -1055,16 +1114,26 @@ class CodexUsageDialog(QDialog):
                 device.files_skipped,
                 device.weighted_credits,
                 device.weighted_complete,
+                device.weight_version,
+                device.tokens,
             )
             for device in devices
         )
-        entries.sort(
-            key=lambda item: (
-                not _has_device_usage(item[7], item[1], item[2]),
-                -item[1],
-                item[0].casefold(),
+        entries = [
+            (
+                *item,
+                estimate_codex_device_weight(
+                    item[13],
+                    item[3],
+                    fast_uses=item[4],
+                    standard_uses=item[5],
+                    weighted_credits=item[10],
+                    weighted_complete=item[11],
+                    weight_version=item[12],
+                ),
             )
-        )
+            for item in entries
+        ]
         lines: list[str] = []
         known_entries = [
             item for item in entries if _has_device_usage(item[7], item[1], item[2])
@@ -1074,19 +1143,60 @@ class CodexUsageDialog(QDialog):
         self.quota_attribution_label.setText(
             _quota_attribution_label(account_used_percent, known_total, incomplete)
         )
-        # Legacy Credit weights are not verified subscription quota rates.
-        # Never use them, including values received from older peers.
-        weighted_available = False
+        weighted_available = bool(known_entries) and all(item[14].value is not None for item in known_entries)
         known_weighted = (
-            sum(float(item[10] or 0) for item in known_entries)
+            sum(float(item[14].value or 0) for item in known_entries)
             if weighted_available
             else 0.0
         )
-        if weighted_available and known_weighted > 0:
-            entries.sort(key=lambda item: (
+        weighted_available = weighted_available and known_weighted > 0
+        approximate = weighted_available and any(item[14].approximate for item in known_entries)
+        can_rank = weighted_available or known_total > 0
+        entries.sort(
+            key=lambda item: (
                 not _has_device_usage(item[7], item[1], item[2]),
-                -float(item[10] or 0), -item[1], item[0].casefold(),
-            ))
+                -float(item[14].value or 0) if weighted_available else -item[1],
+                item[0].casefold(),
+            )
+        )
+        self._model_detail_devices = tuple(
+            _ModelDetailDevice(
+                label=(
+                    f"{_device_rank_icon(rank)} {item[0]}"
+                    if can_rank and _has_device_usage(item[7], item[1], item[2])
+                    else f"• {item[0]}"
+                ),
+                tokens=item[13],
+                models=item[3],
+                fast_uses=item[4],
+                standard_uses=item[5],
+                weighted_credits=item[10],
+                weighted_complete=item[11],
+                weight_version=item[12],
+                estimate=item[14],
+            )
+            for rank, item in enumerate(entries, 1)
+        )
+        self._model_details_weighted = weighted_available
+        self.model_details_button.setEnabled(bool(self._model_detail_devices))
+        if self._model_details_dialog is not None:
+            self._model_details_dialog.set_devices(
+                self._model_detail_devices, weighted_available=weighted_available,
+            )
+        if can_rank and not weighted_available:
+            self.device_ranking_title.setText("同账号设备 Token 排名（权重不足）")
+            if account_used_percent is not None:
+                self.quota_attribution_label.setText(
+                    f"额度归属  账号已用 {_percent(account_used_percent)}%；模型明细不足，暂无法分配"
+                )
+        elif known_entries and not can_rank:
+            self.device_ranking_title.setText("同账号设备用量（暂无法排名）")
+            if account_used_percent is not None:
+                self.quota_attribution_label.setText(
+                    f"额度归属  账号已用 {_percent(account_used_percent)}%；加权数据不足，无法分配"
+                )
+        else:
+            self.device_ranking_title.setText("同账号设备用量排名（预估）")
         for rank, (
             label,
             tokens,
@@ -1100,26 +1210,32 @@ class CodexUsageDialog(QDialog):
             files_skipped,
             weighted,
             weighted_complete,
+            weight_version,
+            token_details,
+            weight_estimate,
         ) in enumerate(
             entries[:8],
             1,
         ):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
             has_usage = _has_device_usage(scan_status, tokens, requests)
+            medal = (
+                _device_rank_icon(rank)
+                if can_rank and has_usage else "•"
+            )
             estimate = _estimated_quota_share(
-                float(weighted or 0) if weighted_available else tokens,
-                known_weighted if weighted_available else known_total,
+                float(weight_estimate.value or 0) if weighted_available else 0,
+                known_weighted if weighted_available else 0,
                 account_used_percent,
             )
             token_share = _share_percent(tokens, known_total) if has_usage else "—"
             if not has_usage:
                 weighted_share = "—"
             elif not weighted_available:
-                weighted_share = "不可用（明细不完整）"
-            elif known_weighted <= 0:
-                weighted_share = "不可用（加权值为 0）"
+                weighted_share = "不可用（模型明细不足）"
             else:
-                weighted_share = _share_percent(float(weighted or 0), known_weighted)
+                weighted_share = _share_percent(float(weight_estimate.value or 0), known_weighted)
+                if approximate:
+                    weighted_share += "（近似）"
             model = models[0] if models else None
             model_suffix = (
                 f"常用 {model.model}（{_number(model.uses)} 次）"
@@ -1136,7 +1252,7 @@ class CodexUsageDialog(QDialog):
             )
             line = (
                 f"{medal} {label}  {token_summary} · {quota_suffix}\n"
-                f"    Token 占比 {token_share} · 按 Token 比例分摊，非实际扣费\n"
+                f"    Token 占比 {token_share} · 加权占比 {weighted_share}\n"
                 f"    {_number(requests)} 次模型请求 · {model_suffix} · "
                 f"速度 {_speed_usage_label(fast_uses, standard_uses)}\n"
                 f"    推理强度 {_reasoning_usage_label(reasoning_usage)}"
@@ -1153,6 +1269,20 @@ class CodexUsageDialog(QDialog):
         if len(entries) > 8:
             lines.append(f"…还有 {len(entries) - 8} 台设备")
         self._set_device_ranking_lines(tuple(lines))
+
+    def _show_model_details(self) -> None:
+        if self._model_details_dialog is None:
+            dialog = CodexModelDetailsDialog(self)
+            dialog.finished.connect(self._clear_model_details)
+            self._model_details_dialog = dialog
+        dialog = self._model_details_dialog
+        dialog.set_devices(self._model_detail_devices, weighted_available=self._model_details_weighted)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _clear_model_details(self, _result: int) -> None:
+        self._model_details_dialog = None
 
     def _set_device_ranking_lines(self, lines: tuple[str, ...]) -> None:
         self.device_ranking_list.clear()
@@ -1306,6 +1436,212 @@ class CodexUsageDialog(QDialog):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+class CodexModelDetailsDialog(QDialog):
+    """Explain each device's ranking weight and standard-price USD reference."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle("各设备模型 Token 与费用")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setMinimumSize(760, 450)
+        self.resize(1100, 620)
+        self.setStyleSheet(dialog_stylesheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(10)
+        heading = QLabel("各设备模型明细", self)
+        heading.setObjectName("contentTitle")
+        layout.addWidget(heading)
+        self.explanation_label = QLabel(
+            "排名权重按模型、Token 类型和速度估算，未知模型使用已知模型的平均权重近似。"
+            "参考美元按 API 标准短上下文单价计算，不含加速、长上下文、缓存写入加价和工具费；"
+            "不是订阅账单，也不是排名的计算口径。远程设备未同步的模型列为“其他”。",
+            self,
+        )
+        self.explanation_label.setObjectName("mutedLabel")
+        self.explanation_label.setWordWrap(True)
+        self.explanation_label.setStyleSheet("color: #5F5650; font-size: 14px;")
+        layout.addWidget(self.explanation_label)
+        self.model_tree = QTreeWidget(self)
+        self.model_tree.setObjectName("codexModelDetailsTree")
+        self.model_tree.setColumnCount(7)
+        self.model_tree.setHeaderLabels(
+            ["设备 / 模型", "Token", "未缓存输入", "缓存输入", "输出", "排名权重", "参考美元"]
+        )
+        self.model_tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.model_tree.setAlternatingRowColors(True)
+        self.model_tree.setUniformRowHeights(True)
+        palette = self.model_tree.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor("#FFFDF9"))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#F6F0EA"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#302B28"))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor("#302B28"))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor("#302B28"))
+        self.model_tree.setPalette(palette)
+        self.model_tree.setStyleSheet(
+            "QTreeWidget#codexModelDetailsTree {"
+            " background-color: #FFFDF9; alternate-background-color: #F6F0EA;"
+            " color: #302B28; border: 1px solid #DED4CB; border-radius: 8px;"
+            " font-size: 15px; outline: none; }"
+            "QTreeWidget#codexModelDetailsTree::item { color: #302B28; padding: 7px 9px; }"
+            "QTreeWidget#codexModelDetailsTree QHeaderView::section {"
+            " background-color: #F4EBE4; color: #3D3733; font-size: 14px;"
+            " font-weight: 600; padding: 8px 10px; border: none; border-bottom: 1px solid #DED4CB; }"
+        )
+        header = self.model_tree.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 7):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.model_tree, 1)
+        self.summary_label = QLabel("", self)
+        self.summary_label.setObjectName("mutedLabel")
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("color: #5F5650; font-size: 14px;")
+        layout.addWidget(self.summary_label)
+        footer = QHBoxLayout()
+        source = QLabel(
+            '<a href="https://developers.openai.com/api/docs/pricing">OpenAI API 价格表</a>'
+            " · 价格参考日期 2026-11-10",
+            self,
+        )
+        source.setOpenExternalLinks(True)
+        source.setStyleSheet("color: #5F5650; font-size: 14px;")
+        footer.addWidget(source)
+        footer.addStretch(1)
+        close = QPushButton("关闭", self)
+        close.clicked.connect(self.close)
+        footer.addWidget(close)
+        layout.addLayout(footer)
+
+    def set_devices(self, devices: tuple[_ModelDetailDevice, ...], *, weighted_available: bool) -> None:
+        self.model_tree.clear()
+        total_weight = sum(float(item.estimate.value or 0) for item in devices) if weighted_available else 0.0
+        known_total = 0.0
+        has_known_price = False
+        any_partial = False
+        for device in devices:
+            costs = tuple(estimate_codex_standard_api_usd(model) for model in device.models)
+            known_costs = [cost for cost in costs if cost is not None]
+            model_tokens = sum(model.total_tokens for model in device.models)
+            other_tokens = max(0, device.tokens.total_tokens - model_tokens)
+            partial = (
+                model_tokens != device.tokens.total_tokens
+                or any(cost is None and model.total_tokens > 0 for model, cost in zip(device.models, costs))
+            )
+            any_partial = any_partial or partial
+            known_total += sum(known_costs)
+            has_known_price = has_known_price or bool(known_costs)
+            cost_text = _usd_reference(sum(known_costs)) if known_costs else "—"
+            if known_costs and partial:
+                cost_text += "（部分）"
+
+            weight_text = "—"
+            if weighted_available and device.estimate.value is not None:
+                weight_text = _detail_weight(device.estimate.value, device.estimate.approximate)
+                if total_weight > 0:
+                    weight_text += f" · {_share_percent(device.estimate.value, total_weight)}"
+            input_text, cached_text, output_text = _detail_token_parts(device.tokens)
+            parent = QTreeWidgetItem(
+                self.model_tree,
+                [device.label, _number(device.tokens.total_tokens), input_text, cached_text,
+                 output_text, weight_text, cost_text],
+            )
+            parent.setExpanded(True)
+            for column in range(7):
+                font = parent.font(column)
+                font.setBold(True)
+                parent.setFont(column, font)
+            breakdown = breakdown_codex_device_weight(
+                device.tokens,
+                device.models,
+                fast_uses=device.fast_uses,
+                standard_uses=device.standard_uses,
+                weighted_credits=device.weighted_credits,
+                weighted_complete=device.weighted_complete,
+                weight_version=device.weight_version,
+            )
+            for index, (model, cost) in enumerate(zip(device.models, costs)):
+                model_tokens_usage = CodexTokenUsage(
+                    input_tokens=model.input_tokens,
+                    cached_input_tokens=model.cached_input_tokens,
+                    output_tokens=model.output_tokens,
+                    total_tokens=model.total_tokens,
+                )
+                input_text, cached_text, output_text = _detail_token_parts(model_tokens_usage)
+                model_weight = breakdown.per_model[index] if weighted_available else None
+                rates = codex_model_api_rates(model.model)
+                model_cost_text = (
+                    _usd_reference(cost)
+                    if cost is not None
+                    else "无单价" if rates is None else "缺少明细"
+                )
+                child = QTreeWidgetItem(
+                    parent,
+                    [model.model, _number(model.total_tokens), input_text, cached_text, output_text,
+                     _detail_weight(model_weight, breakdown.approximate), model_cost_text],
+                )
+                if rates is None:
+                    child.setToolTip(6, "没有可确认的公开单价，美元参考值未计算。")
+                elif cost is None:
+                    child.setToolTip(6, "缺少完整的输入、缓存和输出明细，美元参考值未计算。")
+                else:
+                    child.setToolTip(
+                        6,
+                        f"每百万 Token 标准单价：输入 ${rates[0]:g}，缓存 ${rates[1]:g}，输出 ${rates[2]:g}。",
+                    )
+            if other_tokens or (breakdown.other_weight is not None and breakdown.other_weight > 1e-7):
+                other = QTreeWidgetItem(
+                    parent,
+                    ["其他 / 未记录模型", _number(other_tokens) if other_tokens else "—", "—", "—", "—",
+                     _detail_weight(breakdown.other_weight if weighted_available else None, breakdown.approximate), "—"],
+                )
+                other.setToolTip(0, "这部分模型未提供明细；局域网同步最多包含 20 个模型。")
+            for item in [parent, *(parent.child(i) for i in range(parent.childCount()))]:
+                for column in range(1, 7):
+                    item.setTextAlignment(column, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if not devices:
+            self.summary_label.setText("当前周期暂无可展示的设备明细。")
+        elif not has_known_price:
+            self.summary_label.setText("已知模型参考美元合计：—（缺少单价或 Token 分类明细）")
+        else:
+            suffix = "（仅已知模型）" if any_partial else ""
+            self.summary_label.setText(f"已知模型参考美元合计：{_usd_reference(known_total)}{suffix}")
+
+
+def _device_rank_icon(rank: int) -> str:
+    return {1: "👑", 2: "🥈", 3: "🥉"}.get(rank, f"{rank}.")
+
+
+def _detail_token_parts(tokens: CodexTokenUsage) -> tuple[str, str, str]:
+    if tokens.total_tokens > 0 and not (tokens.input_tokens or tokens.output_tokens):
+        return "—", "—", "—"
+    if tokens.cached_input_tokens > tokens.input_tokens:
+        return "—", "—", "—"
+    return (
+        _number(tokens.input_tokens - tokens.cached_input_tokens),
+        _number(tokens.cached_input_tokens),
+        _number(tokens.output_tokens),
+    )
+
+
+def _detail_weight(value: float | None, approximate: bool) -> str:
+    if value is None:
+        return "—"
+    return ("约 " if approximate else "") + f"{value:,.2f}"
+
+
+def _usd_reference(value: float | None) -> str:
+    if value is None:
+        return "—"
+    if 0 < value < 0.01:
+        return "< $0.01"
+    amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"约 ${amount:,.2f}"
+
+
 def _window_label(minutes: int | None) -> str:
     if minutes is None:
         return "滚动窗口"
@@ -1440,12 +1776,13 @@ def _weighted_number(value: float | None, complete: bool) -> str:
     if value is None:
         return "—"
     rounded = Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    rendered = f"{rounded:.4f} Credit"
+    rendered = f"{rounded:.4f}（参考权重）"
     return rendered + ("（仅已知部分）" if not complete else "")
 
 
 def _weighted_usage_label(value: float | None, complete: bool) -> str:
-    return "模型费用 —（暂无可核实的套餐扣费规则）"
+    rendered = _weighted_number(value, complete)
+    return f"加权 {rendered}"
 
 
 def _share_percent(value: float, total: float) -> str:
