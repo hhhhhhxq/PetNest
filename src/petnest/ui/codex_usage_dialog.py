@@ -1575,7 +1575,7 @@ class CodexModelDetailsDialog(QDialog):
         footer = QHBoxLayout()
         source = QLabel(
             '<a href="https://developers.openai.com/api/docs/pricing">OpenAI API 价格表</a>'
-            " · 价格参考日期 2026-11-10",
+            " · 6.2 模型价格参考 2026-11-17；其他模型参考 2026-11-10",
             self,
         )
         source.setOpenExternalLinks(True)

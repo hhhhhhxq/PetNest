@@ -26,7 +26,7 @@ import uuid
 
 # Changes to the weighting rules must increment this so old LAN snapshots
 # cannot be compared with newly calculated estimates.
-CODEX_USAGE_WEIGHT_VERSION = 1
+CODEX_USAGE_WEIGHT_VERSION = 2
 
 
 class CodexUsageError(RuntimeError):
@@ -2095,8 +2095,10 @@ def _inside_account_interval(
 # Standard Codex credit rates per 1M tokens used as relative weights, not as
 # an assertion of actual subscription charges. The fast multipliers below
 # approximate included subscription usage, whose exact model weights are not
-# published. https://learn.chatgpt.com/docs/pricing (2026-11-10)
+# published. https://learn.chatgpt.com/docs/pricing (2026-11-17)
 _MODEL_CREDIT_RATES: dict[str, tuple[float, float, float]] = {
+    "gpt-6.2-astra": (200.0, 10.0, 1000.0),
+    "gpt-6.2-sol": (50.0, 2.5, 250.0),
     "gpt-6-astra": (250.0, 25.0, 1250.0),
     "gpt-6.1-sol": (50.0, 2.5, 250.0),
     "gpt-6.1-terra": (25.0, 1.25, 125.0),
@@ -2113,8 +2115,11 @@ _MODEL_CREDIT_RATES: dict[str, tuple[float, float, float]] = {
 
 # Standard, short-context API prices per million input, cached input and
 # output tokens. These are a comparison, not a ChatGPT subscription bill.
-# https://developers.openai.com/api/docs/pricing (2026-11-10)
+# https://developers.openai.com/api/docs/models/gpt-6.2-astra
+# https://developers.openai.com/api/docs/models/gpt-6.2-sol (2026-11-17)
 _MODEL_API_USD_RATES: dict[str, tuple[float, float, float]] = {
+    "gpt-6.2-astra": (8.0, 0.40, 40.0),
+    "gpt-6.2-sol": (2.0, 0.10, 10.0),
     "gpt-6-astra": (10.0, 1.0, 50.0),
     "gpt-6.1-sol": (2.0, 0.10, 10.0),
     "gpt-6.1-terra": (1.0, 0.05, 5.0),
@@ -2151,13 +2156,20 @@ def estimate_codex_standard_api_usd(model: CodexModelUsage) -> float | None:
 
 
 def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float | None:
+    """Return a quota-comparison weight, not a paid-credit charge or bill.
+
+    Speed multipliers are for included subscription usage. Purchased credits
+    and API-key sessions have different billing rules.
+    """
     normalized = model.strip().casefold()
     rates = _MODEL_CREDIT_RATES.get(normalized)
     if rates is None:
         return None
     if speed not in {"default", "fast", "priority", "ultrafast"}:
         return None
-    if speed == "ultrafast" and normalized not in {"gpt-6-astra", "gpt-6.1-sol"}:
+    if speed == "ultrafast" and normalized not in {
+        "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol",
+    }:
         return None
     if usage.total_tokens > 0 and not any(
         (usage.input_tokens, usage.cached_input_tokens, usage.output_tokens)
@@ -2172,6 +2184,8 @@ def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float |
     ) / 1_000_000
     if speed in {"fast", "priority"}:
         factors = {
+            "gpt-6.2-astra": 2.0,
+            "gpt-6.2-sol": 2.0,
             "gpt-6-astra": 2.5,
             "gpt-6.1-sol": 2.5,
             "gpt-6.1-terra": 2.5,
@@ -2188,7 +2202,7 @@ def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float |
             return None
         weighted *= factor
     elif speed == "ultrafast":
-        weighted *= 8.0
+        weighted *= 6.0 if normalized in {"gpt-6.2-astra", "gpt-6.2-sol"} else 8.0
     return weighted
 
 

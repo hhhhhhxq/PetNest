@@ -729,6 +729,36 @@ def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
     assert office.child(2).text(6) == "—"
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_usd", "input_price"),
+    [("gpt-6.2-astra", "约 $13.72", "输入 $8"),
+     ("gpt-6.2-sol", "约 $3.43", "输入 $2")],
+)
+def test_new_model_details_use_official_standard_api_rates(
+    qtbot: pytest.QtBot, tmp_path: Path, model: str, expected_usd: str, input_price: str,
+) -> None:
+    report = _report(tmp_path)
+    tokens = CodexTokenUsage(input_tokens=1_000_000, cached_input_tokens=300_000,
+                             output_tokens=200_000, total_tokens=1_200_000, requests=1)
+    model_usage = CodexModelUsage(model, uses=1, total_tokens=1_200_000,
+                                  input_tokens=1_000_000, cached_input_tokens=300_000,
+                                  output_tokens=200_000)
+    report = replace(report, local_usage=replace(report.local_usage, tokens=tokens,
+                                                  model_usage=(model_usage,)))
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False,
+                              device_id="local", device_label="Home")
+    qtbot.addWidget(dialog)
+    dialog._show_report(report)
+    dialog.model_details_button.click()
+    details = dialog._model_details_dialog
+    assert details is not None
+    qtbot.addWidget(details)
+    row = details.model_tree.topLevelItem(0).child(0)
+    assert row.text(0) == model
+    assert row.text(6) == expected_usd
+    assert input_price in row.toolTip(6)
+
+
 def test_unknown_only_model_falls_back_to_labelled_token_ranking(
     qtbot: pytest.QtBot, tmp_path: Path,
 ) -> None:

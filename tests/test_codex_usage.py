@@ -648,6 +648,12 @@ def test_explicit_model_accepts_codex_sub_limit_and_is_weighted(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("model", "speed", "expected"),
     [
+        ("gpt-6.2-astra", "default", 0.262),
+        ("gpt-6.2-astra", "fast", 0.524),
+        ("gpt-6.2-astra", "ultrafast", 1.572),
+        ("gpt-6.2-sol", "default", 0.0655),
+        ("gpt-6.2-sol", "fast", 0.131),
+        ("gpt-6.2-sol", "ultrafast", 0.393),
         ("gpt-6.1-terra", "default", 0.03275),
         ("gpt-6-astra", "default", 0.33),
         ("gpt-6.1-sol", "default", 0.0655),
@@ -704,9 +710,13 @@ def test_standard_api_dollar_estimate_distinguishes_cached_input_and_output() ->
         cached_input_tokens=300_000, output_tokens=200_000,
     )
     astra = replace(sol, model="gpt-6-astra")
+    new_astra = replace(sol, model="gpt-6.2-astra")
+    new_sol = replace(sol, model="gpt-6.2-sol")
 
     assert estimate_codex_standard_api_usd(sol) == pytest.approx(3.43)
     assert estimate_codex_standard_api_usd(astra) == pytest.approx(17.3)
+    assert estimate_codex_standard_api_usd(new_astra) == pytest.approx(13.72)
+    assert estimate_codex_standard_api_usd(new_sol) == pytest.approx(3.43)
     assert estimate_codex_standard_api_usd(replace(sol, model="codex-auto-review")) is None
     assert estimate_codex_standard_api_usd(replace(sol, input_tokens=0)) is None
     assert estimate_codex_standard_api_usd(replace(sol, total_tokens=1_300_000)) is None
@@ -740,6 +750,18 @@ def test_legacy_weight_uses_model_breakdown_speed_mix_and_unknown_model_share() 
     assert breakdown.per_model == pytest.approx((78.75, 8.75))
     assert breakdown.other_weight == 0
     assert breakdown.approximate
+
+
+def test_older_snapshot_reconstructs_new_model_using_current_rates() -> None:
+    tokens = CodexTokenUsage(input_tokens=1_000_000, total_tokens=1_000_000)
+    model = CodexModelUsage("gpt-6.2-astra", uses=2, total_tokens=1_000_000, input_tokens=1_000_000)
+    estimate = estimate_codex_device_weight(
+        tokens, (model,), fast_uses=1, standard_uses=1,
+        weighted_credits=9999, weighted_complete=True,
+        weight_version=CODEX_USAGE_WEIGHT_VERSION - 1,
+    )
+    assert estimate.value == pytest.approx(300)
+    assert estimate.approximate
 
 
 def test_current_complete_weight_is_used_without_reconstruction() -> None:
