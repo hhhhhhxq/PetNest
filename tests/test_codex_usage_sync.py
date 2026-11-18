@@ -14,6 +14,7 @@ import pytest
 from petnest.core.codex_usage import (
     CODEX_USAGE_WEIGHT_VERSION,
     AccountTokenSummary,
+    CodexApiPricingBucket,
     CodexAccount,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
@@ -81,7 +82,10 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
         reasoning_output_tokens=0,
         total_tokens=1_000,
         requests=2,
-        model_usage=(CodexModelUsage("gpt-5.6-sol", uses=2, total_tokens=1_000),),
+        model_usage=(CodexModelUsage(
+            "gpt-5.6-sol", uses=2, total_tokens=1_000,
+            api_pricing=(CodexApiPricingBucket("fast", "short", 2, 1_000, 700, 0.025),),
+        ),),
         reasoning_usage=(
             CodexReasoningUsage("high", uses=1),
             CodexReasoningUsage("medium", uses=1),
@@ -115,6 +119,16 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
     assert decoded.request_id == "request-1"
     assert decoded.snapshot == snapshot
 
+    encoded_pricing = packet["usage"]["models"][0].pop("api_pricing")
+    old_sender = LanPacketCodec.decode_codex_usage_sync(
+        LanPacketCodec.encode(packet), local_device_id="receiver"
+    )
+    assert old_sender.snapshot.model_usage[0].api_pricing == ()
+    packet["usage"]["models"][0]["api_pricing"] = [["fast", "short", 2, 1_000, 1_001, 0.025]]
+    with pytest.raises(LanProtocolError, match="参考费用明细"):
+        LanPacketCodec.decode_codex_usage_sync(LanPacketCodec.encode(packet), local_device_id="receiver")
+    packet["usage"]["models"][0]["api_pricing"] = encoded_pricing
+
     del packet["usage"]["weight_version"]
     legacy = LanPacketCodec.decode_codex_usage_sync(
         LanPacketCodec.encode(packet), local_device_id="receiver"
@@ -147,6 +161,36 @@ def test_sync_packet_round_trip_keeps_only_validated_numeric_snapshot() -> None:
             LanPacketCodec.encode(packet),
             local_device_id="receiver",
         )
+
+
+def test_large_pricing_details_do_not_break_lan_sync() -> None:
+    pricing = tuple(
+        CodexApiPricingBucket(speed, context, 1, 1, 1, 0.001)
+        for speed in ("batch", "fast", "flex", "standard", "ultrafast", "unknown")
+        for context in ("long", "short", "unknown")
+    )
+    models = tuple(
+        CodexModelUsage(f"model-{i:02d}-" + "x" * 65, uses=18, total_tokens=18,
+                        input_tokens=18, api_pricing=pricing)
+        for i in range(20)
+    )
+    snapshot = CodexDeviceUsageSnapshot(
+        account_key="a" * 24, device_id="sender", device_label="Office",
+        window_resets_at=2_000_000_000, window_duration_minutes=10_080,
+        updated_at=datetime.now(UTC).isoformat(), input_tokens=360, cached_input_tokens=0,
+        cache_write_input_tokens=0, output_tokens=0, reasoning_output_tokens=0,
+        total_tokens=360, requests=360, model_usage=models,
+    )
+    packet = LanPacketCodec.codex_usage_sync(
+        kind="codex_usage_sync_request", request_id="request-1",
+        target_device_id="receiver", snapshot=snapshot,
+    )
+    encoded = LanPacketCodec.encode(packet)
+    assert len(encoded) <= 8192
+    decoded = LanPacketCodec.decode_codex_usage_sync(encoded, local_device_id="receiver")
+    assert len(decoded.snapshot.model_usage) == 20
+    assert any(not model.api_pricing for model in decoded.snapshot.model_usage)
+    assert any(model.api_pricing for model in decoded.snapshot.model_usage)
 
 
 def test_first_discovered_lan_peer_triggers_sync_once(qtbot, tmp_path, monkeypatch) -> None:

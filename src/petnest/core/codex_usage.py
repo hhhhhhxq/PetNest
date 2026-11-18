@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -26,7 +27,7 @@ import uuid
 
 # Changes to the weighting rules must increment this so old LAN snapshots
 # cannot be compared with newly calculated estimates.
-CODEX_USAGE_WEIGHT_VERSION = 2
+CODEX_USAGE_WEIGHT_VERSION = 3
 
 
 class CodexUsageError(RuntimeError):
@@ -117,6 +118,18 @@ class CodexTokenUsage:
 
 
 @dataclass(frozen=True, slots=True)
+class CodexApiPricingBucket:
+    """Aggregated, non-secret per-request pricing evidence for one model."""
+
+    speed: str
+    context: str
+    requests: int
+    total_tokens: int
+    priced_tokens: int
+    reference_usd: float
+
+
+@dataclass(frozen=True, slots=True)
 class CodexModelUsage:
     """One model's local usage within a quota window."""
 
@@ -127,6 +140,7 @@ class CodexModelUsage:
     cached_input_tokens: int = 0
     output_tokens: int = 0
     weighted_credits: float | None = None
+    api_pricing: tuple[CodexApiPricingBucket, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -720,7 +734,7 @@ def scan_local_codex_usage(
     total = CodexTokenUsage()
     pending = CodexTokenUsage()
     anomalies = CodexTokenUsage()
-    model_totals: dict[str, dict[str, int | float | bool]] = {}
+    model_totals: dict[str, dict[str, Any]] = {}
     reasoning_totals: dict[str, int] = {}
     weighted_total = 0.0
     weighted_complete = True
@@ -743,9 +757,9 @@ def scan_local_codex_usage(
         scanned += 1
         current_model: str | None = None
         current_turn_id: str | None = None
-        current_speed = "default"
+        current_speed = "unknown"
         current_reasoning_effort: str | None = None
-        current_turn_speed = "default"
+        current_turn_speed = "unknown"
         current_turn_reasoning_effort = "unknown"
         current_model_use_counted = False
         previous_cumulative_total: int | None = None
@@ -823,6 +837,7 @@ def scan_local_codex_usage(
                             "output": 0,
                             "weighted": 0.0,
                             "complete": True,
+                            "api_pricing": {},
                         },
                     )
                     if not current_model_use_counted:
@@ -839,6 +854,17 @@ def scan_local_codex_usage(
                     counters["input"] = int(counters["input"]) + event.usage.input_tokens
                     counters["cached"] = int(counters["cached"]) + event.usage.cached_input_tokens
                     counters["output"] = int(counters["output"]) + event.usage.output_tokens
+                    pricing = _api_pricing_for_event(current_model, event, current_turn_speed)
+                    key = (pricing.speed, pricing.context)
+                    previous = counters["api_pricing"].get(key)
+                    counters["api_pricing"][key] = pricing if previous is None else CodexApiPricingBucket(
+                        speed=pricing.speed,
+                        context=pricing.context,
+                        requests=previous.requests + pricing.requests,
+                        total_tokens=previous.total_tokens + pricing.total_tokens,
+                        priced_tokens=previous.priced_tokens + pricing.priced_tokens,
+                        reference_usd=previous.reference_usd + pricing.reference_usd,
+                    )
                     weighted = _weighted_credits(current_model, event.usage, current_turn_speed)
                     if weighted is None:
                         weighted_complete = False
@@ -860,6 +886,7 @@ def scan_local_codex_usage(
             cached_input_tokens=int(values["cached"]),
             output_tokens=int(values["output"]),
             weighted_credits=(float(values["weighted"]) if values["complete"] else None),
+            api_pricing=tuple(sorted(values["api_pricing"].values(), key=lambda item: (item.speed, item.context))),
         )
         for model, values in sorted(
             model_totals.items(),
@@ -1897,7 +1924,7 @@ def _local_thread_settings(
         speed = None
     elif service_tier is None:
         speed = "default"
-    elif isinstance(service_tier, str) and service_tier in {"fast", "priority", "default", "ultrafast"}:
+    elif isinstance(service_tier, str) and service_tier in {"fast", "priority", "default", "ultrafast", "batch", "flex"}:
         speed = str(service_tier)
     else:
         speed = "unknown"
@@ -1927,6 +1954,7 @@ class _LocalTokenEvent:
     used_percent: float | None
     cumulative_total_tokens: int | None
     fingerprint: str
+    last_usage: dict[str, Any]
 
 
 def _local_token_event(
@@ -1999,6 +2027,7 @@ def _local_token_event(
         used_percent=(max(0.0, min(100.0, used_percent)) if used_percent is not None else None),
         cumulative_total_tokens=cumulative_total,
         fingerprint=fingerprint,
+        last_usage=last,
     )
 
 
@@ -2153,6 +2182,101 @@ def estimate_codex_standard_api_usd(model: CodexModelUsage) -> float | None:
         + model.cached_input_tokens * cached_rate
         + model.output_tokens * output_rate
     ) / 1_000_000
+
+
+_API_CONTEXT_272K_MODELS = frozenset({
+    "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol",
+    "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna",
+})
+_API_ULTRAFAST_MODELS = frozenset({
+    "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra", "gpt-6.1-sol",
+})
+_API_FLEX_MODELS = frozenset({
+    "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna",
+})
+_API_ULTRAFAST_PROMOTION_END = datetime(2027, 3, 1, 8, tzinfo=UTC)
+
+
+def _api_usage_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10**18:
+        return None
+    return value
+
+
+def _api_pricing_for_event(
+    model: str, event: _LocalTokenEvent, speed: str,
+) -> CodexApiPricingBucket:
+    """Price only fields supported by the event; the result is not a bill.
+
+    https://developers.openai.com/api/docs/models/gpt-6.2-sol
+    https://developers.openai.com/api/docs/guides/prompt-caching
+    """
+    model = model.strip().casefold()
+    normalized_speed = {
+        "default": "standard", "fast": "fast", "priority": "fast",
+        "ultrafast": "ultrafast", "batch": "batch", "flex": "flex",
+    }.get(speed, "unknown")
+    last = event.last_usage
+    details = last.get("input_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    input_tokens = _api_usage_int(last.get("input_tokens"))
+    output_tokens = _api_usage_int(last.get("output_tokens"))
+    cached = _api_usage_int(last.get("cached_input_tokens", details.get("cached_tokens")))
+    cache_write = _api_usage_int(last.get("cache_write_input_tokens", details.get("cache_write_tokens")))
+    context = (
+        ("long" if input_tokens > 272_000 else "short")
+        if input_tokens is not None and model in _API_CONTEXT_272K_MODELS
+        else "unknown"
+    )
+    rates = _MODEL_API_USD_RATES.get(model)
+    multiplier = {
+        "standard": 1.0, "fast": 2.0, "batch": 0.5, "flex": 0.5,
+    }.get(normalized_speed)
+    if normalized_speed == "flex" and model not in _API_FLEX_MODELS:
+        multiplier = None
+    if normalized_speed == "ultrafast" and model in _API_ULTRAFAST_MODELS:
+        multiplier = (
+            3.0 if model in {"gpt-6.2-astra", "gpt-6.2-sol"}
+            and event.timestamp < _API_ULTRAFAST_PROMOTION_END else 6.0
+        )
+    total = event.usage.total_tokens
+    priced_tokens = 0
+    amount = 0.0
+    if (rates is not None and model in _API_CONTEXT_272K_MODELS and multiplier is not None
+            and input_tokens is not None and output_tokens is not None
+            and total == input_tokens + output_tokens):
+        input_rate, cached_rate, output_rate = rates
+        input_factor = 2.0 if context == "long" else 1.0
+        output_factor = 1.5 if context == "long" else 1.0
+        amount = output_tokens * output_rate * output_factor
+        priced_tokens = output_tokens
+        if cached is not None and cached <= input_tokens:
+            amount += cached * cached_rate * input_factor
+            priced_tokens += cached
+            if cache_write is not None and cached + cache_write <= input_tokens:
+                ordinary = input_tokens - cached - cache_write
+                amount += ordinary * input_rate * input_factor
+                priced_tokens += ordinary
+                if cache_write:
+                    retention = details.get("cache_write_tokens_details")
+                    if isinstance(retention, dict):
+                        short_write = _api_usage_int(retention.get("ttl_30m_tokens"))
+                        long_write = _api_usage_int(retention.get("ttl_12h_tokens"))
+                        if short_write is not None and long_write is not None and short_write + long_write == cache_write:
+                            amount += (short_write * 1.25 + long_write * 2.5) * input_rate * input_factor
+                            priced_tokens += cache_write
+        amount = amount * multiplier / 1_000_000
+    return CodexApiPricingBucket(
+        normalized_speed, context, 1, total, priced_tokens, amount,
+    )
+
+
+def estimate_codex_api_usd(model: CodexModelUsage) -> tuple[float | None, int]:
+    """Return known API-reference cost and tokens without sufficient evidence."""
+    priced = sum(item.priced_tokens for item in model.api_pricing)
+    if priced <= 0:
+        return None, model.total_tokens
+    return sum(item.reference_usd for item in model.api_pricing), max(0, model.total_tokens - priced)
 
 
 def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float | None:
@@ -2355,6 +2479,45 @@ def _valid_model_name(value: object) -> bool:
     )
 
 
+def _parse_api_pricing(value: object) -> tuple[CodexApiPricingBucket, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > 18:
+        return ()
+    buckets: list[CodexApiPricingBucket] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in value:
+        try:
+            if isinstance(raw, CodexApiPricingBucket):
+                item = raw
+            elif isinstance(raw, dict):
+                item = CodexApiPricingBucket(**raw)
+            elif isinstance(raw, (list, tuple)) and len(raw) == 6:
+                item = CodexApiPricingBucket(*raw)
+            else:
+                return ()
+        except (TypeError, ValueError):
+            return ()
+        key = (item.speed, item.context)
+        counters = (item.requests, item.total_tokens, item.priced_tokens)
+        if (
+            not isinstance(item.speed, str)
+            or item.speed not in {"standard", "fast", "ultrafast", "batch", "flex", "unknown"}
+            or not isinstance(item.context, str)
+            or item.context not in {"short", "long", "unknown"}
+            or key in seen
+            or any(isinstance(n, bool) or not isinstance(n, int) or not 0 <= n <= 10**18 for n in counters)
+            or item.priced_tokens > item.total_tokens
+            or isinstance(item.reference_usd, bool)
+            or not isinstance(item.reference_usd, (int, float))
+            or not 0 <= item.reference_usd <= 10**18
+            or not math.isfinite(item.reference_usd)
+            or (item.priced_tokens == 0 and item.reference_usd != 0)
+        ):
+            return ()
+        seen.add(key)
+        buckets.append(item)
+    return tuple(sorted(buckets, key=lambda item: (item.speed, item.context)))
+
+
 def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
     if not isinstance(value, (list, tuple)):
         return ()
@@ -2387,6 +2550,7 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
                         and not isinstance(raw.get("weighted_credits"), bool)
                         else None
                     ),
+                    api_pricing=_parse_api_pricing(raw.get("api_pricing")),
                 )
             except (TypeError, ValueError):
                 continue
@@ -2403,6 +2567,8 @@ def _parse_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
             or not 0 <= item.cached_input_tokens <= 10**18
             or not 0 <= item.output_tokens <= 10**18
             or (item.weighted_credits is not None and not 0 <= item.weighted_credits <= 10**18)
+            or item.api_pricing != _parse_api_pricing(item.api_pricing)
+            or sum(bucket.total_tokens for bucket in item.api_pricing) > item.total_tokens
         ):
             continue
         seen.add(item.model)

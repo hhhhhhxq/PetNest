@@ -15,6 +15,7 @@ from petnest.core.codex_usage import (
     CodexDeviceUsageSnapshot,
     CodexModelUsage,
     CodexReasoningUsage,
+    _parse_api_pricing,
 )
 from petnest.core.lan_chat import LanChatImageError, validate_chat_image_data
 from petnest.models.lan_interaction import (
@@ -217,7 +218,15 @@ class LanPacketCodec:
                 for item in snapshot.reasoning_usage[:20]
             ],
         }
-        return {
+        for raw_model, item in zip(usage["models"], snapshot.model_usage[:20]):
+            if item.api_pricing:
+                pricing = _sync_api_pricing(item.api_pricing, item.total_tokens)
+                raw_model["api_pricing"] = [
+                    [bucket.speed, bucket.context, bucket.requests, bucket.total_tokens,
+                     bucket.priced_tokens, bucket.reference_usd]
+                    for bucket in pricing
+                ]
+        packet = {
             "version": LAN_PROTOCOL_VERSION,
             "kind": kind,
             "request_id": _identity(request_id, "同步请求 ID"),
@@ -233,6 +242,14 @@ class LanPacketCodec:
             "updated_at": _sync_epoch(int(updated.timestamp())),
             "usage": usage,
         }
+        # Pricing details are optional. Preserve the original sync packet
+        # when many models would otherwise exceed the UDP size limit.
+        for raw_model in reversed(usage["models"]):
+            size = len(json.dumps(packet, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            if size <= MAX_PACKET_BYTES:
+                break
+            raw_model.pop("api_pricing", None)
+        return packet
 
     @classmethod
     def chat_message(cls, message: LanChatMessage) -> dict[str, Any]:
@@ -719,10 +736,22 @@ def _sync_model_usage(value: object) -> tuple[CodexModelUsage, ...]:
                 cached_input_tokens=_sync_counter(raw.get("cached_input_tokens", 0)),
                 output_tokens=_sync_counter(raw.get("output_tokens", 0)),
                 weighted_credits=_sync_nonnegative_number(raw.get("weighted_credits")),
+                api_pricing=_sync_api_pricing(raw.get("api_pricing"), _sync_counter(raw.get("total_tokens"))),
             )
         )
     models.sort(key=lambda item: (-item.uses, -item.total_tokens, item.model.casefold()))
     return tuple(models)
+
+
+def _sync_api_pricing(value: object, total_tokens: int) -> tuple:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or len(value) > 18:
+        raise LanProtocolError("Codex 参考费用明细无效")
+    parsed = _parse_api_pricing(value)
+    if len(parsed) != len(value) or sum(item.total_tokens for item in parsed) > total_tokens:
+        raise LanProtocolError("Codex 参考费用明细无效")
+    return parsed
 
 
 def _sync_reasoning_usage(value: object) -> tuple[CodexReasoningUsage, ...]:

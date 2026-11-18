@@ -54,7 +54,7 @@ from petnest.core.codex_usage import (
     codex_manual_attribution_path,
     codex_model_api_rates,
     estimate_codex_device_weight,
-    estimate_codex_standard_api_usd,
+    estimate_codex_api_usd,
     is_codex_unstarted_device_cycle,
 )
 from petnest.ui.theme import dialog_stylesheet
@@ -288,9 +288,10 @@ class CodexUsageDialog(QDialog):
         self.local_models_label.setWordWrap(True)
         self.local_speed_label = QLabel("速度占比  —", local_card)
         self.local_speed_label.setObjectName("mutedLabel")
+        self.local_speed_label.setWordWrap(True)
         self.local_speed_label.setToolTip(
-            "按本额度周期内实际产生 Token 的模型回合统计：极快对应 fast/priority，"
-            "标准对应 default，极快包含 ultrafast。"
+            "按日志中的用量事件统计：priority/fast 为快速，ultrafast 为极快；"
+            "未记录速度的部分显示为未知，旧版数据可能无法细分。"
         )
         self.local_reasoning_label = QLabel("推理强度  —", local_card)
         self.local_reasoning_label.setObjectName("mutedLabel")
@@ -783,7 +784,7 @@ class CodexUsageDialog(QDialog):
         self.claim_pending_button.setVisible(True)
         self.local_models_label.setText(_model_usage_label(local.model_usage))
         self.local_speed_label.setText(
-            "速度占比  " + _speed_usage_label(local.fast_uses, local.standard_uses)
+            "速度占比  " + _speed_usage_label(local.fast_uses, local.standard_uses, local.model_usage, local.tokens.requests)
         )
         self.local_reasoning_label.setText(
             "推理强度  " + _reasoning_usage_label(local.reasoning_usage)
@@ -899,7 +900,7 @@ class CodexUsageDialog(QDialog):
         self.local_models_label.setText(_model_usage_label(snapshot.local_model_usage))
         self.local_speed_label.setText(
             "速度占比  "
-            + _speed_usage_label(snapshot.local_fast_uses, snapshot.local_standard_uses)
+            + _speed_usage_label(snapshot.local_fast_uses, snapshot.local_standard_uses, snapshot.local_model_usage, snapshot.local_requests)
         )
         self.local_reasoning_label.setText(
             "推理强度  " + _reasoning_usage_label(snapshot.local_reasoning_usage)
@@ -1324,7 +1325,7 @@ class CodexUsageDialog(QDialog):
                 f"{medal} {label}  {token_summary} · {quota_suffix}\n"
                 f"    Token 占比 {token_share} · 加权占比 {weighted_share}\n"
                 f"    {_number(requests)} 次模型请求 · {model_suffix} · "
-                f"速度 {_speed_usage_label(fast_uses, standard_uses)}\n"
+                f"速度 {_speed_usage_label(fast_uses, standard_uses, models, requests)}\n"
                 f"    推理强度 {_reasoning_usage_label(reasoning_usage)}"
             )
             if not has_usage:
@@ -1527,8 +1528,9 @@ class CodexModelDetailsDialog(QDialog):
         layout.addWidget(heading)
         self.explanation_label = QLabel(
             "排名权重按模型、Token 类型和速度估算，未知模型使用已知模型的平均权重近似。"
-            "参考美元按 API 标准短上下文单价计算，不含加速、长上下文、缓存写入加价和工具费；"
-            "不是订阅账单，也不是排名的计算口径。远程设备未同步的模型列为“其他”。",
+            "参考美元按日志中可确认的速度、单次输入长度和公开 API 单价计算；"
+            "速度设置未必等于实际计费档，缺少速度、缓存写入时长或旧设备明细的部分不计入。"
+            "不含工具费和区域加价，不是订阅账单，也不是排名的计算口径。",
             self,
         )
         self.explanation_label.setObjectName("mutedLabel")
@@ -1594,13 +1596,13 @@ class CodexModelDetailsDialog(QDialog):
         has_known_price = False
         any_partial = False
         for device in devices:
-            costs = tuple(estimate_codex_standard_api_usd(model) for model in device.models)
-            known_costs = [cost for cost in costs if cost is not None]
+            costs = tuple(estimate_codex_api_usd(model) for model in device.models)
+            known_costs = [cost for cost, _unknown in costs if cost is not None]
             model_tokens = sum(model.total_tokens for model in device.models)
             other_tokens = max(0, device.tokens.total_tokens - model_tokens)
             partial = (
                 model_tokens != device.tokens.total_tokens
-                or any(cost is None and model.total_tokens > 0 for model, cost in zip(device.models, costs))
+                or any(unknown > 0 for _cost, unknown in costs)
             )
             any_partial = any_partial or partial
             known_total += sum(known_costs)
@@ -1634,7 +1636,7 @@ class CodexModelDetailsDialog(QDialog):
                 weighted_complete=device.weighted_complete,
                 weight_version=device.weight_version,
             )
-            for index, (model, cost) in enumerate(zip(device.models, costs)):
+            for index, (model, (cost, unknown_tokens)) in enumerate(zip(device.models, costs)):
                 model_tokens_usage = CodexTokenUsage(
                     input_tokens=model.input_tokens,
                     cached_input_tokens=model.cached_input_tokens,
@@ -1645,9 +1647,9 @@ class CodexModelDetailsDialog(QDialog):
                 model_weight = breakdown.per_model[index] if weighted_available else None
                 rates = codex_model_api_rates(model.model)
                 model_cost_text = (
-                    _usd_reference(cost)
+                    _usd_reference(cost) + ("（部分）" if unknown_tokens else "")
                     if cost is not None
-                    else "无单价" if rates is None else "缺少明细"
+                    else "无单价" if rates is None else "定价依据不足"
                 )
                 child = QTreeWidgetItem(
                     parent,
@@ -1657,12 +1659,26 @@ class CodexModelDetailsDialog(QDialog):
                 if rates is None:
                     child.setToolTip(6, "没有可确认的公开单价，美元参考值未计算。")
                 elif cost is None:
-                    child.setToolTip(6, "缺少完整的输入、缓存和输出明细，美元参考值未计算。")
+                    child.setToolTip(6, "缺少逐次速度、上下文、缓存明细或可确认的模式费率，美元参考值未计算。")
                 else:
                     child.setToolTip(
                         6,
-                        f"每百万 Token 标准单价：输入 ${rates[0]:g}，缓存 ${rates[1]:g}，输出 ${rates[2]:g}。",
+                        f"标准短上下文每百万 Token：输入 ${rates[0]:g}，缓存 ${rates[1]:g}，输出 ${rates[2]:g}。"
+                        f" 未能定价 {_number(unknown_tokens)} Token。",
                     )
+                for bucket in model.api_pricing:
+                    speed_name = {"standard": "标准", "fast": "快速", "ultrafast": "极快",
+                                  "batch": "Batch", "flex": "Flex", "unknown": "未知速度"}[bucket.speed]
+                    context_name = {"short": "短上下文", "long": "长上下文", "unknown": "上下文未知"}[bucket.context]
+                    amount = _usd_reference(bucket.reference_usd) if bucket.priced_tokens else "—"
+                    if bucket.priced_tokens and bucket.priced_tokens < bucket.total_tokens:
+                        amount += "（部分）"
+                    detail = QTreeWidgetItem(
+                        child,
+                        [f"{speed_name} · {context_name}（{_number(bucket.requests)} 条）",
+                         _number(bucket.total_tokens), "—", "—", "—", "—", amount],
+                    )
+                    detail.setToolTip(6, f"未能定价 {_number(bucket.total_tokens - bucket.priced_tokens)} Token。")
             if other_tokens or (breakdown.other_weight is not None and breakdown.other_weight > 1e-7):
                 other = QTreeWidgetItem(
                     parent,
@@ -1676,9 +1692,9 @@ class CodexModelDetailsDialog(QDialog):
         if not devices:
             self.summary_label.setText("当前周期暂无可展示的设备明细。")
         elif not has_known_price:
-            self.summary_label.setText("已知模型参考美元合计：—（缺少单价或 Token 分类明细）")
+            self.summary_label.setText("已知模型参考美元合计：—（缺少逐次定价依据）")
         else:
-            suffix = "（仅已知模型）" if any_partial else ""
+            suffix = "（仅已知部分）" if any_partial else ""
             self.summary_label.setText(f"已知模型参考美元合计：{_usd_reference(known_total)}{suffix}")
 
 
@@ -1862,15 +1878,34 @@ def _share_percent(value: float, total: float) -> str:
     return f"{_percent(max(0.0, value) * 100 / total)}%"
 
 
-def _speed_usage_label(fast_uses: int, standard_uses: int) -> str:
+def _speed_usage_label(
+    fast_uses: int, standard_uses: int,
+    models: tuple[CodexModelUsage, ...] = (), requests: int = 0,
+) -> str:
+    buckets = tuple(bucket for model in models for bucket in model.api_pricing)
+    if buckets:
+        counts = {speed: 0 for speed in ("standard", "fast", "ultrafast", "batch", "flex", "unknown")}
+        for bucket in buckets:
+            counts[bucket.speed] += bucket.requests
+        observed = sum(counts.values())
+        counts["unknown"] += max(0, requests - observed)
+        total = sum(counts.values())
+        if total <= 0:
+            return "—"
+        labels = {"standard": "标准", "fast": "快速", "ultrafast": "极快",
+                  "batch": "Batch", "flex": "Flex", "unknown": "未知"}
+        return " · ".join(
+            f"{labels[speed]} {_percent(counts[speed] * 100 / total)}%"
+            for speed in counts if counts[speed] or speed in {"standard", "fast", "ultrafast"}
+        )
     fast = max(0, fast_uses)
     standard = max(0, standard_uses)
     total = fast + standard
     if total <= 0:
-        return "—"
+        return "未知 100%" if requests > 0 else "—"
     fast_percent = fast * 100 / total
     standard_percent = 100 - fast_percent
-    return f"极快 {_percent(fast_percent)}% · 标准 {_percent(standard_percent)}%"
+    return f"快速/极快 {_percent(fast_percent)}% · 标准 {_percent(standard_percent)}%（旧版未细分）"
 
 
 _REASONING_EFFORT_LABELS = {

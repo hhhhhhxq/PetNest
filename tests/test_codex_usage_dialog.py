@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QLabel, QMessageBox, QProgressBar
 from petnest.core.codex_usage import (
     CODEX_USAGE_WEIGHT_VERSION,
     AccountTokenSummary,
+    CodexApiPricingBucket,
     CodexAccount,
     CodexDeviceUsageSnapshot,
     CodexDeviceUsageStore,
@@ -184,7 +185,7 @@ def test_dialog_refreshes_quota_tokens_and_account_selector(qtbot: pytest.QtBot,
     assert dialog.local_weighted_label.text() == "加权 0.2413（参考权重）"
     assert "待归属 250 Token" in dialog.local_attribution_label.text()
     assert "标签异常 1,500 Token" in dialog.local_attribution_label.text()
-    assert dialog.local_speed_label.text() == "速度占比  极快 75% · 标准 25%"
+    assert dialog.local_speed_label.text() == "速度占比  快速/极快 75% · 标准 25%（旧版未细分）"
     assert dialog.local_reasoning_label.text() == "推理强度  高 75% · 中 25%"
     assert "+2.5" in dialog.local_quota_change_label.text()
     assert "已更新" in dialog.status_label.text()
@@ -511,8 +512,8 @@ def test_dialog_adds_synced_peer_without_double_counting_local_device(qtbot: pyt
     assert "Token 占比 57.1%" in ranking[0]
     assert "约 3% 额度" in ranking[0]
     assert "常用 gpt-5.5（3 次）" in ranking[0]
-    assert "速度 极快 25% · 标准 75%" in ranking[0]
-    assert "速度 极快 75% · 标准 25%" in ranking[1]
+    assert "速度 快速/极快 25% · 标准 75%（旧版未细分）" in ranking[0]
+    assert "速度 快速/极快 75% · 标准 25%（旧版未细分）" in ranking[1]
     assert "推理强度 中 66.7% · 低 33.3%" in ranking[0]
     assert "推理强度 高 75% · 中 25%" in ranking[1]
     assert "常用模型  gpt-5.6-sol（1 次）" in dialog.local_models_label.text()
@@ -668,6 +669,7 @@ def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
                 "gpt-6.1-sol", uses=1, total_tokens=1_200_000,
                 input_tokens=1_000_000, cached_input_tokens=300_000,
                 output_tokens=200_000, weighted_credits=25,
+                api_pricing=(CodexApiPricingBucket("standard", "short", 1, 1_200_000, 1_200_000, 3.43),),
             ),),
             weighted_credits=25,
             weighted_complete=True,
@@ -685,7 +687,8 @@ def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
         reasoning_output_tokens=0, total_tokens=1_100_000, requests=11,
         model_usage=(
             CodexModelUsage("gpt-6-astra", uses=10, total_tokens=850_000,
-                            input_tokens=800_000, cached_input_tokens=300_000, output_tokens=50_000),
+                            input_tokens=800_000, cached_input_tokens=300_000, output_tokens=50_000,
+                            api_pricing=(CodexApiPricingBucket("standard", "short", 10, 850_000, 850_000, 7.8),)),
             CodexModelUsage("codex-auto-review", uses=1, total_tokens=250_000,
                             input_tokens=200_000, cached_input_tokens=200_000, output_tokens=50_000),
         ),
@@ -716,7 +719,7 @@ def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
     assert office.child(1).text(0) == "codex-auto-review"
     assert office.child(1).text(6) == "无单价"
     assert home.child(0).text(6) == "约 $3.43"
-    assert "仅已知模型" in details.summary_label.text()
+    assert "仅已知部分" in details.summary_label.text()
 
     # A capped or older peer snapshot can omit model rows. The open detail
     # window updates and shows the unlisted tokens instead of hiding them.
@@ -742,7 +745,9 @@ def test_new_model_details_use_official_standard_api_rates(
                              output_tokens=200_000, total_tokens=1_200_000, requests=1)
     model_usage = CodexModelUsage(model, uses=1, total_tokens=1_200_000,
                                   input_tokens=1_000_000, cached_input_tokens=300_000,
-                                  output_tokens=200_000)
+                                  output_tokens=200_000,
+                                  api_pricing=(CodexApiPricingBucket("standard", "short", 1, 1_200_000,
+                                                                     1_200_000, 13.72 if "astra" in model else 3.43),))
     report = replace(report, local_usage=replace(report.local_usage, tokens=tokens,
                                                   model_usage=(model_usage,)))
     dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False,
@@ -757,6 +762,38 @@ def test_new_model_details_use_official_standard_api_rates(
     assert row.text(0) == model
     assert row.text(6) == expected_usd
     assert input_price in row.toolTip(6)
+
+
+def test_model_details_distinguish_speed_context_and_unknown(qtbot, tmp_path):
+    report = _report(tmp_path)
+    pricing = (
+        CodexApiPricingBucket("fast", "long", 3, 300, 300, 0.003),
+        CodexApiPricingBucket("standard", "short", 2, 200, 200, 0.002),
+        CodexApiPricingBucket("ultrafast", "short", 1, 100, 100, 0.004),
+        CodexApiPricingBucket("unknown", "short", 1, 100, 0, 0),
+    )
+    model = CodexModelUsage("gpt-6.2-sol", uses=7, total_tokens=700,
+                            input_tokens=700, api_pricing=pricing)
+    tokens = CodexTokenUsage(input_tokens=700, total_tokens=700, requests=7)
+    report = replace(report, local_usage=replace(report.local_usage, tokens=tokens,
+                                                  model_usage=(model,), weighted_complete=False))
+    dialog = CodexUsageDialog(tmp_path / "history.json", auto_refresh=False,
+                              device_id="local", device_label="Home")
+    qtbot.addWidget(dialog)
+    dialog._show_report(report)
+    assert dialog.local_speed_label.text() == (
+        "速度占比  标准 28.6% · 快速 42.9% · 极快 14.3% · 未知 14.3%"
+    )
+    dialog.model_details_button.click()
+    details = dialog._model_details_dialog
+    assert details is not None
+    qtbot.addWidget(details)
+    row = details.model_tree.topLevelItem(0).child(0)
+    assert row.text(6) == "< $0.01（部分）"
+    assert row.childCount() == 4
+    assert "快速 · 长上下文" in row.child(0).text(0)
+    assert "未知速度" in row.child(3).text(0)
+    assert row.child(3).text(6) == "—"
 
 
 def test_unknown_only_model_falls_back_to_labelled_token_ranking(
@@ -859,7 +896,7 @@ def test_remote_only_account_is_visible_without_local_login(qtbot: pytest.QtBot,
     assert "Office PC" in ranking
     assert "约 12% 额度" in ranking
     assert "常用 gpt-5.5（5 次）" in ranking
-    assert "速度 极快 50% · 标准 50%" in ranking
+    assert "速度 快速/极快 50% · 标准 50%（旧版未细分）" in ranking
 
 
 def test_newer_peer_cycle_precedes_local_history_and_remains_selectable(qtbot, tmp_path) -> None:

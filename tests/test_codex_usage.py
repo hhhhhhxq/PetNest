@@ -15,6 +15,7 @@ import pytest
 import petnest.core.codex_usage as codex_usage_module
 from petnest.core.codex_usage import (
     AccountTokenSummary,
+    CodexApiPricingBucket,
     CodexAccount,
     CodexAccountObservationStore,
     CodexManualAttributionStore,
@@ -34,6 +35,7 @@ from petnest.core.codex_usage import (
     breakdown_codex_device_weight,
     discover_codex_executable,
     estimate_codex_device_weight,
+    estimate_codex_api_usd,
     estimate_codex_standard_api_usd,
     locate_codex_home,
     scan_local_codex_usage,
@@ -327,6 +329,7 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
         / event_time.strftime("%Y/%m/%d")
         / f"rollout-{event_time:%Y-%m-%dT%H-%M-%S}-11111111-1111-1111-1111-111111111111.jsonl"
     )
+    _write_speed_setting(session, timestamp=event_time - timedelta(seconds=2), service_tier="default")
     _write_model_context(
         session,
         timestamp=event_time - timedelta(seconds=1),
@@ -413,7 +416,7 @@ def test_client_reads_weekly_quota_and_only_current_account_window_tokens(tmp_pa
     assert report.local_usage.tokens.output_tokens == 300
     assert report.local_usage.tokens.cached_input_tokens == 300
     assert report.local_usage.tokens.requests == 2
-    assert report.local_usage.model_usage == (
+    assert tuple(replace(item, api_pricing=()) for item in report.local_usage.model_usage) == (
         CodexModelUsage(
             "gpt-5.6-sol",
             uses=2,
@@ -632,7 +635,7 @@ def test_explicit_model_accepts_codex_sub_limit_and_is_weighted(tmp_path: Path) 
     assert usage.reasoning_usage == (CodexReasoningUsage("unknown", uses=1),)
     assert usage.weighted_complete
     assert usage.weighted_credits == pytest.approx(0.4325)
-    assert usage.model_usage == (
+    assert tuple(replace(item, api_pricing=()) for item in usage.model_usage) == (
         CodexModelUsage(
             "gpt-5.6-sol",
             uses=1,
@@ -720,6 +723,151 @@ def test_standard_api_dollar_estimate_distinguishes_cached_input_and_output() ->
     assert estimate_codex_standard_api_usd(replace(sol, model="codex-auto-review")) is None
     assert estimate_codex_standard_api_usd(replace(sol, input_tokens=0)) is None
     assert estimate_codex_standard_api_usd(replace(sol, total_tokens=1_300_000)) is None
+
+
+def _api_bucket_for_test(
+    last: dict[str, Any], speed: str, *, when: datetime | None = None, model: str = "gpt-6.2-sol",
+):
+    timestamp = when or datetime(2026, 11, 17, tzinfo=UTC)
+    event = codex_usage_module._local_token_event(
+        {"timestamp": timestamp.isoformat(), "type": "event_msg",
+         "payload": {"type": "token_count", "info": {"last_token_usage": last}}},
+        timestamp,
+    )
+    assert event is not None
+    return codex_usage_module._api_pricing_for_event(model, event, speed)
+
+
+@pytest.mark.parametrize(
+    ("speed", "input_tokens", "context", "expected"),
+    [
+        ("default", 272_000, "short", 0.5412),
+        ("priority", 272_001, "long", 2.163808),
+        ("fast", 1_000, "short", 0.00524),
+        ("ultrafast", 1_000, "short", 0.00786),
+        ("batch", 1_000, "short", 0.00131),
+    ],
+)
+def test_api_pricing_uses_per_request_speed_and_context(speed, input_tokens, context, expected):
+    cached = 2_000 if input_tokens > 1_000 else 200
+    bucket = _api_bucket_for_test(
+        {"input_tokens": input_tokens, "cached_input_tokens": cached,
+         "cache_write_input_tokens": 0, "output_tokens": 100,
+         "total_tokens": input_tokens + 100}, speed,
+    )
+    assert bucket.context == context
+    assert bucket.priced_tokens == input_tokens + 100
+    assert bucket.reference_usd == pytest.approx(expected)
+
+
+def test_api_flex_pricing_requires_a_supported_model() -> None:
+    last = {"input_tokens": 1_000, "cached_input_tokens": 200,
+            "cache_write_input_tokens": 0, "output_tokens": 100, "total_tokens": 1_100}
+    supported = _api_bucket_for_test(last, "flex", model="gpt-6.1-sol")
+    unconfirmed = _api_bucket_for_test(last, "flex")
+    assert supported.reference_usd == pytest.approx(0.00131)
+    assert supported.priced_tokens == 1_100
+    assert unconfirmed.priced_tokens == 0
+    assert unconfirmed.reference_usd == 0
+
+
+def test_api_ultrafast_promotion_changes_at_pacific_deadline() -> None:
+    last = {"input_tokens": 1_000, "cached_input_tokens": 200,
+            "cache_write_input_tokens": 0, "output_tokens": 100, "total_tokens": 1_100}
+    before = _api_bucket_for_test(last, "ultrafast", when=datetime(2027, 3, 1, 7, 59, tzinfo=UTC))
+    after = _api_bucket_for_test(last, "ultrafast", when=datetime(2027, 3, 1, 8, tzinfo=UTC))
+    assert before.reference_usd == pytest.approx(0.00786)
+    assert after.reference_usd == pytest.approx(0.01572)
+
+
+def test_api_gpt6_sol_long_context_uses_its_own_cached_input_rate() -> None:
+    bucket = _api_bucket_for_test(
+        {"input_tokens": 272_001, "cached_input_tokens": 2_000,
+         "cache_write_input_tokens": 0, "output_tokens": 100, "total_tokens": 272_101},
+        "priority", model="gpt-6-sol",
+    )
+    assert bucket.context == "long"
+    assert bucket.priced_tokens == 272_101
+    assert bucket.reference_usd == pytest.approx(2.164608)
+
+
+def test_api_missing_speed_and_cache_write_are_not_guessed() -> None:
+    last = {"input_tokens": 1_000, "cached_input_tokens": 200,
+            "output_tokens": 100, "total_tokens": 1_100}
+    unknown = _api_bucket_for_test(last, "unknown")
+    assert unknown.priced_tokens == 0
+    assert unknown.reference_usd == 0
+    partial = _api_bucket_for_test(last, "default")
+    assert partial.priced_tokens == 300
+    assert partial.reference_usd == pytest.approx(0.00102)
+    assert estimate_codex_api_usd(CodexModelUsage("gpt-6.2-sol", total_tokens=1_100,
+                                                  api_pricing=(partial,))) == (pytest.approx(0.00102), 800)
+
+
+def test_api_cache_write_retention_prices_only_known_components() -> None:
+    last = {"input_tokens": 1_000, "cached_input_tokens": 100,
+            "cache_write_input_tokens": 300, "output_tokens": 100, "total_tokens": 1_100}
+    partial = _api_bucket_for_test(last, "default")
+    assert partial.priced_tokens == 800
+    assert partial.reference_usd == pytest.approx(0.00221)
+    last["input_tokens_details"] = {"cache_write_tokens_details": {"ttl_30m_tokens": 100, "ttl_12h_tokens": 200}}
+    complete = _api_bucket_for_test(last, "default")
+    assert complete.priced_tokens == 1_100
+    assert complete.reference_usd == pytest.approx(0.00346)
+
+
+def test_missing_speed_is_unknown_during_session_scan(tmp_path: Path) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "sessions" / "rollout-test.jsonl"
+    _write_model_context(session, timestamp=now - timedelta(minutes=2), model="gpt-6.2-sol")
+    _write_token_event(session, timestamp=now - timedelta(minutes=1), reset=reset, used_percent=1,
+                       total_tokens=1_100, input_tokens=1_000, cached_input_tokens=200, output_tokens=100)
+    usage = scan_local_codex_usage(tmp_path, _weekly_limit(reset), now=now)
+    assert usage.tokens.total_tokens == 1_100
+    assert not usage.weighted_complete
+    assert usage.model_usage[0].api_pricing[0].speed == "unknown"
+    assert estimate_codex_api_usd(usage.model_usage[0]) == (None, 1_100)
+
+
+def test_scanned_per_request_pricing_survives_account_and_device_history(tmp_path: Path) -> None:
+    now = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+    reset = now + timedelta(days=6)
+    session = tmp_path / "sessions" / "rollout-pricing.jsonl"
+    examples = (
+        ("default", 1_000, 200, 1_100),
+        ("priority", 272_001, 2_000, 273_201),
+        ("ultrafast", 1_000, 200, 274_301),
+    )
+    for index, (speed, input_tokens, cached, cumulative) in enumerate(examples):
+        timestamp = now - timedelta(minutes=5 - index)
+        _write_speed_setting(session, timestamp=timestamp, service_tier=speed)
+        _write_model_context(session, timestamp=timestamp + timedelta(seconds=1),
+                             model="gpt-6.2-sol", turn_id=f"turn-{index}")
+        _write_token_event(session, timestamp=timestamp + timedelta(seconds=2), reset=reset,
+                           used_percent=1, input_tokens=input_tokens, cached_input_tokens=cached,
+                           output_tokens=100, total_tokens=input_tokens + 100, cumulative_tokens=cumulative)
+    limit = _weekly_limit(reset)
+    usage = scan_local_codex_usage(tmp_path, limit, now=now)
+    model = usage.model_usage[0]
+    buckets = {(item.speed, item.context): item for item in model.api_pricing}
+    assert set(buckets) == {("standard", "short"), ("fast", "long"), ("ultrafast", "short")}
+    assert buckets[("standard", "short")].reference_usd == pytest.approx(0.00262)
+    assert buckets[("fast", "long")].reference_usd == pytest.approx(2.163808)
+    assert buckets[("ultrafast", "short")].reference_usd == pytest.approx(0.00786)
+    assert estimate_codex_api_usd(model) == (pytest.approx(2.174288), 0)
+    report = CodexUsageReport(
+        account=CodexAccount("a" * 24, "us*****@example.com", "pro"),
+        rate_limits=(limit,), primary_limit=limit, account_tokens=AccountTokenSummary(),
+        daily_usage=(), local_usage=usage, fetched_at=now, codex_home=tmp_path,
+    )
+    history = CodexUsageHistoryStore(tmp_path / "history.json")
+    history.save_report(report)
+    assert history.load_cycles(report.account.key)[0].local_model_usage[0].api_pricing == model.api_pricing
+    device = CodexDeviceUsageSnapshot.from_report(report, device_id="local", device_label="Mac")
+    store = CodexDeviceUsageStore(tmp_path / "devices.json")
+    store.save(device)
+    assert store.load()[0].model_usage[0].api_pricing == model.api_pricing
 
 
 def test_legacy_weight_uses_model_breakdown_speed_mix_and_unknown_model_share() -> None:
@@ -1053,6 +1201,7 @@ def test_compaction_placeholder_is_not_counted_as_token_usage(tmp_path: Path) ->
     reset = now + timedelta(days=6)
     event_time = now - timedelta(minutes=10)
     session = tmp_path / "sessions/2026/08/13/rollout-2026-08-13T12-00-00-abababab-abab-abab-abab-abababababab.jsonl"
+    _write_speed_setting(session, timestamp=event_time - timedelta(seconds=4), service_tier="default")
     _write_model_context(session, timestamp=event_time - timedelta(seconds=3), model="gpt-5.6-luna")
     _write_token_event(
         session,
@@ -1089,6 +1238,7 @@ def test_compaction_placeholder_can_follow_replayed_metadata_and_rate_limits(tmp
     reset = now + timedelta(days=6)
     event_time = now - timedelta(minutes=10)
     session = tmp_path / "sessions/2026/08/13/rollout-2026-08-13T12-00-00-cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd.jsonl"
+    _write_speed_setting(session, timestamp=event_time - timedelta(seconds=5), service_tier="default")
     _write_model_context(
         session,
         timestamp=event_time - timedelta(seconds=4),
@@ -1166,6 +1316,7 @@ def test_rollback_placeholder_with_unchanged_cumulative_usage_is_not_counted(tmp
     reset = now + timedelta(days=6)
     event_time = now - timedelta(minutes=10)
     session = tmp_path / "sessions/2026/08/13/rollout-2026-08-13T12-00-00-efefefef-efef-efef-efef-efefefefefef.jsonl"
+    _write_speed_setting(session, timestamp=event_time - timedelta(seconds=3), service_tier="default")
     _write_model_context(session, timestamp=event_time - timedelta(seconds=2), model="gpt-5.6-sol")
     _write_token_event(
         session,
