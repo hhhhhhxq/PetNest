@@ -2279,6 +2279,70 @@ def estimate_codex_api_usd(model: CodexModelUsage) -> tuple[float | None, int]:
     return sum(item.reference_usd for item in model.api_pricing), max(0, model.total_tokens - priced)
 
 
+@dataclass(frozen=True, slots=True)
+class CodexApiReferenceEstimate:
+    """API-price comparison, with aggregate fallback clearly identified."""
+
+    value: float | None
+    unknown_tokens: int
+    aggregate_estimate: bool = False
+    speed_basis: str | None = None
+    token_basis: str | None = None
+
+
+def estimate_codex_api_reference(
+    model: CodexModelUsage, *, fast_uses: int = 0, standard_uses: int = 0,
+    device_tokens: CodexTokenUsage | None = None,
+) -> CodexApiReferenceEstimate:
+    """Prefer request details; estimate legacy totals without claiming a bill.
+
+    Older peers record fast and ultrafast together, and speed by device rather
+    than model. Assume their recorded turn mix applies to this model's tokens,
+    charge the combined fast group at the API Fast rate, and use short-context
+    rates. If per-model token categories are missing, allocate device categories
+    proportionally to the model's total. Cache writes cannot be separated from
+    ordinary input in old model totals. These are aggregate estimates, not bills.
+    """
+    known, unknown_tokens = estimate_codex_api_usd(model)
+    if known is not None:
+        return CodexApiReferenceEstimate(known, unknown_tokens)
+    if model.total_tokens <= 0:
+        return CodexApiReferenceEstimate(None, model.total_tokens)
+    standard = estimate_codex_standard_api_usd(model)
+    if standard is None:
+        rates = codex_model_api_rates(model.model)
+        if (
+            rates is None or device_tokens is None
+            or device_tokens.total_tokens <= 0
+            or model.total_tokens > device_tokens.total_tokens
+            or device_tokens.total_tokens != device_tokens.input_tokens + device_tokens.output_tokens
+            or device_tokens.cached_input_tokens > device_tokens.input_tokens
+            or min(device_tokens.input_tokens, device_tokens.cached_input_tokens, device_tokens.output_tokens) < 0
+        ):
+            return CodexApiReferenceEstimate(None, model.total_tokens)
+        input_rate, cached_rate, output_rate = rates
+        device_standard = (
+            (device_tokens.input_tokens - device_tokens.cached_input_tokens) * input_rate
+            + device_tokens.cached_input_tokens * cached_rate
+            + device_tokens.output_tokens * output_rate
+        ) / 1_000_000
+        standard = device_standard * model.total_tokens / device_tokens.total_tokens
+        token_basis = "device_mix"
+    else:
+        token_basis = "model"
+
+    fast = max(0, fast_uses)
+    normal = max(0, standard_uses)
+    speed_total = fast + normal
+    if speed_total and model.model.strip().casefold() in _API_CONTEXT_272K_MODELS:
+        # The supported models have a Fast API rate of 2x standard. A legacy
+        # fast_uses count can also include Ultrafast and is not per-model.
+        return CodexApiReferenceEstimate(
+            standard * (1.0 + fast / speed_total), 0, True, "device_mix", token_basis,
+        )
+    return CodexApiReferenceEstimate(standard, 0, True, "standard", token_basis)
+
+
 def _weighted_credits(model: str, usage: CodexTokenUsage, speed: str) -> float | None:
     """Return a quota-comparison weight, not a paid-credit charge or bill.
 
@@ -2689,6 +2753,7 @@ __all__ = [
     "CodexAccount",
     "CodexAccountInterval",
     "CodexAccountObservationStore",
+    "CodexApiReferenceEstimate",
     "CodexManualAttributionStore",
     "CodexAccountSnapshot",
     "CodexDeviceUsageSnapshot",
@@ -2713,6 +2778,7 @@ __all__ = [
     "discover_codex_executable",
     "discover_codex_executables",
     "estimate_codex_device_weight",
+    "estimate_codex_api_reference",
     "estimate_codex_standard_api_usd",
     "is_codex_unstarted_device_cycle",
     "locate_codex_home",

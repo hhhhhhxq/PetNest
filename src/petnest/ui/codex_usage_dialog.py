@@ -54,7 +54,7 @@ from petnest.core.codex_usage import (
     codex_manual_attribution_path,
     codex_model_api_rates,
     estimate_codex_device_weight,
-    estimate_codex_api_usd,
+    estimate_codex_api_reference,
     is_codex_unstarted_device_cycle,
 )
 from petnest.ui.theme import dialog_stylesheet
@@ -1528,9 +1528,10 @@ class CodexModelDetailsDialog(QDialog):
         layout.addWidget(heading)
         self.explanation_label = QLabel(
             "排名权重按模型、Token 类型和速度估算，未知模型使用已知模型的平均权重近似。"
-            "参考美元按日志中可确认的速度、单次输入长度和公开 API 单价计算；"
-            "速度设置未必等于实际计费档，缺少速度、缓存写入时长或旧设备明细的部分不计入。"
-            "不含工具费和区域加价，不是订阅账单，也不是排名的计算口径。",
+            "参考美元优先按逐次速度和上下文计算；缺少模型分类时按设备分类比例分配。"
+            "缺少逐次明细时按设备速度比例、短上下文粗估，"
+            "快速／极快合并按快速费率，未知速度按标准、缓存写入按普通输入。速度设置未必等于实际计费档。"
+            "逐次明细只能部分计算时，其余部分不计入；不含工具费和区域加价，不是订阅账单，也不是排名的计算口径。",
             self,
         )
         self.explanation_label.setObjectName("mutedLabel")
@@ -1595,19 +1596,30 @@ class CodexModelDetailsDialog(QDialog):
         known_total = 0.0
         has_known_price = False
         any_partial = False
+        any_aggregate_estimate = False
         for device in devices:
-            costs = tuple(estimate_codex_api_usd(model) for model in device.models)
-            known_costs = [cost for cost, _unknown in costs if cost is not None]
+            costs = tuple(
+                estimate_codex_api_reference(
+                    model, fast_uses=device.fast_uses, standard_uses=device.standard_uses,
+                    device_tokens=device.tokens,
+                )
+                for model in device.models
+            )
+            known_costs = [item.value for item in costs if item.value is not None]
+            has_aggregate_estimate = any(item.aggregate_estimate for item in costs)
             model_tokens = sum(model.total_tokens for model in device.models)
             other_tokens = max(0, device.tokens.total_tokens - model_tokens)
             partial = (
                 model_tokens != device.tokens.total_tokens
-                or any(unknown > 0 for _cost, unknown in costs)
+                or any(item.unknown_tokens > 0 for item in costs)
             )
             any_partial = any_partial or partial
+            any_aggregate_estimate = any_aggregate_estimate or has_aggregate_estimate
             known_total += sum(known_costs)
             has_known_price = has_known_price or bool(known_costs)
             cost_text = _usd_reference(sum(known_costs)) if known_costs else "—"
+            if known_costs and has_aggregate_estimate:
+                cost_text += "（含粗估）"
             if known_costs and partial:
                 cost_text += "（部分）"
 
@@ -1636,7 +1648,8 @@ class CodexModelDetailsDialog(QDialog):
                 weighted_complete=device.weighted_complete,
                 weight_version=device.weight_version,
             )
-            for index, (model, (cost, unknown_tokens)) in enumerate(zip(device.models, costs)):
+            for index, (model, estimate) in enumerate(zip(device.models, costs)):
+                cost, unknown_tokens = estimate.value, estimate.unknown_tokens
                 model_tokens_usage = CodexTokenUsage(
                     input_tokens=model.input_tokens,
                     cached_input_tokens=model.cached_input_tokens,
@@ -1647,9 +1660,11 @@ class CodexModelDetailsDialog(QDialog):
                 model_weight = breakdown.per_model[index] if weighted_available else None
                 rates = codex_model_api_rates(model.model)
                 model_cost_text = (
-                    _usd_reference(cost) + ("（部分）" if unknown_tokens else "")
+                    _usd_reference(cost)
+                    + ("（粗估）" if estimate.aggregate_estimate else "")
+                    + ("（部分）" if unknown_tokens else "")
                     if cost is not None
-                    else "无单价" if rates is None else "定价依据不足"
+                    else "无单价" if rates is None else "缺少 Token 分类"
                 )
                 child = QTreeWidgetItem(
                     parent,
@@ -1659,7 +1674,28 @@ class CodexModelDetailsDialog(QDialog):
                 if rates is None:
                     child.setToolTip(6, "没有可确认的公开单价，美元参考值未计算。")
                 elif cost is None:
-                    child.setToolTip(6, "缺少逐次速度、上下文、缓存明细或可确认的模式费率，美元参考值未计算。")
+                    child.setToolTip(6, "缺少完整的模型输入、缓存或输出 Token 分类，无法估算。")
+                elif estimate.aggregate_estimate:
+                    if estimate.speed_basis == "device_mix":
+                        speed_note = (
+                            f"按设备 {_number(device.fast_uses)} 次快速／极快、"
+                            f"{_number(device.standard_uses)} 次标准的比例估算所有模型；"
+                            "快速／极快统一按快速费率。"
+                        )
+                    else:
+                        speed_note = "速度比例或该模型快速费率不可确认，按标准速度估算。"
+                    token_note = (
+                        "模型缺少完整 Token 分类，按设备的输入、缓存和输出比例分配。"
+                        if estimate.token_basis == "device_mix"
+                        else "使用该模型的输入、缓存和输出汇总。"
+                    )
+                    child.setToolTip(
+                        6,
+                        f"按标准短上下文单价（每百万 Token：输入 ${rates[0]:g}，"
+                        f"缓存 ${rates[1]:g}，输出 ${rates[2]:g}）粗估。"
+                        f"{token_note}{speed_note}逐次上下文未知，假设短上下文；缓存写入按普通输入。"
+                        "结果并非订阅账单。",
+                    )
                 else:
                     child.setToolTip(
                         6,
@@ -1692,9 +1728,9 @@ class CodexModelDetailsDialog(QDialog):
         if not devices:
             self.summary_label.setText("当前周期暂无可展示的设备明细。")
         elif not has_known_price:
-            self.summary_label.setText("已知模型参考美元合计：—（缺少逐次定价依据）")
+            self.summary_label.setText("已知模型参考美元合计：—（缺少公开单价或 Token 分类）")
         else:
-            suffix = "（仅已知部分）" if any_partial else ""
+            suffix = ("（含粗估）" if any_aggregate_estimate else "") + ("（仅已知部分）" if any_partial else "")
             self.summary_label.setText(f"已知模型参考美元合计：{_usd_reference(known_total)}{suffix}")
 
 

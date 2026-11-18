@@ -35,6 +35,7 @@ from petnest.core.codex_usage import (
     breakdown_codex_device_weight,
     discover_codex_executable,
     estimate_codex_device_weight,
+    estimate_codex_api_reference,
     estimate_codex_api_usd,
     estimate_codex_standard_api_usd,
     locate_codex_home,
@@ -723,6 +724,61 @@ def test_standard_api_dollar_estimate_distinguishes_cached_input_and_output() ->
     assert estimate_codex_standard_api_usd(replace(sol, model="codex-auto-review")) is None
     assert estimate_codex_standard_api_usd(replace(sol, input_tokens=0)) is None
     assert estimate_codex_standard_api_usd(replace(sol, total_tokens=1_300_000)) is None
+
+
+def test_legacy_api_reference_uses_model_tokens_and_device_speed_mix() -> None:
+    model = CodexModelUsage(
+        "gpt-6.1-sol", total_tokens=1_200_000, input_tokens=1_000_000,
+        cached_input_tokens=300_000, output_tokens=200_000,
+    )
+    mixed = estimate_codex_api_reference(model, fast_uses=1, standard_uses=1)
+    assert mixed.value == pytest.approx(5.145)
+    assert mixed.unknown_tokens == 0
+    assert mixed.aggregate_estimate
+    assert mixed.speed_basis == "device_mix"
+    assert mixed.token_basis == "model"
+    assert estimate_codex_api_reference(model, fast_uses=9).value == pytest.approx(6.86)
+
+    missing_speed = estimate_codex_api_reference(model)
+    assert missing_speed.value == pytest.approx(3.43)
+    assert missing_speed.aggregate_estimate
+    assert missing_speed.speed_basis == "standard"
+
+
+def test_legacy_model_without_categories_estimates_from_device_token_mix() -> None:
+    model = CodexModelUsage("gpt-6.1-sol", total_tokens=600_000)
+    device = CodexTokenUsage(
+        input_tokens=1_000_000, cached_input_tokens=300_000,
+        output_tokens=200_000, total_tokens=1_200_000,
+    )
+    estimate = estimate_codex_api_reference(model, fast_uses=1, standard_uses=1, device_tokens=device)
+    assert estimate.value == pytest.approx(2.5725)
+    assert estimate.aggregate_estimate
+    assert estimate.token_basis == "device_mix"
+    assert estimate.speed_basis == "device_mix"
+    assert estimate_codex_api_reference(model).value is None
+    assert estimate_codex_api_reference(model, device_tokens=replace(device, total_tokens=1_300_000)).value is None
+    assert estimate_codex_api_reference(replace(model, total_tokens=2_000_000), device_tokens=device).value is None
+    assert estimate_codex_api_reference(replace(model, model="unknown"), device_tokens=device).value is None
+
+
+def test_api_reference_keeps_recorded_cost_and_does_not_fabricate_missing_tokens() -> None:
+    model = CodexModelUsage(
+        "gpt-6.1-sol", total_tokens=1_200_000, input_tokens=1_000_000,
+        cached_input_tokens=300_000, output_tokens=200_000,
+        api_pricing=(CodexApiPricingBucket("standard", "short", 1, 1_200_000, 500_000, 2.0),),
+    )
+    recorded = estimate_codex_api_reference(model, fast_uses=10)
+    assert recorded.value == 2.0
+    assert recorded.unknown_tokens == 700_000
+    assert not recorded.aggregate_estimate
+    assert estimate_codex_api_reference(replace(model, model="unknown", api_pricing=())).value is None
+    assert estimate_codex_api_reference(replace(model, input_tokens=0, api_pricing=())).value is None
+    assert estimate_codex_api_reference(replace(model, total_tokens=0, api_pricing=())).value is None
+
+    older_model = estimate_codex_api_reference(replace(model, model="gpt-5.4", api_pricing=()), fast_uses=1)
+    assert older_model.value == pytest.approx(4.825)
+    assert older_model.speed_basis == "standard"
 
 
 def _api_bucket_for_test(

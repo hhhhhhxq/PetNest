@@ -732,6 +732,66 @@ def test_model_details_show_per_device_tokens_dollars_and_ranking_weights(
     assert office.child(2).text(6) == "—"
 
 
+def test_legacy_remote_model_totals_show_labelled_api_estimates(
+    qtbot: pytest.QtBot, tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    reset = report.primary_limit.primary.resets_at
+    assert reset is not None
+    history_path = tmp_path / "history.json"
+    store = CodexDeviceUsageStore(codex_device_usage_path(history_path))
+    remote = CodexDeviceUsageSnapshot(
+        account_key=report.account.key, device_id="old-peer", device_label="王师傅",
+        window_resets_at=int(reset.timestamp()), window_duration_minutes=10_080,
+        updated_at=datetime.now(UTC).isoformat(), input_tokens=2_132_392_428,
+        cached_input_tokens=2_085_495_552, cache_write_input_tokens=0,
+        output_tokens=5_156_062, reasoning_output_tokens=0,
+        total_tokens=2_137_548_490, requests=500,
+        model_usage=(
+            CodexModelUsage("gpt-6.1-terra", uses=300, total_tokens=2_013_659_211,
+                            input_tokens=2_008_964_717, cached_input_tokens=1_967_802_880,
+                            output_tokens=4_694_494),
+            CodexModelUsage("gpt-6.1-sol", uses=200, total_tokens=123_889_279,
+                            input_tokens=123_427_711, cached_input_tokens=117_692_672,
+                            output_tokens=461_568),
+        ),
+        fast_uses=1, standard_uses=1,
+    )
+    store.save(remote)
+    dialog = CodexUsageDialog(history_path, auto_refresh=False, device_id="local", device_label="Home")
+    qtbot.addWidget(dialog)
+    dialog._show_report(report)
+    dialog.model_details_button.click()
+    details = dialog._model_details_dialog
+    assert details is not None
+    qtbot.addWidget(details)
+    tree = details.model_tree
+    row = tree.topLevelItem(0)
+    assert "王师傅" in row.text(0)
+    assert row.text(6) == "约 $286.32（含粗估）"
+    assert row.child(0).text(6) == "约 $244.54（粗估）"
+    assert row.child(1).text(6) == "约 $41.78（粗估）"
+    assert "快速／极快统一按快速费率" in row.child(0).toolTip(6)
+    assert "假设短上下文" in row.child(1).toolTip(6)
+    assert "含粗估" in details.summary_label.text()
+
+    store.save(replace(remote, fast_uses=0, standard_uses=0))
+    dialog.reload_synced_usage(report.account.key)
+    row = tree.topLevelItem(0)
+    assert row.child(0).text(6) == "约 $163.02（粗估）"
+    assert "按标准速度估算" in row.child(0).toolTip(6)
+
+    # Older peers can provide only the device's input/cached/output breakdown.
+    store.save(replace(remote, model_usage=(
+        CodexModelUsage("gpt-6.1-sol", uses=500, total_tokens=remote.total_tokens),
+    )))
+    dialog.reload_synced_usage(report.account.key)
+    row = tree.topLevelItem(0)
+    assert "（粗估）" in row.child(0).text(6)
+    assert row.child(0).text(6) != "缺少 Token 分类"
+    assert "按设备的输入、缓存和输出比例分配" in row.child(0).toolTip(6)
+
+
 @pytest.mark.parametrize(
     ("model", "expected_usd", "input_price"),
     [("gpt-6.2-astra", "约 $13.72", "输入 $8"),
