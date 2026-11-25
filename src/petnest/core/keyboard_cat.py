@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import sys
 from time import monotonic
 from petnest.core.cat_appearance import COATS, KEYBOARDS, appearance_preferences
 
 CAT_RENDERER = "keyboard-cat-v1"
+
+
+def default_keyboard_companion(renderer: str) -> bool:
+    """Enable first-use typing for Windows cats; saved choices take precedence."""
+    return sys.platform == "win32" and renderer == CAT_RENDERER
 
 
 def cat_preferences(raw: object) -> dict:

@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from petnest.core.keyboard_cat import CAT_RENDERER, CatState
 from petnest.core.package_loader import PackageLoader
 from petnest.core.settings_manager import SettingsManager
@@ -17,6 +19,80 @@ from petnest.ui.pet_window import PetWindow
 from tests.test_package_validator import _write_package
 
 ROOT = Path(__file__).resolve().parents[1] / "pets" / "keyboard_cat"
+
+
+@pytest.mark.parametrize("platform, expected", [("win32", True), ("darwin", False)])
+def test_first_cat_activation_defaults_and_remembers_opt_out(
+    qtbot, tmp_path, monkeypatch, platform, expected
+):
+    from petnest.app import PetNest
+    from petnest.core import keyboard_cat
+    from petnest.platforms.keyboard import UnsupportedKeyboardActivityMonitor
+    from tools.create_sample_pet import create_sample_pet
+
+    monkeypatch.setattr(keyboard_cat, "sys", SimpleNamespace(platform=platform))
+    pets = tmp_path / "pets"
+    create_sample_pet(pets / "sample_pet")
+    shutil.copytree(ROOT, pets / "keyboard_cat")
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(current_pet_id="sample_pet", work_countdown_enabled=False))
+
+    def launch():
+        app = PetNest(
+            pets_root=pets, settings_manager=manager, enable_tray=False,
+            keyboard_activity_monitor=UnsupportedKeyboardActivityMonitor("test"),
+        )
+        qtbot.addWidget(app.window)
+        return app
+
+    app = launch()
+    try:
+        assert not app.settings.keyboard_working_enabled
+        assert app._pet_preferences("keyboard_cat")["keys"] is expected
+        assert app.switch_pet("keyboard_cat")
+        assert app.settings.keyboard_working_enabled is expected
+        prefs = app._pet_preferences("keyboard_cat")
+        app._save_pet_preferences("keyboard_cat", {**prefs, "keys": False})
+        assert app.switch_pet("sample_pet")
+        assert not app.settings.keyboard_working_enabled
+        assert app.switch_pet("keyboard_cat")
+        assert not app.settings.keyboard_working_enabled
+    finally:
+        app.shutdown()
+    app = launch()
+    try:
+        assert not app.settings.keyboard_working_enabled
+    finally:
+        app.shutdown()
+
+
+@pytest.mark.parametrize("saved_active, expected", [(False, True), (True, False)])
+def test_windows_cat_startup_default_preserves_existing_active_setting(
+    qtbot, tmp_path, monkeypatch, saved_active, expected
+):
+    from petnest.app import PetNest
+    from petnest.core import keyboard_cat
+    from petnest.platforms.keyboard import UnsupportedKeyboardActivityMonitor
+
+    monkeypatch.setattr(keyboard_cat, "sys", SimpleNamespace(platform="win32"))
+    pets = tmp_path / "pets"
+    shutil.copytree(ROOT, pets / "keyboard_cat")
+    manager = SettingsManager(tmp_path / "settings.json")
+    manager.save(Settings(
+        current_pet_id="keyboard_cat" if saved_active else None,
+        keyboard_working_enabled=False, work_countdown_enabled=False,
+    ))
+    app = PetNest(
+        pets_root=pets, settings_manager=manager, enable_tray=False,
+        keyboard_activity_monitor=UnsupportedKeyboardActivityMonitor("test"),
+    )
+    qtbot.addWidget(app.window)
+    try:
+        assert app.settings.keyboard_working_enabled is expected
+        assert app._pet_preferences("keyboard_cat")["keys"] is expected
+        assert manager.load().keyboard_working_enabled is expected
+    finally:
+        app.shutdown()
 
 
 def test_builtin_loads_and_real_keys_drive_different_pixels(qapp):

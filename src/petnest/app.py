@@ -408,6 +408,20 @@ class PetNest:
         if not self.packages:
             raise RuntimeError(f"未找到可用宠物包：{self.pets_root}")
         self.package = self._select_package(self.settings.current_pet_id)
+        from petnest.core.keyboard_cat import default_keyboard_companion
+
+        if (
+            self.settings.current_pet_id != self.package.identifier
+            and default_keyboard_companion(self.package.renderer)
+        ):
+            # No saved active-pet choice: use the same defaults as switching pets.
+            preferences = self.settings.pet_preferences.get(self.package.identifier, {})
+            self.settings = replace(
+                self.settings,
+                current_pet_id=self.package.identifier,
+                keyboard_working_enabled=preferences.get("keys", True) is True,
+            )
+            self.settings_manager.save(self.settings)
         self.event_bus = EventBus()
         countdown_root = self.resource_directory / "countdown" if self.resource_directory is not None else None
         self.window = PetWindow(
@@ -2756,7 +2770,7 @@ class PetNest:
             self._system_idle_monitor.reset()
 
     def _pet_preferences(self, identifier: str) -> dict:
-        from petnest.core.keyboard_cat import cat_preferences
+        from petnest.core.keyboard_cat import cat_preferences, default_keyboard_companion
         from math import isfinite
         raw = self.settings.pet_preferences.get(identifier, {})
         value = {**raw, **cat_preferences(raw), "sleep_enabled": self.settings.system_idle_enabled,
@@ -2766,7 +2780,8 @@ class PetNest:
         if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not isfinite(scale):
             scale = package.display.default_scale
         value.update(scale=max(package.display.min_scale, min(package.display.max_scale, scale)),
-                     follow=raw.get("follow", False) is True, keys=raw.get("keys", False) is True)
+                     follow=raw.get("follow", False) is True,
+                     keys=raw.get("keys", default_keyboard_companion(package.renderer)) is True)
         if identifier == self.package.identifier:
             value.update(scale=self.settings.scale, follow=self.settings.mouse_follow_enabled,
                          keys=self.settings.keyboard_working_enabled)
