@@ -21,7 +21,11 @@ def test_installer_writes_the_sample_pet_directly_to_the_selected_library() -> N
     ignored = Path(".gitignore").read_text(encoding="utf-8")
 
     assert 'dist\\PetNest\\*' in contents
-    assert 'Excludes: "pets\\*"' in contents
+    application_files = next(
+        line for line in contents.splitlines()
+        if line.startswith('Source: "..\\dist\\PetNest\\*"')
+    )
+    assert "Excludes:" not in application_files
     assert 'Source: "..\\pets\\sample_pet\\*"; DestDir: "{code:GetPetsRoot}\\sample_pet"' in contents
     assert "Check: SamplePetNeedsRepair" in contents
     assert "function SamplePetNeedsRepair" in contents

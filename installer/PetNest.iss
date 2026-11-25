@@ -21,7 +21,8 @@ SolidCompression=yes
 WizardStyle=modern
 
 [Files]
-Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion; Excludes: "pets\*"
+; Preserve bundled pet templates under _internal/pets for first-run installation and recovery.
+Source: "..\dist\PetNest\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Source: "..\dist\PetNestStartupHost.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; 名称与旧 PetNestUpdater.exe 分离，确保 0.1.2/0.1.4 的运行中更新器不会阻塞升级。
 Source: "..\dist\PetNestUpdateHost.exe"; DestDir: "{app}"; Flags: ignoreversion
