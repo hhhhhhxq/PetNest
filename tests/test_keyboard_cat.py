@@ -132,7 +132,7 @@ def test_app_remembers_per_pet_appearance_scale_and_follow(qtbot, tmp_path):
         assert app.settings.mouse_follow_enabled
         assert app.window.cat_preferences["keyboard"] == "dark"
         assert manager.load().pet_preferences["keyboard_cat"]["coat"] == "siamese"
-        serialized = json.loads(manager.path.read_text())
+        serialized = json.loads(manager.path.read_text(encoding="utf-8"))
         assert "Q" not in serialized["pet_preferences"]["keyboard_cat"]
     finally:
         app.shutdown()
@@ -218,7 +218,7 @@ def test_malformed_renderer_is_rejected_and_preferences_are_normalized(tmp_path)
         "white_markings": {"face": "none", "chest": 0.0, "paws": 0.0, "amount": 0.55},
     }
     root = _write_package(tmp_path / "bad")
-    raw = json.loads((root / "pet.json").read_text())
+    raw = json.loads((root / "pet.json").read_text(encoding="utf-8"))
     raw["renderer"] = []
     (root / "pet.json").write_text(json.dumps(raw))
     assert not PackageValidator().validate(root).is_valid
@@ -232,11 +232,11 @@ def test_builtin_is_added_to_existing_library_without_overwriting(tmp_path):
     install_keyboard_cat(library, ROOT.parent)
     assert {p.identifier for p in PackageLoader().discover(library)} >= {"keyboard_cat"}
     config = library / "keyboard_cat" / "pet.json"
-    raw = json.loads(config.read_text())
+    raw = json.loads(config.read_text(encoding="utf-8"))
     raw["name"] = "我的键盘猫"
     config.write_text(json.dumps(raw))
     install_keyboard_cat(library, ROOT.parent)
-    assert json.loads(config.read_text())["name"] == "我的键盘猫"
+    assert json.loads(config.read_text(encoding="utf-8"))["name"] == "我的键盘猫"
 
 
 def test_stale_queued_keys_cannot_reach_new_pet(qtbot, tmp_path):
@@ -338,13 +338,10 @@ def test_layout_fits_with_permission_controls(qtbot, tmp_path):
     )
 
 
-def test_authorization_target_selects_enclosing_app(monkeypatch):
-    monkeypatch.setattr(
-        sys, "executable", "/Applications/PetNest.app/Contents/MacOS/PetNest"
-    )
-    assert MacOSKeyboardActivityMonitor.authorization_target() == Path(
-        "/Applications/PetNest.app"
-    )
+def test_authorization_target_selects_enclosing_app(monkeypatch, tmp_path):
+    bundle = tmp_path / "PetNest.app"
+    monkeypatch.setattr(sys, "executable", str(bundle / "Contents/MacOS/PetNest"))
+    assert MacOSKeyboardActivityMonitor.authorization_target() == bundle.resolve()
 
 
 def test_permission_poll_starts_after_grant_and_stops_after_revocation(qtbot, tmp_path):
