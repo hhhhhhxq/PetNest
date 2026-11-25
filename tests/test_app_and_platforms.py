@@ -2701,7 +2701,7 @@ def test_settings_pet_action_entry_opens_interactive_child_dialog(
     application.show_pet_action_exchange_dialog("导入动作")
     tray_dialog = application._pet_action_exchange_dialog
     assert tray_dialog is not None
-    assert tray_dialog.parentWidget() is application.window
+    assert tray_dialog.parentWidget() is (None if sys.platform == "darwin" else application.window)
     assert tray_dialog.windowModality() == Qt.WindowModality.NonModal
     tray_dialog.reject()
     settings_dialog.reject()

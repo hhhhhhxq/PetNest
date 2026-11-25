@@ -838,7 +838,7 @@ class SettingsCenterDialog(QDialog):
 
         keyboard_card, keyboard_layout = self._card(
             "键盘活动",
-            "在其他应用输入时也会生效；PetNest 只识别键盘活动，不记录按键或输入内容。",
+            "在其他应用输入时也会生效；PetNest 使用实时按键状态驱动互动，不保存按键或输入内容。",
             page,
         )
         self.keyboard_working_input = ToggleSwitch("敲键盘时播放工作动作", keyboard_card)

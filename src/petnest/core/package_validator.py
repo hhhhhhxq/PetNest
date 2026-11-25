@@ -128,6 +128,10 @@ class PackageValidator:
 
     @staticmethod
     def _validate_metadata(config: Mapping[str, Any], result: ValidationResult) -> None:
+        if not isinstance(config.get("renderer", "frames"), str) or config.get("renderer", "frames") not in {"frames", "keyboard-cat-v1"}:
+            result.errors.append("不支持的宠物渲染方式")
+        if config.get("renderer") == "keyboard-cat-v1" and config.get("canvas") != {"width": 360, "height": 320}:
+            result.errors.append("键盘猫画布必须为 360 × 320")
         if config.get("schema_version") != 1:
             result.errors.append("schema_version 必须为当前支持的版本 1")
         if not isinstance(config.get("id"), str) or not config["id"].strip():

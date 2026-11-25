@@ -245,9 +245,10 @@ class _ExternalEventRelay(QObject):
 
 
 class _KeyboardActivityRelay(QObject):
-    """Queue parameterless native keyboard pulses onto the Qt main thread."""
+    """Queue activity pulses and transient physical-key states onto the Qt thread."""
 
     activity = Signal()
+    key_event = Signal(int, str, bool)
 
 
 class PetNest:
@@ -397,6 +398,9 @@ class PetNest:
             is_pet_locked=self._is_pet_locked_for_exchange,
         )
         self.loader = PackageLoader()
+        if pets_root is None:
+            from petnest.core.pet_library import install_keyboard_cat
+            install_keyboard_cat(self.pets_root, bundled_pets_directory())
         self.action_synchronizer = AnimationActionSynchronizer()
         discovered_packages = self.loader.discover(self.pets_root)
         self._migrate_legacy_animation_overrides(discovered_packages)
@@ -560,6 +564,18 @@ class PetNest:
         self._keyboard_monitor_running = False
         self._keyboard_activity_relay = _KeyboardActivityRelay(self.window)
         self._keyboard_activity_relay.activity.connect(self._handle_keyboard_activity)
+        self._keyboard_activity_relay.key_event.connect(self._handle_physical_key)
+        self._physical_key_generation = 0
+        self.key_reconcile_timer = QTimer(self.window)
+        self.key_reconcile_timer.setInterval(250)
+        self.key_reconcile_timer.timeout.connect(self._reconcile_physical_keys)
+        self.keyboard_permission_timer = QTimer(self.window)
+        self.keyboard_permission_timer.setInterval(2000)
+        self.keyboard_permission_timer.timeout.connect(self._poll_keyboard_permission)
+        if sys.platform == "darwin":
+            self.keyboard_permission_timer.start()
+        self.window.set_cat_preferences(self._pet_preferences(self.package.identifier))
+        self._configure_physical_keys()
         self.keyboard_activity_timer = QTimer(self.window)
         self.keyboard_activity_timer.setSingleShot(True)
         self.keyboard_activity_timer.setInterval(1_500)
@@ -762,7 +778,12 @@ class PetNest:
         candidate = next((item for item in self.packages if item.identifier == identifier), None)
         if candidate is None:
             return False
+        saved_preferences = dict(self.settings.pet_preferences)
+        saved_preferences[self.package.identifier] = self._pet_preferences(self.package.identifier)
+        target_preferences = self._pet_preferences(identifier)
         position = self.window.pos()
+        if isinstance(target_preferences.get("x"), int) and isinstance(target_preferences.get("y"), int):
+            position = QPoint(target_preferences["x"], target_preferences["y"])
         try:
             self.window.load_package(candidate)
             self.window.move(self.window.clamp_position(position))
@@ -781,7 +802,17 @@ class PetNest:
                 priority=100,
             )
         )
-        self.settings = replace(self.settings, current_pet_id=candidate.identifier, scale=candidate.display.default_scale)
+        self.settings = replace(
+            self.settings, current_pet_id=candidate.identifier, pet_preferences=saved_preferences,
+            scale=target_preferences["scale"], mouse_follow_enabled=target_preferences["follow"],
+            keyboard_working_enabled=target_preferences["keys"],
+        )
+        self.window.set_scale(self.settings.scale)
+        self.window.set_cat_preferences(target_preferences)
+        self.window.set_paused(self.settings.animation_paused)
+        self._configure_mouse_follow()
+        self._configure_physical_keys()
+        self._configure_keyboard_activity()
         self.settings_manager.save(self.settings)
         self.lan_service.update_identity(display_name=display_name_for(self.settings), pet_name=self.package.name)
         self.remote_interaction_service.update_identity(
@@ -792,6 +823,8 @@ class PetNest:
             self.tray.set_current_pet_name(self.package.name)
         self._refresh_visible_work_finish_reminder()
         self._sync_pet_context_menu()
+        if self._pet_action_exchange_dialog is not None:
+            self._pet_action_exchange_dialog.my_pets_page.refresh_packages(self.packages, self.package.identifier)
         return True
 
     def reload_current_pet(self, *, synchronize: bool = True) -> bool:
@@ -815,6 +848,7 @@ class PetNest:
             reloaded = self.loader.load(previous.root)
             window_load_attempted = True
             self.window.load_package(reloaded)
+            self.window.set_cat_preferences(self._pet_preferences(reloaded.identifier))
             self.window.set_scale(scale_to_restore)
             self.window.move(self.window.clamp_position(position))
         except (OSError, ValueError, RuntimeError):
@@ -993,7 +1027,9 @@ class PetNest:
         if idle_configuration_changed:
             self._system_idle_monitor = self._new_system_idle_monitor(settings)
             self._configure_system_idle_timer()
+        self.window.set_cat_preferences(self._pet_preferences(self.package.identifier))
         if keyboard_configuration_changed:
+            self._configure_physical_keys()
             self._configure_keyboard_activity()
         self.settings_manager.save(self.settings)
 
@@ -1795,12 +1831,12 @@ class PetNest:
 
     def show_pet_action_exchange_dialog(
         self,
-        page: str = "导入宠物",
+        page: str = "我的宠物",
         *,
         parent: QWidget | None = None,
     ) -> None:
         """打开统一宠物/动作交换中心，并连接安装后的运行时重载。"""
-        dialog_parent = parent or self.window
+        dialog_parent = parent or (None if sys.platform == "darwin" else self.window)
         if self._pet_action_exchange_dialog is None:
             dialog = PetActionExchangeDialog(
                 self.packages,
@@ -1809,6 +1845,13 @@ class PetNest:
                 save_animation_timelines=self._save_animation_timelines,
                 is_pet_locked=self._is_pet_locked_for_exchange,
                 pet_store_service=self.pet_store_service,
+                preferences=self._pet_preferences,
+                save_preferences=self._save_pet_preferences,
+                use_pet=self.switch_pet,
+                input_status=lambda: self.keyboard_activity_monitor.status_message,
+                request_permission=self._request_keyboard_permission,
+                retry_input=self._retry_keyboard_input,
+                locate_input_app=self._locate_keyboard_authorization_target,
                 parent=dialog_parent,
             )
             dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -2070,6 +2113,8 @@ class PetNest:
         if server is not None:
             self._run_shutdown_step("停止外部事件服务", server.stop)
         self._run_shutdown_step("停止系统空闲计时器", self.system_idle_timer.stop)
+        self._run_shutdown_step("停止权限状态检查", self.keyboard_permission_timer.stop)
+        self._run_shutdown_step("停止按键状态检查", self.key_reconcile_timer.stop)
         self._run_shutdown_step("停止键盘活动计时器", self.keyboard_activity_timer.stop)
         if self._keyboard_monitor_running:
             self._run_shutdown_step("停止键盘活动监听", self.keyboard_activity_monitor.stop)
@@ -2709,6 +2754,106 @@ class PetNest:
         else:
             self.system_idle_timer.stop()
             self._system_idle_monitor.reset()
+
+    def _pet_preferences(self, identifier: str) -> dict:
+        from petnest.core.keyboard_cat import cat_preferences
+        from math import isfinite
+        raw = self.settings.pet_preferences.get(identifier, {})
+        value = {**raw, **cat_preferences(raw), "sleep_enabled": self.settings.system_idle_enabled,
+                 "sleep_seconds": self.settings.system_sleep_seconds}
+        package = next((p for p in self.packages if p.identifier == identifier), self.package)
+        scale = raw.get("scale", package.display.default_scale)
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not isfinite(scale):
+            scale = package.display.default_scale
+        value.update(scale=max(package.display.min_scale, min(package.display.max_scale, scale)),
+                     follow=raw.get("follow", False) is True, keys=raw.get("keys", False) is True)
+        if identifier == self.package.identifier:
+            value.update(scale=self.settings.scale, follow=self.settings.mouse_follow_enabled,
+                         keys=self.settings.keyboard_working_enabled)
+            if not self.settings.mouse_follow_enabled:
+                value.update(x=self.window.x(), y=self.window.y())
+        return value
+
+    def _save_pet_preferences(self, identifier: str, preferences: dict) -> None:
+        values = dict(self.settings.pet_preferences)
+        values[identifier] = dict(preferences)
+        settings = replace(self.settings, pet_preferences=values)
+        if identifier == self.package.identifier:
+            settings = replace(settings, scale=preferences["scale"],
+                               mouse_follow_enabled=preferences["follow"],
+                               keyboard_working_enabled=preferences["keys"])
+            self.apply_settings(settings)
+        else:
+            self.settings = settings
+            self.settings_manager.save(settings)
+
+    def _configure_physical_keys(self) -> None:
+        from petnest.core.keyboard_cat import CAT_RENDERER
+        self.window.cat_state.reset()
+        if self._pet_action_exchange_dialog is not None:
+            self._pet_action_exchange_dialog.my_pets_page._preview_state.reset()
+        self._physical_key_generation += 1
+        generation = self._physical_key_generation
+        setter = getattr(self.keyboard_activity_monitor, "set_key_handler", None)
+        if callable(setter):
+            enabled = self.package.renderer == CAT_RENDERER and self.settings.keyboard_working_enabled
+            setter((lambda key, down: self._keyboard_activity_relay.key_event.emit(generation, key, down))
+                   if enabled else None)
+            if enabled:
+                self.key_reconcile_timer.start()
+            else:
+                self.key_reconcile_timer.stop()
+
+    def _handle_physical_key(self, generation: int, key: str, down: bool) -> None:
+        if generation != self._physical_key_generation:
+            return
+        if key == "reset" or (not self._shutdown and self.settings.keyboard_working_enabled):
+            self.window.cat_key_event(key, down)
+            if self._pet_action_exchange_dialog is not None:
+                self._pet_action_exchange_dialog.my_pets_page.cat_key_event(key, down)
+
+    def _reconcile_physical_keys(self) -> None:
+        reconcile = getattr(self.keyboard_activity_monitor, "reconcile_keys", None)
+        if callable(reconcile) and self._keyboard_monitor_running:
+            try:
+                held = set(self.window.cat_state.keys)
+                for key in held - reconcile(held):
+                    self._handle_physical_key(self._physical_key_generation, key, False)
+            except (OSError, RuntimeError):
+                self._handle_physical_key(self._physical_key_generation, "reset", False)
+
+    def _poll_keyboard_permission(self) -> None:
+        if self._shutdown or not self.settings.keyboard_working_enabled:
+            return
+        probe = getattr(self.keyboard_activity_monitor, "permission_granted", None)
+        if not callable(probe):
+            return
+        granted = probe()
+        if granted and not self._keyboard_monitor_running:
+            self._configure_keyboard_activity()
+        elif not granted and self._keyboard_monitor_running:
+            self.keyboard_activity_monitor.stop()
+            self._keyboard_monitor_running = False
+            self.window.cat_state.reset()
+            self.keyboard_activity_timer.stop()
+            self.work_activity.reset_keyboard()
+            self._configure_keyboard_activity()
+
+    def _locate_keyboard_authorization_target(self) -> None:
+        reveal = getattr(self.keyboard_activity_monitor, "reveal_authorization_target", None)
+        if callable(reveal):
+            reveal()
+
+    def _request_keyboard_permission(self) -> None:
+        request = getattr(self.keyboard_activity_monitor, "request_permission", None)
+        if callable(request):
+            request()
+
+    def _retry_keyboard_input(self) -> None:
+        self.keyboard_activity_monitor.stop()
+        self._keyboard_monitor_running = False
+        self._configure_physical_keys()
+        self._configure_keyboard_activity()
 
     def _configure_keyboard_activity(self) -> None:
         should_run = (

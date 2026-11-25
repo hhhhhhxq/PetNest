@@ -19,7 +19,7 @@ def test_exchange_dialog_has_store_page_and_single_shell_footer(qtbot: object, t
     dialog = PetActionExchangeDialog([package], tmp_path / "pets")
     qtbot.addWidget(dialog)
 
-    assert dialog.page_names() == ["导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作"]
+    assert dialog.page_names() == ["我的宠物", "导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作"]
     dialog.select_page("宠物商店")
     assert dialog.current_page() is dialog.pet_store_page
     assert dialog.primary_button.parentWidget() is dialog.footer_bar

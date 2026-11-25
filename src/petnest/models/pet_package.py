@@ -96,6 +96,7 @@ class PetPackage:
     bindings: dict[str, str]
     fallbacks: dict[str, tuple[str, ...]]
     display: DisplaySettings = field(default_factory=DisplaySettings)
+    renderer: str = "frames"
     author: str | None = None
     description: str | None = None
     interaction_items: tuple[InteractionItemDefinition, ...] = field(default_factory=tuple)

@@ -1,4 +1,4 @@
-"""Windows global keyboard-activity hook that never exposes key data."""
+"""Windows activity pulses and transient physical-key states, without text decoding."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class WindowsKeyboardActivityMonitor:
-    """Own one hook thread and report only parameterless activity pulses."""
+    """Own one hook thread for activity pulses and optional physical-key events."""
 
     def __init__(
         self,
@@ -28,6 +28,25 @@ class WindowsKeyboardActivityMonitor:
         self._thread: Thread | None = None
         self._stopping = False
         self._status_message = "已关闭"
+        self._key_handler = None
+
+    def reconcile_keys(self, keys: set[str]) -> set[str]:
+        """Release missed key-ups after a desktop switch; never synthesize text."""
+        if sys.platform != "win32":
+            return set()
+        import ctypes
+        from petnest.platforms.physical_keys import WINDOWS_KEYS
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        codes = {name: code for code, name in WINDOWS_KEYS.items()}
+        codes.update(MouseLeft=1, MouseRight=2)
+        return {key for key in keys if key in codes and user32.GetAsyncKeyState(codes[key]) & 0x8000}
+
+    def set_key_handler(self, handler) -> None:
+        self._key_handler = handler
+        if self._session is not None:
+            self._session.key_handler = handler
 
     @property
     def supported(self) -> bool:
@@ -47,6 +66,7 @@ class WindowsKeyboardActivityMonitor:
             self._thread = None
             self._stopping = False
         session = self._session_factory()
+        session.key_handler = self._key_handler
         thread = Thread(
             target=session.run,
             args=(on_activity,),
@@ -72,6 +92,8 @@ class WindowsKeyboardActivityMonitor:
         return True
 
     def stop(self) -> None:
+        if self._key_handler is not None:
+            self._key_handler("reset", False)
         session, thread = self._session, self._thread
         if session is None and thread is None:
             self._status_message = "已关闭"
@@ -91,7 +113,7 @@ class WindowsKeyboardActivityMonitor:
 
 
 class _WindowsHookSession:
-    """One Win32 hook message loop; lParam remains an opaque forwarded value."""
+    """One Win32 hook message loop; read only virtual-key codes from key events."""
 
     WH_KEYBOARD_LL = 13
     WM_KEYDOWN = 0x0100
@@ -99,6 +121,7 @@ class _WindowsHookSession:
     WM_QUIT = 0x0012
 
     def __init__(self) -> None:
+        self.key_handler = None
         self.started = Event()
         self.install_ok = False
         self.error_message = ""
@@ -138,12 +161,33 @@ class _WindowsHookSession:
 
         @hook_proc_type
         def callback(n_code: int, w_param: int, opaque_l_param: int) -> int:
+            if n_code >= 0 and self.key_handler is not None and int(w_param) in {0x100, 0x101, 0x104, 0x105}:
+                from petnest.platforms.physical_keys import WINDOWS_KEYS
+                # KBDLLHOOKSTRUCT begins with a DWORD virtual-key code. Never decode text.
+                key = WINDOWS_KEYS.get(ctypes.cast(opaque_l_param, ctypes.POINTER(wintypes.DWORD)).contents.value)
+                if key is not None:
+                    try:
+                        self.key_handler(key, int(w_param) in {0x100, 0x104})
+                    except Exception:
+                        pass
             if n_code >= 0 and int(w_param) in {self.WM_KEYDOWN, self.WM_SYSKEYDOWN}:
                 try:
                     on_activity()
                 except Exception:  # noqa: BLE001 - native callback must keep the system hook alive.
                     LOGGER.warning("键盘活动通知失败", exc_info=True)
             return int(user32.CallNextHookEx(self._hook, n_code, w_param, opaque_l_param))
+
+        @hook_proc_type
+        def mouse_callback(n_code, w_param, opaque_l_param):
+            handler = self.key_handler
+            states = {0x201: ("MouseLeft", True), 0x202: ("MouseLeft", False),
+                      0x204: ("MouseRight", True), 0x205: ("MouseRight", False)}
+            if n_code >= 0 and handler is not None and int(w_param) in states:
+                try:
+                    handler(*states[int(w_param)])
+                except Exception:
+                    pass
+            return int(user32.CallNextHookEx(None, n_code, w_param, opaque_l_param))
 
         self._callback = callback
         message = wintypes.MSG()
@@ -158,10 +202,13 @@ class _WindowsHookSession:
             self.error_message = f"无法安装 Windows 键盘监听（错误码 {ctypes.get_last_error()}）"
             self.started.set()
             return
+        mouse_hook = user32.SetWindowsHookExW(14, mouse_callback, kernel32.GetModuleHandleW(None), 0)
         self.install_ok = True
         self.started.set()
         if self._stop_requested.is_set():
             user32.UnhookWindowsHookEx(self._hook)
+            if mouse_hook:
+                user32.UnhookWindowsHookEx(mouse_hook)
             self._hook = None
             return
         try:
@@ -169,6 +216,10 @@ class _WindowsHookSession:
                 user32.TranslateMessage(ctypes.byref(message))
                 user32.DispatchMessageW(ctypes.byref(message))
         finally:
+            if mouse_hook:
+                user32.UnhookWindowsHookEx(mouse_hook)
+            if self.key_handler is not None:
+                self.key_handler("reset", False)
             if self._hook:
                 if not user32.UnhookWindowsHookEx(self._hook):
                     LOGGER.warning("Windows 键盘 Hook 显式解除失败")

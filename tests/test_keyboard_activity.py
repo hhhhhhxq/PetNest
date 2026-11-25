@@ -20,21 +20,22 @@ def test_unsupported_monitor_never_invokes_callback() -> None:
     monitor.stop()
 
     assert calls == []
-    assert monitor.status_message == "当前版本仅支持 Windows"
+    assert monitor.status_message == "当前平台暂不支持全局键盘监听"
 
 
-def test_factory_uses_unsupported_monitor_outside_windows() -> None:
+def test_factory_supports_macos_without_requesting_permissions() -> None:
     monitor = create_keyboard_activity_monitor("darwin")
 
-    assert isinstance(monitor, UnsupportedKeyboardActivityMonitor)
-    assert monitor.supported is False
+    from petnest.platforms.macos_keyboard import MacOSKeyboardActivityMonitor
+    assert isinstance(monitor, MacOSKeyboardActivityMonitor)
+    assert monitor.supported is True
 
 
 def test_unknown_platform_reports_same_safe_degradation() -> None:
     monitor = create_keyboard_activity_monitor("plan9")
 
     assert monitor.start(lambda: None) is False
-    assert monitor.status_message == "当前版本仅支持 Windows"
+    assert monitor.status_message == "当前平台暂不支持全局键盘监听"
 
 
 class FakeHookSession:
@@ -188,3 +189,38 @@ def test_stop_timeout_keeps_thread_reference_and_blocks_duplicate_start() -> Non
     monitor._thread.join(timeout=1)
     monitor.stop()
     assert monitor._thread is None
+
+
+def test_windows_physical_events_include_releases_and_mouse_and_always_forward(monkeypatch):
+    """Exercise the native hook adapter with a fake Win32 message pump."""
+    from ctypes import wintypes
+    from types import SimpleNamespace
+    from petnest.platforms import windows_keyboard as module
+    callbacks={}; forwarded=[]; removed=[]; events=[]
+    def install(kind, callback, instance, thread):
+        callbacks[kind]=callback
+        return kind
+    count=0
+    def get_message(*args):
+        nonlocal count
+        count+=1
+        if count==1:
+            key=wintypes.DWORD(65)
+            pointer=ctypes.addressof(key)
+            callbacks[13](0,0x100,pointer)
+            callbacks[13](0,0x101,pointer)
+            callbacks[14](0,0x201,0)
+            callbacks[14](0,0x202,0)
+        return 0
+    u=SimpleNamespace(SetWindowsHookExW=install,CallNextHookEx=lambda *a:forwarded.append(a) or 0,
+        PeekMessageW=lambda *a:None,GetMessageW=get_message,PostThreadMessageW=lambda *a:True,
+        UnhookWindowsHookEx=lambda hook:removed.append(hook) or True)
+    k=SimpleNamespace(GetCurrentThreadId=lambda:1,GetModuleHandleW=lambda _:1)
+    monkeypatch.setattr(ctypes,'WinDLL',lambda name,**kw:u if name=='user32' else k,raising=False)
+    monkeypatch.setattr(ctypes,'WINFUNCTYPE',lambda *a:lambda callback:callback,raising=False)
+    monkeypatch.setattr(module,'_configure_win32_signatures',lambda *a:None)
+    session=module._WindowsHookSession(); session.key_handler=lambda *e:events.append(e)
+    session._run_windows(lambda:None)
+    assert events==[('A',True),('A',False),('MouseLeft',True),('MouseLeft',False),('reset',False)]
+    assert len(forwarded)==4
+    assert set(removed)=={13,14}

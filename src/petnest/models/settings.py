@@ -38,6 +38,7 @@ class Settings:
 
     schema_version: int = SCHEMA_VERSION
     current_pet_id: str | None = None
+    pet_preferences: dict[str, dict[str, Any]] = field(default_factory=dict)
     window_x: int | None = None
     window_y: int | None = None
     screen_id: str | None = None
@@ -105,6 +106,11 @@ class Settings:
         """忽略未知键，避免未来版本设置使旧版本崩溃。"""
         fields = cls.__dataclass_fields__
         values = {name: raw[name] for name in fields if name in raw}
+        prefs = values.get("pet_preferences")
+        values["pet_preferences"] = {
+            key: dict(value) for key, value in prefs.items()
+            if isinstance(key, str) and isinstance(value, dict)
+        } if isinstance(prefs, dict) else {}
         values["daily_work_end_times"] = _daily_work_end_times(values.get("daily_work_end_times"))
         values["cursor_scale"] = _cursor_scale(values.get("cursor_scale", 100))
         values["work_schedule_mode"] = _work_schedule_mode(values.get("work_schedule_mode", "fixed"))

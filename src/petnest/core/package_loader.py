@@ -97,6 +97,7 @@ class PackageLoader:
             display=display,
             author=_optional_string(config.get("author")),
             description=_optional_string(config.get("description")),
+            renderer=str(config.get("renderer", "frames")),
             interaction_items=_interaction_items(
                 config.get("interaction_items"),
                 interaction_item_icons,

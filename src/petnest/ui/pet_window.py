@@ -9,9 +9,10 @@ import sys
 from time import monotonic
 
 from PIL import Image
-from PySide6.QtCore import QEvent, QMimeData, QPoint, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QContextMenuEvent,
     QDragEnterEvent,
     QDragLeaveEvent,
@@ -29,6 +30,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QLabel, QWidget
 
+from petnest.core.keyboard_cat import CAT_RENDERER, CatState, cat_preferences
+from petnest.ui.keyboard_cat_renderer import render_cat
 from petnest.core.animation_player import AnimationPlayer
 from petnest.core.codex_link import CodexLinkSnapshot
 from petnest.core.interaction_items import InteractionItemResolver, ResolvedInteractionItem
@@ -141,6 +144,10 @@ class PetWindow(QWidget):
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
 
+        self.cat_state = CatState()
+        self.cat_preferences = cat_preferences({})
+        self._cat_image = None
+        self._cat_previous_cursor = None
         self.package = package
         self._scale = package.display.default_scale
         self.player = player or AnimationPlayer()
@@ -330,6 +337,10 @@ class PetWindow(QWidget):
 
         alpha 字节会按 Pillow 帧对象缓存，从而避免鼠标移动时重复解码图片。
         """
+        if self.package.renderer == CAT_RENDERER and self._cat_image is not None:
+            lx, ly = int((x - self._pet_left()) / self.scale), int(y / self.scale)
+            return (0 <= lx < 360 and 0 <= ly < 320
+                    and self._cat_image.pixelColor(lx, ly).alpha() >= self.package.display.alpha_hit_test_threshold)
         frame = self.player.current_frame
         if frame is None:
             return False
@@ -683,6 +694,8 @@ class PetWindow(QWidget):
 
     def handle_pet_event(self, event: PetEvent) -> None:
         """供应用事件总线传入统一事件，不暴露内部播放细节。"""
+        if event.event_name in {"system.lock", "system.sleep", "system.wake"}:
+            self.cat_state.reset()
         transition = self.state_machine.handle(event)
         if transition.changed:
             self._play_current_action()
@@ -699,6 +712,10 @@ class PetWindow(QWidget):
         self._countdown_bottom_cache.clear()
         self._hover_action_bounds_cache.clear()
         self._alpha_cache.clear()
+        self.cat_state = CatState()
+        self.cat_preferences = cat_preferences({})
+        self._cat_image = None
+        self._cat_previous_cursor = None
         self.package = package
         self._scale = package.display.default_scale
         self.state_machine = self._make_state_machine(package)
@@ -1265,7 +1282,40 @@ class PetWindow(QWidget):
         self._set_current_frame()
         self._start_animation_timer()
 
+    def set_cat_preferences(self, preferences: object) -> None:
+        self.cat_preferences = cat_preferences(preferences)
+        if self.package.renderer == CAT_RENDERER:
+            self._set_current_frame()
+
+    def cat_key_event(self, key: str, down: bool) -> None:
+        if self.package.renderer == CAT_RENDERER:
+            self.cat_state.key_event(key, down)
+
     def _set_current_frame(self) -> None:
+        if self.package.renderer == CAT_RENDERER:
+            now = monotonic()
+            position = QCursor.pos()
+            local = self.mapFromGlobal(position)
+            logical = QPointF((local.x() - self._pet_left()) / self.scale, local.y() / self.scale)
+            moved = self._cat_previous_cursor is not None and position != self._cat_previous_cursor
+            if moved:
+                self.cat_state.last_activity = now
+                if (self._mouse_interaction_enabled and not self._input_is_transparent
+                        and ((logical.x() - 182) / 54) ** 2 + ((logical.y() - 119) / 45) ** 2 < 1):
+                    self.cat_state.pet_until = now + 1.2
+            self._cat_previous_cursor = position
+            preferences = dict(self.cat_preferences)
+            preferences["petting"] = (preferences["petting"] and self._mouse_interaction_enabled
+                                      and not self._input_is_transparent)
+            self._cat_image = render_cat(self.cat_state, preferences, cursor=logical,
+                                         action=self.current_action, dt=now - self.cat_state.last_tick)
+            self.cat_state.last_tick = now
+            self._current_pixmap = QPixmap.fromImage(self._cat_image)
+            size = self._scaled_canvas_size()
+            if self.size() != size:
+                self.setFixedSize(size)
+            self.update()
+            return
         frame = self.player.current_frame
         if frame is None:
             self._current_pixmap = QPixmap()

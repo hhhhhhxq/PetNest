@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "id": "keyboard_cat",
+  "name": "键盘猫",
+  "version": "1.0.0",
+  "renderer": "keyboard-cat-v1",
+  "author": "PetNest / KuroCat",
+  "description": "看向鼠标、摸头、同步按键；猫咪和小键盘可独立换装。",
+  "canvas": {
+    "width": 360,
+    "height": 320
+  },
+  "display": {
+    "default_scale": 1.0,
+    "min_scale": 0.5,
+    "max_scale": 2.0
+  },
+  "animations": {
+    "idle": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 10,
+      "interruptible": true
+    },
+    "hover": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "click": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "working": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "waiting": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "success": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "error": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "sleep": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "bored": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    },
+    "drag": {
+      "path": "animations/idle",
+      "fps": 30,
+      "loop": true,
+      "priority": 30,
+      "interruptible": true
+    }
+  },
+  "bindings": {
+    "agent.working": "working",
+    "agent.waiting": "waiting",
+    "agent.success": "success",
+    "agent.error": "error",
+    "system.sleep": "sleep",
+    "system.bored": "bored",
+    "system.active": "idle"
+  },
+  "fallbacks": {}
+}

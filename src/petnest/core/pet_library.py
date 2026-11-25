@@ -33,3 +33,13 @@ def prepare_pet_library(target: Path, bundled: Path) -> Path:
     if not loader.discover(target):
         raise PetLibraryError("宠物库为空，且无法复制内置示例宠物")
     return target
+
+
+def install_keyboard_cat(target: Path, bundled: Path) -> None:
+    """Add the newly bundled companion to existing libraries, never overwrite user data."""
+    source = bundled / "keyboard_cat"
+    destination = target / "keyboard_cat"
+    if source.is_dir() and source.resolve() != destination.resolve() and not destination.exists():
+        PackageLoader().load(source)
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, destination)

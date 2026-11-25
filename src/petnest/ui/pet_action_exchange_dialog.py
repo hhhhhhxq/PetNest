@@ -38,6 +38,7 @@ from petnest.ui.pet_import_page import PetImportPage
 from petnest.ui.pet_store_page import PetStorePage
 from petnest.ui.lucide_icons import lucide_icon
 from petnest.ui.theme import dialog_stylesheet
+from petnest.ui.my_pets_page import MyPetsPage
 
 
 class PetActionExchangeDialog(QDialog):
@@ -47,9 +48,10 @@ class PetActionExchangeDialog(QDialog):
     store_pet_installed = Signal(str, object)
     actions_installed = Signal(str, object)
 
-    _PAGE_LABELS = ("导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作")
-    _PAGE_ICONS = ("package-plus", "store", "film", "timer", "package-open")
+    _PAGE_LABELS = ("我的宠物", "导入宠物", "宠物商店", "导入动作", "编辑动作", "导出动作")
+    _PAGE_ICONS = ("cat", "package-plus", "store", "film", "timer", "package-open")
     _PAGE_SUBTITLES = {
+        "我的宠物": "选择陪伴你的伙伴，调整它的装扮与互动",
         "导入宠物": "自动识别 PNG、ZIP 或文件夹，并在确认前预览导入内容",
         "宠物商店": "浏览官方精选宠物，领养新伙伴或更新已安装内容",
         "导入动作": "从资源包提取动作，或用图片制作可触发动作",
@@ -68,6 +70,8 @@ class PetActionExchangeDialog(QDialog):
         ] | None = None,
         is_pet_locked: Callable[[str], bool] | None = None,
         pet_store_service: PetStoreService | None = None,
+        preferences=None, save_preferences=None, use_pet=None,
+        input_status=None, request_permission=None, retry_input=None, locate_input_app=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -169,6 +173,12 @@ class PetActionExchangeDialog(QDialog):
 
         self.stack = QStackedWidget(self.content)
         self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        self.my_pets_page = MyPetsPage(
+            self._packages, desired_id, preferences=preferences, save_preferences=save_preferences,
+            use_pet=use_pet, input_status=input_status, request_permission=request_permission,
+            retry_input=retry_input, locate_input_app=locate_input_app, parent=self.stack,
+        )
+        self.my_pets_page.edit_actions.connect(self._edit_selected_pet)
         self.pet_import_page = PetImportPage(
             self._packages,
             self._pets_root,
@@ -176,8 +186,9 @@ class PetActionExchangeDialog(QDialog):
             parent=self.stack,
         )
         self.pet_store_page = PetStorePage(pet_store_service, self.stack)
+        action_packages = tuple(p for p in self._packages if p.renderer == "frames")
         self.action_import_page = ActionImportPage(
-            self._packages,
+            action_packages,
             self._pets_root,
             current_pet_id=desired_id,
             embed_target_selector=False,
@@ -185,18 +196,19 @@ class PetActionExchangeDialog(QDialog):
             parent=self.stack,
         )
         self.animation_editor_page = AnimationEditorPage(
-            self._packages,
+            action_packages,
             current_pet_id=desired_id,
             save_timelines=save_callback,
             is_pet_locked=self._is_pet_locked,
             parent=self.stack,
         )
         self.action_export_page = ActionExportPage(
-            self._packages,
+            action_packages,
             self.stack,
             current_pet_id=desired_id,
         )
         self._pages: tuple[ExchangePage, ...] = (
+            self.my_pets_page,
             self.pet_import_page,
             self.pet_store_page,
             self.action_import_page,
@@ -253,6 +265,12 @@ class PetActionExchangeDialog(QDialog):
         self.setMinimumHeight(680)
         self.setMaximumHeight(760)
         self.resize(self.width(), 760)
+
+    def _edit_selected_pet(self) -> None:
+        package = self.my_pets_page.selected_package()
+        if package is not None:
+            self.animation_editor_page.set_current_pet(package.identifier)
+            self.select_page("编辑动作")
 
     def _sync_navigation_sidebar_width(self, *_metrics: int) -> None:
         if not hasattr(self, "navigation"):
@@ -314,10 +332,12 @@ class PetActionExchangeDialog(QDialog):
             # this source of truth keeps its existing ID/update checks correct
             # while it preserves whatever source draft is currently visible.
             self.pet_import_page._packages = next_packages
+        self.my_pets_page.refresh_packages(next_packages, current_pet_id)
         self.pet_store_page.refresh_packages(next_packages, current_pet_id)
-        self.action_import_page.refresh_packages(next_packages, current_pet_id)
-        self.animation_editor_page.refresh_packages(next_packages, current_pet_id)
-        self.action_export_page.refresh_packages(next_packages, current_pet_id)
+        action_packages = tuple(p for p in next_packages if p.renderer == "frames")
+        self.action_import_page.refresh_packages(action_packages, current_pet_id)
+        self.animation_editor_page.refresh_packages(action_packages, current_pet_id)
+        self.action_export_page.refresh_packages(action_packages, current_pet_id)
         return True
 
     def complete_action_install(self, message: str) -> None:

@@ -1,4 +1,4 @@
-"""Platform keyboard-activity capability without exposing key data."""
+"""Platform activity monitoring; optional physical-key states stay in memory."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class UnsupportedKeyboardActivityMonitor:
 
     @property
     def status_message(self) -> str:
-        return "当前版本仅支持 Windows"
+        return "当前平台暂不支持全局键盘监听"
 
     def start(self, on_activity: Callable[[], object]) -> bool:
         del on_activity
@@ -53,6 +53,10 @@ def create_keyboard_activity_monitor(
         from petnest.platforms.windows_keyboard import WindowsKeyboardActivityMonitor
 
         return WindowsKeyboardActivityMonitor()
+    if name == "darwin":
+        from petnest.platforms.macos_keyboard import MacOSKeyboardActivityMonitor
+
+        return MacOSKeyboardActivityMonitor()
     return UnsupportedKeyboardActivityMonitor(name)
 
 
