@@ -1,0 +1,96 @@
+{
+  "approved-0.png": {
+    "coat": "black",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {},
+    "white_markings": {
+      "face": "none",
+      "chest": 0.0,
+      "paws": 0.0,
+      "amount": 0.55
+    }
+  },
+  "approved-1.png": {
+    "coat": "siamese",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {},
+    "white_markings": {
+      "face": "none",
+      "chest": 0.0,
+      "paws": 0.0,
+      "amount": 0.55
+    }
+  },
+  "approved-2.png": {
+    "coat": "shaded",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {},
+    "white_markings": {
+      "face": "none",
+      "chest": 0.0,
+      "paws": 0.0,
+      "amount": 0.55
+    }
+  },
+  "approved-3.png": {
+    "coat": "tortie",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {},
+    "white_markings": {
+      "face": "none",
+      "chest": 0.0,
+      "paws": 0.0,
+      "amount": 0.55
+    }
+  },
+  "approved-4.png": {
+    "coat": "calico",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {},
+    "white_markings": {
+      "face": "none",
+      "chest": 0.0,
+      "paws": 0.0,
+      "amount": 0.55
+    }
+  },
+  "approved-5.png": {
+    "coat": "tabby",
+    "keyboard": "cream",
+    "look": true,
+    "petting": true,
+    "sleep_enabled": true,
+    "sleep_seconds": 40,
+    "colors": {
+      "fur": "#B1A18B",
+      "point": "#71624F",
+      "eyes": "#B7BA6F"
+    },
+    "white_markings": {
+      "face": "blaze",
+      "chest": 0.8,
+      "paws": 0.6,
+      "amount": 0.55
+    }
+  }
+}

@@ -9,7 +9,6 @@ if [ "$(uname -m)" != "x86_64" ]; then
   exit 1
 fi
 . .venv/bin/activate
-sh tools/build_keyboard_cat.sh
 VERSION="$(PYTHONPATH=src python -c 'from petnest import __version__; print(__version__)')"
 RESOURCE_DATA="--add-data pets/sample_pet:pets/sample_pet --add-data pets/keyboard_cat:pets/keyboard_cat --add-data assets:assets"
 if [ -d "effects" ]; then
@@ -23,7 +22,6 @@ pyinstaller --noconfirm --clean --onedir --windowed --name PetNest \
   --osx-bundle-identifier com.petnest.app \
   --hidden-import ServiceManagement --hidden-import Quartz --hidden-import CoreFoundation \
   --icon assets/icons/petnest-app.png \
-  --add-binary build/native/libpetnest_cat.dylib:native \
   --paths src $RESOURCE_DATA src/petnest_launcher.py
 cp dist/PetNestUpdater dist/PetNest.app/Contents/MacOS/PetNestUpdater
 chmod +x dist/PetNest.app/Contents/MacOS/PetNestUpdater

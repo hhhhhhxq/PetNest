@@ -1300,9 +1300,6 @@ class PetWindow(QWidget):
             moved = self._cat_previous_cursor is not None and position != self._cat_previous_cursor
             if moved:
                 self.cat_state.last_activity = now
-                if (self._mouse_interaction_enabled and not self._input_is_transparent
-                        and ((logical.x() - 182) / 54) ** 2 + ((logical.y() - 119) / 45) ** 2 < 1):
-                    self.cat_state.pet_until = now + 1.2
             self._cat_previous_cursor = position
             preferences = dict(self.cat_preferences)
             preferences["petting"] = (preferences["petting"] and self._mouse_interaction_enabled

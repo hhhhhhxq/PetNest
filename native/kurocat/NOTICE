@@ -1,4 +1,4 @@
-PetNest keyboard cat - original macOS renderer integration.
+PetNest keyboard cat - shared cross-platform port of the original renderer.
 Upstream: https://github.com/chanke17/KuroCat
 Revision: 073bc6d97c76a99db72a0eb103a2bd3245fe1ab1 (v1.2.1, base of FatCat's patch)
 Copyright (c) 2026 chanke17. MIT License; see LICENSE.
@@ -12,5 +12,7 @@ CatPhysics.swift adds an optional scripted idle-age override for PetNest sleep p
 Bridge.swift is the PetNest adapter: supplies physical input and a bitmap target,
 isolates preferences from KuroCat, and does not run upstream input monitors or startup code.
 The original keycap badges, key layout, paw physics, cursor movement and petting are retained.
-Windows currently uses the separate simplified Qt renderer, not this native library.
+Production on both Windows and macOS uses cat_motion.py and cat_scene.py, ported from this reference.
+The Swift library is retained only for optional reference comparisons, not shipped or selected by the app.
+Original calibrated colors are fixed as sRGB in the shared scene; labels use bundled OFL Noto Sans outlines.
 FatCat's Windows system cursor pack and annoyed-petting extension are not included.

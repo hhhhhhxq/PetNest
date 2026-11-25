@@ -27,7 +27,7 @@ from petnest.core.keyboard_cat import (
     CatState,
     cat_preferences,
 )
-from petnest.platforms.physical_keys import MAC_KEYS
+from petnest.ui.keyboard_preview_input import preview_key
 from petnest.core.cat_appearance import switch_appearance
 from petnest.ui.exchange_page import ExchangePage
 from petnest.ui.keyboard_cat_renderer import render_cat
@@ -452,16 +452,20 @@ class MyPetsPage(ExchangePage):
             dialog = getattr(self, "_appearance_dialog", None)
             if dialog is not None:
                 dialog.state.reset()
-        # A local preview works before global input permission is granted.
+        # Local previews work on both systems, including while a frame pet is active.
         if (
-            sys.platform == "darwin"
-            and self.isVisible()
+            self.isVisible()
             and isinstance(watched, QWidget)
             and (watched is self or self.isAncestorOf(watched))
-            and self._input_status() != "监听正常"
             and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
+            and not (self._input_status() == "监听正常" and any(
+                p.identifier == self._current_id and p.renderer == CAT_RENDERER
+                for p in self._packages
+            ))
         ):
-            key = MAC_KEYS.get(event.nativeVirtualKey())
+            if event.isAutoRepeat() and event.type() == QEvent.Type.KeyRelease:
+                return super().eventFilter(watched, event)
+            key = preview_key(event)
             if key is not None:
                 self.cat_key_event(key, event.type() == QEvent.Type.KeyPress)
         return super().eventFilter(watched, event)

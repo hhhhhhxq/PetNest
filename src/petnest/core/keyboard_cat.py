@@ -33,13 +33,9 @@ def cat_preferences(raw: object) -> dict:
 class CatState:
     keys: set[str] = field(default_factory=set)
     last_activity: float = field(default_factory=monotonic)
-    pet_until: float = 0.0
-    yaw: float = 0.0
-    pitch: float = 0.0
-    elapsed: float = 0.0
     last_tick: float = field(default_factory=monotonic)
     events: list[tuple[str, bool]] = field(default_factory=list, repr=False)
-    native_renderer: object | None = field(default=None, repr=False, compare=False)
+    motion: object | None = field(default=None, repr=False, compare=False)
 
     def key_event(self, key: str, down: bool) -> None:
         if len(self.events) < 512:

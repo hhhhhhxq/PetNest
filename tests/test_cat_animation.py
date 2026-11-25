@@ -1,17 +1,10 @@
-"""Regression coverage for the actual upstream renderer, not the Qt approximation."""
+"""Shared production animation regressions, exercised on macOS and Windows."""
 
-import sys
-
-import pytest
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
 
 from petnest.core.keyboard_cat import CatState
 from petnest.ui.keyboard_cat_renderer import render_cat
-
-pytestmark = pytest.mark.skipif(
-    sys.platform != "darwin", reason="macOS native renderer"
-)
 
 
 def badge_pixels(image):

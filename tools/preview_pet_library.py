@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication
 
 from petnest.core.package_loader import PackageLoader
 from petnest.core.cat_appearance import PRESETS, apply_preset
-from petnest.platforms.physical_keys import MAC_KEYS
+from petnest.ui.keyboard_preview_input import preview_key
 from petnest.ui.pet_action_exchange_dialog import PetActionExchangeDialog
 
 
@@ -29,7 +29,7 @@ class PreviewInput(QObject):
             and self.page.isAncestorOf(watched)
             and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)
         ):
-            key = MAC_KEYS.get(event.nativeVirtualKey())
+            key = preview_key(event)
             if key is not None:
                 self.page.cat_key_event(key, event.type() == QEvent.Type.KeyPress)
         return False

@@ -4,7 +4,6 @@ set -eu
 PETNEST_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$PETNEST_ROOT"
 PETNEST_SIGN_IDENTITY=${PETNEST_CODESIGN_IDENTITY:--}
-sh "$PETNEST_ROOT/tools/build_keyboard_cat.sh"
 set --
 if [ -d "$PETNEST_ROOT/effects" ]; then
   set -- "$@" --add-data "$PETNEST_ROOT/effects:effects"
@@ -16,7 +15,6 @@ fi
   --hidden-import ServiceManagement --hidden-import Quartz --hidden-import CoreFoundation \
   --icon "$PETNEST_ROOT/assets/icons/petnest-app.png" \
   --paths "$PETNEST_ROOT/src" \
-  --add-binary "$PETNEST_ROOT/build/native/libpetnest_cat.dylib:native" \
   --add-data "$PETNEST_ROOT/assets:assets" \
   --add-data "$PETNEST_ROOT/pets/sample_pet:pets/sample_pet" \
   --add-data "$PETNEST_ROOT/pets/keyboard_cat:pets/keyboard_cat" \

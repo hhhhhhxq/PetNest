@@ -1,10 +1,9 @@
-"""Original MIT KuroCat renderer via a small, packaged Swift C ABI (macOS)."""
+"""Optional original Mac renderer for artwork comparisons; never used by the app."""
 
 from __future__ import annotations
 
 import ctypes
 import json
-import sys
 from functools import lru_cache
 from pathlib import Path
 from time import monotonic
@@ -20,10 +19,7 @@ KEY_CODES.update(reset=-1, MouseLeft=-2, MouseRight=-3)
 
 @lru_cache(maxsize=1)
 def native_library():
-    if getattr(sys, "frozen", False):
-        path = Path(sys._MEIPASS) / "native" / "libpetnest_cat.dylib"
-    else:
-        path = Path(__file__).resolve().parents[3] / "build/native/libpetnest_cat.dylib"
+    path = Path(__file__).resolve().parents[1] / "build/native/libpetnest_cat.dylib"
     lib = ctypes.CDLL(str(path))
     lib.petnest_cat_create.argtypes = []
     lib.petnest_cat_create.restype = ctypes.c_void_p
@@ -64,15 +60,20 @@ class NativeCat:
 
     def render(self, state, options, cursor, action, dt):
         appearance = {
-            "coat": options["coat"], "colors": resolved_colors(options),
+            "coat": options["coat"],
+            "colors": resolved_colors(options),
             "white_markings": options["white_markings"],
             "custom_coat": custom_coat(options),
             "custom_eyes": "eyes" in options["colors"] or custom_coat(options),
-            "custom_keyboard": any(k in options["colors"] for k in ("case", "keys", "accent")),
+            "custom_keyboard": any(
+                k in options["colors"] for k in ("case", "keys", "accent")
+            ),
             "mask_path": str(asset_root() / "assets/cat_coats/tabby-mask.png"),
         }
         if appearance != self.appearance:
-            self.lib.petnest_cat_appearance(self.handle, json.dumps(appearance).encode("utf-8"))
+            self.lib.petnest_cat_appearance(
+                self.handle, json.dumps(appearance).encode("utf-8")
+            )
             self.appearance = appearance
         # Preserve short taps even when both edges arrive between animation frames.
         for key, down in state.events:
