@@ -40,6 +40,12 @@
 
 ## Windows 构建
 
+可以在 macOS 上通过 GitHub Actions 的 **Windows installer** 工作流发起构建；实际打包、安装和启动检查在 Windows runner 上执行。工作流仅生成 `windows-installer` 构建产物，不自动公开发布。
+
+发布时先同步 `pyproject.toml`、`src/petnest/__init__.py` 和 `installer/PetNest.iss` 中的版本，添加对应的 `docs/release-notes-<version>.txt`，再提交并运行工作流。下载构建产物后核对 `app-update.json` 的版本、安装包大小和 SHA-256，然后将安装包与元数据一起上传到对应版本的 GitHub Release，并将正式版本设为 Latest。现有用户随后可通过「检查程序更新」获取它。
+
+云端默认不包含本地 Firebase 配置；需要预置远程伙伴服务时，应另外配置构建凭据注入，不能将私有配置直接提交到仓库。
+
 运行 `build_windows.bat` 会生成：
 
 - `dist/PetNest/`：主程序 onedir 包；

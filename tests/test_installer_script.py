@@ -1,6 +1,7 @@
 """Windows 安装脚本的发布关键项检查。"""
 
 from pathlib import Path
+import tomllib
 
 
 def test_uninstaller_removes_the_auto_start_task() -> None:
@@ -63,9 +64,9 @@ def test_release_version_is_consistent_across_python_and_installer() -> None:
     package = Path("src/petnest/__init__.py").read_text(encoding="utf-8")
     installer = Path("installer/PetNest.iss").read_text(encoding="utf-8")
 
-    assert 'version = "0.1.8"' in pyproject
-    assert '__version__ = "0.1.8"' in package
-    assert '#define AppVersion "0.1.8"' in installer
+    version = tomllib.loads(pyproject)["project"]["version"]
+    assert f'__version__ = "{version}"' in package
+    assert f'#define AppVersion "{version}"' in installer
 
 
 def test_installer_and_application_use_the_dedicated_app_icon() -> None:

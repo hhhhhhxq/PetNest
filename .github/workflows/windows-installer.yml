@@ -1,0 +1,97 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Prepare build tools
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Verify keyboard cat and installer regressions
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          .\.venv\Scripts\python.exe -m pytest -q
+          tests/test_cat_shared_renderer.py tests/test_cat_appearance.py
+          tests/test_cat_animation.py tests/test_keyboard_cat.py
+          tests/test_keyboard_activity.py tests/test_pet_library_layout.py
+          tests/test_installer_script.py tests/test_installer_firewall.py
+          tests/test_app_update.py tests/test_create_app_update_manifest.py
+          tests/test_startup_diagnostics.py tests/test_startup_host.py
+      - name: Build application and installer
+        shell: cmd
+        run: call build_windows.bat
+      - name: Install and smoke test packaged application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = .\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'src'); from petnest import __version__; print(__version__)"
+          $installDir = Join-Path $env:RUNNER_TEMP 'PetNest-smoke-install'
+          $installLog = Join-Path $env:RUNNER_TEMP 'PetNest-install.log'
+          $installer = Resolve-Path "dist/installer/PetNest-Setup-$version.exe"
+          $setup = Start-Process $installer -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR=`"$installDir`" /LOG=`"$installLog`"" -PassThru -Wait
+          if ($setup.ExitCode -ne 0) { throw "Installer exited with $($setup.ExitCode)" }
+          foreach ($file in @('PetNest.exe', 'PetNestStartupHost.exe', 'PetNestUpdateHost.exe', '_internal/assets/fonts/NotoSans-Bold.ttf', '_internal/assets/cat_coats/tabby-mask.png', '_internal/pets/keyboard_cat/pet.json')) {
+            if (-not (Test-Path (Join-Path $installDir $file))) { throw "Missing installed file: $file" }
+          }
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'PetNest-smoke-roaming'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'PetNest-smoke-local'
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP 'PetNest-smoke-codex'
+          $env:PETNEST_TEST_DISABLE_LAN = '1'
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          # Start with the keyboard cat so its bundled resources are exercised.
+          New-Item -ItemType Directory -Force "$env:APPDATA/PetNest" | Out-Null
+          '{"schema_version":29,"current_pet_id":"keyboard_cat","keyboard_working_enabled":true,"codex_link_enabled":false,"remote_interaction_enabled":false,"work_countdown_enabled":false}' | Set-Content -Encoding utf8 "$env:APPDATA/PetNest/settings.json"
+          $app = Start-Process (Join-Path $installDir 'PetNest.exe') -PassThru
+          try {
+            Start-Sleep -Seconds 12
+            $app.Refresh()
+            if ($app.HasExited) { throw "Packaged application exited early: $($app.ExitCode)" }
+            foreach ($log in @((Join-Path $installDir 'PetNest-startup.log'), "$env:LOCALAPPDATA/PetNest/logs/PetNest-startup.log")) {
+              if (Test-Path $log) { Get-Content $log; throw 'Packaged application reported a startup failure' }
+            }
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+          Write-Output "Installed application stayed running with the keyboard cat: $version"
+      - name: Generate update metadata
+        shell: pwsh
+        run: |
+          $version = .\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'src'); from petnest import __version__; print(__version__)"
+          .\.venv\Scripts\python.exe tools/create_app_update_manifest.py --version $version --installer "dist/installer/PetNest-Setup-$version.exe" --url "https://github.com/${{ github.repository }}/releases/download/v$version/PetNest-Setup-$version.exe" --notes-file "docs/release-notes-$version.txt" --output dist/installer/app-update.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save packaging diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packaging-diagnostics
+          path: |
+            build/PetNest/warn-PetNest.txt
+            ${{ runner.temp }}/PetNest-install.log
+            ${{ runner.temp }}/PetNest-smoke-install/PetNest-startup.log
+            ${{ runner.temp }}/PetNest-smoke-local/PetNest/logs/
