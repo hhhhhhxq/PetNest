@@ -11,6 +11,7 @@ from time import monotonic
 from PIL import Image
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import (
+    QBitmap,
     QColor,
     QCursor,
     QContextMenuEvent,
@@ -22,11 +23,13 @@ from PySide6.QtGui import (
     QFont,
     QFontMetrics,
     QGuiApplication,
+    QImage,
     QMouseEvent,
     QPaintEvent,
     QPainter,
     QPen,
     QPixmap,
+    QRegion,
 )
 from PySide6.QtWidgets import QLabel, QWidget
 
@@ -719,6 +722,7 @@ class PetWindow(QWidget):
         self.package = package
         self._scale = package.display.default_scale
         self.state_machine = self._make_state_machine(package)
+        self.clearMask()
         self._interaction_items = self._interaction_item_resolver.resolve(package)
         self.interaction_toolbox.set_items(self._interaction_items)
         self._play_current_action()
@@ -966,7 +970,35 @@ class PetWindow(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802
         if self._current_pixmap.isNull():
             return
+        if self.package.renderer == CAT_RENDERER:
+            # Use the complete painted frame (including countdown and effects)
+            # as the native window shape, not merely an in-app mouse hit test.
+            ratio = self.devicePixelRatioF()
+            image = QImage(
+                round(self.width() * ratio), round(self.height() * ratio),
+                QImage.Format.Format_ARGB32_Premultiplied,
+            )
+            image.setDevicePixelRatio(ratio)
+            image.fill(Qt.GlobalColor.transparent)
+            with QPainter(image) as painter:
+                self._paint_contents(painter)
+            logical = image.scaled(self.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
+            logical.setDevicePixelRatio(1)
+            # Premultiplied transparent pixels are exactly zero. Keep even faint
+            # visible edges; thresholding at 50% would cut off antialiasing.
+            region = QRegion(QBitmap.fromImage(logical.createMaskFromColor(
+                0, Qt.MaskMode.MaskInColor
+            )))
+            if region != self.mask():
+                self.setMask(region)
+            with QPainter(self) as painter:
+                painter.drawImage(QPoint(0, 0), image)
+            return
         painter = QPainter(self)
+        self._paint_contents(painter)
+
+    def _paint_contents(self, painter: QPainter) -> None:
         painter.setRenderHints(
             QPainter.RenderHint.Antialiasing
             | QPainter.RenderHint.TextAntialiasing

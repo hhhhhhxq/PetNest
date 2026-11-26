@@ -21,6 +21,34 @@ from tests.test_package_validator import _write_package
 ROOT = Path(__file__).resolve().parents[1] / "pets" / "keyboard_cat"
 
 
+@pytest.mark.parametrize("scale, ratio", [(0.5, 1), (1, 1), (1.5, 2)])
+def test_cat_native_mask_tracks_painted_pixels_and_clears_on_switch(
+    qtbot, tmp_path, monkeypatch, scale, ratio
+):
+    from PySide6.QtCore import QPoint
+
+    window = PetWindow(PackageLoader().load(ROOT))
+    qtbot.addWidget(window)
+    monkeypatch.setattr(window, "devicePixelRatioF", lambda: ratio)
+    window.set_scale(scale)
+    window.set_paused(True)
+    window.grab()  # Paint the actual window, not just the cat scene.
+    assert not window.mask().isEmpty()
+    assert not window.mask().contains(QPoint(0, 0))
+    assert window.mask().contains(QPoint(
+        window._pet_left() + round(182 * scale), round(120 * scale)
+    ))
+    window.set_countdown_text("01:23:45")
+    window.grab()
+    assert window.mask().contains(window._countdown_rect().center())
+    window.set_countdown_text(None)
+    window.grab()
+    assert not window.mask().contains(QPoint(0, 0))
+    original = PackageLoader().load(_write_package(tmp_path / "original"))
+    window.load_package(original)
+    assert window.mask().isEmpty()
+
+
 @pytest.mark.parametrize("platform, expected", [("win32", True), ("darwin", False)])
 def test_first_cat_activation_defaults_and_remembers_opt_out(
     qtbot, tmp_path, monkeypatch, platform, expected
