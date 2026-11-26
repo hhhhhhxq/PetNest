@@ -285,7 +285,7 @@ class LanInteractionService(QObject):
         self._tcp_server.close()
         for socket in tuple(self._incoming_chat_buffers) + tuple(self._outgoing_chat_sockets):
             socket.abort()
-            socket.deleteLater()
+            self._cleanup_chat_socket(socket)
         self._incoming_chat_buffers.clear()
         self._outgoing_chat_sockets.clear()
         self._manual_probe_timer.stop()
@@ -807,6 +807,10 @@ class LanInteractionService(QObject):
             socket = self._tcp_server.nextPendingConnection()
             if socket is None:
                 break
+            # PySide keeps wrappers returned by nextPendingConnection() alive on
+            # the server even after their underlying sockets are deleted.  The
+            # buffers dict owns each live socket until _cleanup_chat_socket().
+            socket.setParent(None)
             self._incoming_chat_buffers[socket] = bytearray()
             timeout = QTimer(socket)
             timeout.setSingleShot(True)
@@ -885,6 +889,9 @@ class LanInteractionService(QObject):
                 self.chat_message_received.emit(message)
 
     def _cleanup_chat_socket(self, socket: QTcpSocket) -> None:
+        # abort()/destruction can emit more than one signal for the same socket.
+        if socket not in self._incoming_chat_buffers and socket not in self._outgoing_chat_sockets:
+            return
         self._incoming_chat_buffers.pop(socket, None)
         self._outgoing_chat_sockets.discard(socket)
         socket.deleteLater()

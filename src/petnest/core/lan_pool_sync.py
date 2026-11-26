@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Callable
+from hashlib import sha256
+import logging
 from time import monotonic
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -14,8 +17,14 @@ from petnest.core.lan_pool_protocol import (
     PoolRecords,
     PoolSummary,
 )
-from petnest.core.lan_pool_roster import PoolRosterStore
+from petnest.core.lan_pool_roster import MAX_POOL_RECORDS, PoolRosterFullError, PoolRosterStore
 from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState, PoolMemberView
+
+
+LOGGER = logging.getLogger(__name__)
+_SUMMARY_RETRY_SECONDS = 15.0
+_MAX_SUMMARY_RESPONSE_CACHE = 256
+_CAPACITY_WARNING_INTERVAL_SECONDS = 60.0
 
 
 class LanPoolSyncService(QObject):
@@ -37,6 +46,8 @@ class LanPoolSyncService(QObject):
         self.display_name = display_name
         self._offer_candidate = offer_candidate
         self._online_seen_at: dict[str, float] = {}
+        self._summary_response_cache: OrderedDict[str, tuple[bytes, str, float]] = OrderedDict()
+        self._last_capacity_warning_at = float("-inf")
         self._sync_cursor = 0
         self._running = False
         self._periodic_timer = QTimer(self)
@@ -64,6 +75,7 @@ class LanPoolSyncService(QObject):
     def stop(self) -> None:
         self._running = False
         self._periodic_timer.stop()
+        self._summary_response_cache.clear()
 
     def summary(self) -> PoolSummary:
         return PoolSummary(
@@ -111,18 +123,76 @@ class LanPoolSyncService(QObject):
             or revision > local_records[device_id].revision
             for device_id, revision in remote.items()
         )
+        # Both sides can repeatedly ask each other for records neither can
+        # accept (e.g. when both rosters are full).  Suppress only an identical
+        # two-way disagreement, and retry later in case a frame was lost.
+        bidirectional = bool(newer_here) and remote_has_newer
+        if bidirectional and self._suppress_repeated_summary(sender_device_id, summary):
+            return
+        sent = False
         if newer_here:
-            self.send_records(sender_device_id, newer_here)
+            sent = self.send_records(sender_device_id, newer_here) or sent
         if remote_has_newer:
-            self.send_summary(sender_device_id)
+            sent = self.send_summary(sender_device_id) or sent
+        if bidirectional and not sent:
+            self._summary_response_cache.pop(sender_device_id, None)
+
+    def _suppress_repeated_summary(self, sender_device_id: str, summary: PoolSummary) -> bool:
+        now = monotonic()
+        fingerprint = sha256(LanPoolPacketCodec.encode_summary(summary)).digest()
+        local_digest = self.roster.digest()
+        previous = self._summary_response_cache.get(sender_device_id)
+        if previous is not None and previous[:2] == (fingerprint, local_digest):
+            if now - previous[2] < _SUMMARY_RETRY_SECONDS:
+                self._summary_response_cache.move_to_end(sender_device_id)
+                return True
+        self._summary_response_cache[sender_device_id] = (fingerprint, local_digest, now)
+        self._summary_response_cache.move_to_end(sender_device_id)
+        while len(self._summary_response_cache) > _MAX_SUMMARY_RESPONSE_CACHE:
+            self._summary_response_cache.popitem(last=False)
+        return False
+
+    def _warn_roster_full(self) -> None:
+        now = monotonic()
+        if now - self._last_capacity_warning_at < _CAPACITY_WARNING_INTERVAL_SECONDS:
+            return
+        self._last_capacity_warning_at = now
+        message = "局域网预警组名单已满，新设备暂时无法加入；现有成员记录已保留"
+        LOGGER.warning(message)
+        self.sync_status_changed.emit(message)
 
     def receive_records(self, sender_device_id: str, records: PoolRecords) -> None:
         if records.sender_device_id != sender_device_id or sender_device_id == self.roster.local_device_id:
             return
-        result = self.roster.merge(
-            records.records,
-            directly_verified_ids={sender_device_id},
-        )
+        try:
+            result = self.roster.merge(
+                records.records,
+                directly_verified_ids={sender_device_id},
+            )
+        except PoolRosterFullError:
+            self._warn_roster_full()
+            # Do not discard updates to known members merely because the same
+            # frame also contains identities that no longer fit in the roster.
+            # Use any remaining slots for new identities, with the verified
+            # sender first, but never evict existing records or tombstones.
+            known = self.roster.records()
+            local = known.get(self.roster.local_device_id)
+            new_records = [
+                record for record in records.records
+                if record.device_id not in known
+                and not (
+                    local is not None
+                    and record.ip_address == local.ip_address
+                    and record.port == local.port
+                )
+            ]
+            new_records.sort(key=lambda record: record.device_id != sender_device_id)
+            fitting_records = tuple(record for record in records.records if record.device_id in known)
+            fitting_records += tuple(new_records[: max(0, MAX_POOL_RECORDS - len(known))])
+            result = self.roster.merge(
+                fitting_records,
+                directly_verified_ids={sender_device_id},
+            )
         if result.local_newer_device_ids:
             local = self.roster.records()
             self.send_records(
@@ -242,11 +312,15 @@ class LanPoolSyncService(QObject):
             heartbeat.sender_record.ip_address == address
             and heartbeat.sender_record.port == source_port
         )
-        result = self.roster.merge(
-            (heartbeat.sender_record,),
-            directly_verified_ids={sender} if direct else frozenset(),
-        )
-        if result.changed_device_ids:
+        try:
+            result = self.roster.merge(
+                (heartbeat.sender_record,),
+                directly_verified_ids={sender} if direct else frozenset(),
+            )
+        except PoolRosterFullError:
+            self._warn_roster_full()
+            result = None
+        if result is not None and result.changed_device_ids:
             self.roster_changed.emit()
             self.sync_reachable_peers()
         if heartbeat.roster_digest != self.roster.digest():

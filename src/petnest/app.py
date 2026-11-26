@@ -1792,9 +1792,11 @@ class PetNest:
         self.remote_interaction_service.interaction_send_failed.connect(dialog.remote_send_failed)
         pool_refresh = lambda: dialog.set_pool_members(self.lan_pool_sync.member_views())
         self.lan_pool_sync.roster_changed.connect(pool_refresh)
+        self.lan_pool_sync.sync_status_changed.connect(dialog.set_status_message)
         dialog.exec()
         self._lan_interaction_dialog = None
         self.lan_pool_sync.roster_changed.disconnect(pool_refresh)
+        self.lan_pool_sync.sync_status_changed.disconnect(dialog.set_status_message)
         updated = dialog.settings
         if (
             updated.nickname != self.settings.nickname

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import gc
 import os
 from time import time
+import weakref
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QTimer
 from PySide6.QtNetwork import QAbstractSocket, QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtTest import QTest
 
@@ -949,6 +951,40 @@ def test_disconnected_tcp_clients_cancel_their_timeout_callbacks(qtbot, qtlog) -
         assert not service._incoming_chat_buffers
     finally:
         for client in clients:
+            client.abort()
+        service._tcp_server.close()
+        for socket in tuple(service._incoming_chat_buffers):
+            service._cleanup_chat_socket(socket)
+        service.deleteLater()
+
+
+def test_closed_incoming_connections_do_not_accumulate_socket_wrappers(qtbot, monkeypatch) -> None:
+    service = LanInteractionService(device_id="local", display_name="本机", pet_name="平安", port=0)
+    assert service._tcp_server.listen(QHostAddress.SpecialAddress.LocalHost, 0)
+    closed_sockets = []
+    original_cleanup = service._cleanup_chat_socket
+
+    def track_cleanup(socket):
+        if socket in service._incoming_chat_buffers:
+            closed_sockets.append(weakref.ref(socket))
+        original_cleanup(socket)
+
+    monkeypatch.setattr(service, "_cleanup_chat_socket", track_cleanup)
+    client = None
+    try:
+        for index in range(40):
+            client = QTcpSocket()
+            client.connectToHost(QHostAddress.SpecialAddress.LocalHost, service._tcp_server.serverPort())
+            qtbot.waitUntil(lambda: len(service._incoming_chat_buffers) == 1)
+            client.disconnectFromHost()
+            qtbot.waitUntil(lambda: len(closed_sockets) == index + 1)
+            client.deleteLater()
+        client = None
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()
+        assert all(reference() is None for reference in closed_sockets)
+    finally:
+        if client is not None:
             client.abort()
         service._tcp_server.close()
         for socket in tuple(service._incoming_chat_buffers):

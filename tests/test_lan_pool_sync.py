@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtNetwork import QHostAddress
 
-from petnest.core.lan_pool_protocol import LanPoolPacketCodec, PoolRecords
-from petnest.core.lan_pool_roster import PoolRosterStore
+import petnest.core.lan_pool_sync as sync_module
+from petnest.core.lan_pool_protocol import POOL_ID, LanPoolPacketCodec, PoolHeartbeat, PoolRecords, PoolSummary
+from petnest.core.lan_pool_roster import MAX_POOL_RECORDS, PoolRosterStore
 from petnest.core.lan_pool_sync import LanPoolSyncService
 from petnest.core.lan_service import LanInteractionService
 from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState
@@ -108,6 +111,167 @@ def _exchange(left, right, rounds: int = 4) -> None:
     for _round in range(rounds):
         _deliver_pending_frames(left, right)
         _deliver_pending_frames(right, left)
+
+
+def _full_roster_records(device_id: str, unique_id: str) -> tuple[PoolMemberRecord, ...]:
+    common = tuple(
+        replace(record(f"shared-{index}", 1), ip_address=f"10.0.{index // 250}.{index % 250 + 1}")
+        for index in range(MAX_POOL_RECORDS - 2)
+    )
+    owner_ip = "10.1.0.1" if device_id == "a" else "10.1.0.2"
+    extra_ip = "10.2.0.1" if device_id == "a" else "10.2.0.2"
+    return (replace(record(device_id, 1), ip_address=owner_ip), *common,
+            replace(record(unique_id, 1), ip_address=extra_ip))
+
+
+def test_full_divergent_rosters_do_not_generate_an_endless_sync_loop(qtbot, tmp_path) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=_full_roster_records("a", "only-a"))
+    b = _sync_node(tmp_path / "b", "b", records=_full_roster_records("b", "only-b"))
+    original_a, original_b = a.roster.records(), b.roster.records()
+    a.sync.send_summary("b")
+
+    delivered = 0
+    while (a.lan.frames or b.lan.frames) and delivered < 40:
+        sender, receiver = (a, b) if a.lan.frames else (b, a)
+        target, frame = sender.lan.frames.pop(0)
+        assert target == receiver.device_id
+        receiver.sync.receive_frame(sender.device_id, LanPoolPacketCodec.decode_frame(frame))
+        delivered += 1
+
+    assert not a.lan.frames and not b.lan.frames
+    assert delivered < 40
+    assert a.roster.records() == original_a
+    assert b.roster.records() == original_b
+    assert PoolRosterStore(a.roster.path, local_device_id="a").records() == original_a
+    assert PoolRosterStore(b.roster.path, local_device_id="b").records() == original_b
+
+
+def test_full_divergent_rosters_stop_over_real_loopback_tcp(qtbot, tmp_path) -> None:
+    nodes = []
+    sent = []
+    try:
+        for device_id, unique_id in (("a", "only-a"), ("b", "only-b")):
+            lan = LanInteractionService(
+                device_id=device_id, display_name=device_id, pet_name="猫", port=0,
+                interface_provider=lambda: (),
+            )
+            assert lan._tcp_server.listen(QHostAddress.SpecialAddress.LocalHost, 0)
+            lan._port = lan._tcp_server.serverPort()
+            lan._running = True
+            roster = PoolRosterStore(tmp_path / device_id / "roster.json", local_device_id=device_id)
+            roster.update_local(
+                display_name=device_id, state=PoolMemberState.JOINED,
+                ip_address="127.0.0.1", port=lan.port,
+            )
+            roster.merge(_full_roster_records(device_id, unique_id)[1:])
+            sync = LanPoolSyncService(lan, roster, display_name=lambda value=device_id: value)
+            original_send = lan.send_pool_frame
+
+            def record_send(target, frame, original_send=original_send):
+                sent.append((target, len(frame)))
+                return original_send(target, frame)
+
+            lan.send_pool_frame = record_send
+            nodes.append(SimpleNamespace(device_id=device_id, lan=lan, roster=roster, sync=sync))
+        a, b = nodes
+        for local, remote in ((a, b), (b, a)):
+            local.lan._peers[remote.device_id] = LanPeer(
+                remote.device_id, remote.device_id, ip_address="127.0.0.1",
+                port=remote.lan.port, online=True,
+            )
+
+        assert a.sync.send_summary("b")
+        qtbot.waitUntil(lambda: len(sent) >= 5, timeout=3_000)
+        qtbot.wait(250)
+
+        assert len(sent) < 12
+        assert not any(node.lan._outgoing_chat_sockets for node in nodes)
+        assert not any(node.lan._incoming_chat_buffers for node in nodes)
+        assert all(len(node.roster.records()) == MAX_POOL_RECORDS for node in nodes)
+    finally:
+        for node in nodes:
+            node.sync.stop()
+            node.lan.stop()
+
+
+def test_duplicate_two_way_summaries_retry_and_react_to_changes(qtbot, tmp_path, monkeypatch) -> None:
+    now = [0.0]
+    monkeypatch.setattr(sync_module, "monotonic", lambda: now[0])
+    a = _sync_node(tmp_path / "a", "a", records=(record("a", 1),))
+    summary = PoolSummary("b", (("b", 1),))
+
+    a.sync.receive_summary("b", summary)
+    assert len(a.lan.frames) == 2
+    a.sync.receive_summary("b", summary)
+    assert len(a.lan.frames) == 2
+    now[0] += sync_module._SUMMARY_RETRY_SECONDS
+    a.sync.receive_summary("b", summary)
+    assert len(a.lan.frames) == 4
+
+    local = a.roster.records()["a"]
+    a.roster.update_local(
+        display_name="new name", state=local.state, ip_address=local.ip_address, port=local.port,
+    )
+    a.sync.receive_summary("b", summary)
+    assert len(a.lan.frames) == 6
+    a.sync.receive_summary("b", PoolSummary("b", (("b", 2),)))
+    assert len(a.lan.frames) == 8
+
+
+def test_failed_sync_send_is_not_suppressed_on_immediate_retry(qtbot, tmp_path) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=(record("a", 1),))
+    summary = PoolSummary("b", (("b", 1),))
+    a.lan.transport_available = False
+    a.sync.receive_summary("b", summary)
+    a.lan.transport_available = True
+
+    a.sync.receive_summary("b", summary)
+
+    assert len(a.lan.frames) == 2
+
+
+def test_full_roster_still_updates_known_records_and_reports_missing_capacity(qtbot, tmp_path) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=_full_roster_records("a", "only-a"))
+    statuses = []
+    a.sync.sync_status_changed.connect(statuses.append)
+    updated = replace(a.roster.records()["shared-1"], revision=2)
+    unknown = replace(record("new-device", 1), ip_address="10.3.0.1")
+
+    a.sync.receive_records("b", PoolRecords("b", (updated, unknown)))
+
+    assert a.roster.records()[updated.device_id] == updated
+    assert unknown.device_id not in a.roster.records()
+    assert len(a.roster.records()) == MAX_POOL_RECORDS
+    assert len(statuses) == 1 and "名单已满" in statuses[0]
+
+    heartbeat = PoolHeartbeat(POOL_ID, "new-device", unknown, "0" * 64, 1)
+    a.sync._on_heartbeat_context(SimpleNamespace(message=heartbeat, address=unknown.ip_address,
+                                                 source_port=unknown.port))
+    assert len(a.roster.records()) == MAX_POOL_RECORDS
+    assert len(statuses) == 1
+
+
+def test_nearly_full_roster_uses_remaining_slots_for_verified_sender(qtbot, tmp_path) -> None:
+    almost_full = _full_roster_records("a", "only-a")[:-2]
+    a = _sync_node(tmp_path / "a", "a", records=almost_full)
+    assert len(a.roster.records()) == MAX_POOL_RECORDS - 2
+    sender = replace(record("z-sender", 1), ip_address="10.3.0.1")
+    first = replace(record("a-first", 1), ip_address="10.3.0.2")
+    second = replace(record("b-second", 1), ip_address="10.3.0.3")
+
+    a.sync.receive_records(sender.device_id, PoolRecords(sender.device_id, (sender, first, second)))
+
+    assert set(a.roster.records()).issuperset({sender.device_id, first.device_id})
+    assert second.device_id not in a.roster.records()
+    assert len(a.roster.records()) == MAX_POOL_RECORDS
+
+
+def test_summary_response_cache_is_bounded(qtbot, tmp_path) -> None:
+    a = _sync_node(tmp_path / "a", "a", records=(record("a", 1),))
+    for index in range(sync_module._MAX_SUMMARY_RESPONSE_CACHE + 10):
+        sender = f"sender-{index}"
+        a.sync.receive_summary(sender, PoolSummary(sender, ((sender, 1),)))
+    assert len(a.sync._summary_response_cache) == sync_module._MAX_SUMMARY_RESPONSE_CACHE
 
 
 def test_sync_exchanges_only_missing_or_older_records(qtbot, tmp_path) -> None:

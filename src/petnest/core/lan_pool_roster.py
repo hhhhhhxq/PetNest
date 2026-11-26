@@ -17,6 +17,10 @@ from petnest.models.lan_pool import PoolMemberRecord, PoolMemberState, PoolMerge
 MAX_POOL_RECORDS = 256
 
 
+class PoolRosterFullError(ValueError):
+    """The roster cannot accept additional device identities without losing history."""
+
+
 class PoolRosterStore:
     SCHEMA_VERSION = 1
 
@@ -75,7 +79,7 @@ class PoolRosterStore:
         }
         accepted_incoming_ids = set(incoming_ids).difference(local_endpoint_conflict_ids)
         if len(set(self._records).union(accepted_incoming_ids)) > MAX_POOL_RECORDS:
-            raise ValueError("pool roster cannot contain more than 256 records")
+            raise PoolRosterFullError("pool roster cannot contain more than 256 records")
 
         changed: list[str] = []
         local_newer: list[str] = []
